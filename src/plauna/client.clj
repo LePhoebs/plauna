@@ -15,9 +15,10 @@
    (jakarta.mail.internet InternetAddress MailDateFormat MimeMessage MimePart MimeUtility)
    (org.eclipse.angus.mail.imap IMAPFolder IMAPMessage)
    (jakarta.mail.event ConnectionAdapter ConnectionEvent MessageCountAdapter MessageCountEvent MessageCountListener)
-   (jakarta.mail.search MessageIDTerm)
+   (jakarta.mail.search ComparisonTerm MessageIDTerm ReceivedDateTerm)
    (java.lang AutoCloseable)
-   (java.util Properties UUID)
+   (java.time LocalDate ZoneId)
+   (java.util Date Properties UUID)
    (org.eclipse.angus.mail.imap IdleManager IMAPStore)
    (java.util.concurrent Executors ExecutorService TimeUnit ScheduledExecutorService ScheduledFuture ThreadFactory)))
 
@@ -1114,6 +1115,16 @@
       (try (.close store)
            (catch Exception e (t/log! {:level :error :error e} "Error closing bulk-read store"))))))
 
+(defn received-since-message-numbers
+  "The sequence numbers (ascending) of the messages of an open folder that were received on or after the
+   calendar day since (IMAP SEARCH SINCE on the INTERNALDATE: the server compares whole days and ignores
+   the time of day and time zone). The date is built in the JVM's own zone because the mail library
+   writes it into the command in that zone - any other zone could shift it onto a neighbouring day."
+  [^IMAPFolder folder ^LocalDate since]
+  (let [date (Date/from (.toInstant (.atStartOfDay since (ZoneId/systemDefault))))
+        found (.search folder (ReceivedDateTerm. ComparisonTerm/GE date))]
+    (vec (sort (map (fn [^Message message] (.getMessageNumber message)) found)))))
+
 (defn refetch-message-by-id
   "Re-read a single message from the IMAP server by its Message-ID and return a freshly parsed Email,
    or nil if it cannot be found on any connected account. Searches the email's recorded folder first,
@@ -1195,6 +1206,7 @@
       (catch Exception e
         (t/log! :debug ["Could not prefetch envelopes" from "-" to ":" (.getMessage e)])
         0)))
+  (message-numbers-since [_ folder since] (received-since-message-numbers folder since))
   (current-folder-name [_ folder] (.getFullName ^Folder folder))
   (open-folder-for-bulk-read [_ connection-data folder-name] (open-folder-for-bulk-read connection-data folder-name))
   (close-folder-for-bulk-read [_ bulk-handle] (close-folder-for-bulk-read bulk-handle))

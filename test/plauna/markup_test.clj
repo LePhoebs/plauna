@@ -70,6 +70,31 @@
       (is (not (str/includes? html "/js/vendor/vega.min.js")))))
   "Admin pages contain blank password fields and do not load chart code")
 
+(deftest connection-page-offers-the-one-click-rescan-of-recent-emails
+  (with-redefs [client/disconnected-connections (fn [] [])]
+    (let [connection {:id "connection-1" :host "imap.example.com" :user "me@example.com" :folder ""
+                      :monitored-folder "INBOX" :connected true}
+          html (markup/connection connection ["INBOX" "Spam"] [{:id 1 :name "Work"}])
+          form (fn [id page] (re-find (re-pattern (str "(?s)<form id=\"" id "\".*?</form>")) page))
+          rescan (form "rescan" html)
+          parse (form "parse" html)]
+      (is (some? rescan) "A connected account offers the re-scan")
+      (is (str/includes? rescan "action=\"/admin/connections/connection-1/controls\""))
+      (is (str/includes? rescan "name=\"operation\" value=\"rescan\""))
+      (is (re-find #"(?s)<input[^>]*name=\"since-days\"[^>]*value=\"7\"[^>]*required" rescan)
+          "The days field is required and defaults to a week")
+      (is (re-find #"(?s)<input[^>]*name=\"move\"[^>]*checked" rescan)
+          "Rescued e-mails are moved after categorization by default, like live mail")
+      (is (not (str/includes? rescan "name=\"folder\"")) "The server decides the folder: it is always the watched one")
+      (is (str/includes? html "<strong>INBOX</strong>") "The page names the folder that is re-scanned")
+      (is (re-find #"(?s)<input[^>]*name=\"since-days\"(?![^>]*required)" parse)
+          "The general parse form has an optional period field")
+      (is (let [ids (map second (re-seq #"id=\"([^\"]+)\"" html))] (= (count ids) (count (set ids))))
+          "No duplicate element ids on the page")
+      (is (nil? (form "rescan" (markup/connection (assoc connection :connected false) [] [])))
+          "Without a live connection there is nothing to re-scan")))
+  "The connection page has a one-click re-scan of the last N days next to the general folder parse")
+
 (deftest mtls-page-shows-fingerprints-but-never-renders-the-proxy-secret
   (with-redefs [client/disconnected-connections (fn [] [])]
     (let [secret "proxy-secret-must-not-reach-browser"

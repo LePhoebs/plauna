@@ -32,6 +32,8 @@ You can parse your e-mails from mbox files or directly by connecting to your IMA
 
 - Read e-mails directly from IMAP folders, optionally in place (without moving them) and in batches of a configurable size, so a large archive folder can be categorized step by step.
 
+- Re-scan the e-mails of the last X days with one click: e-mails that landed in another folder first (typically the spam folder of the mail server's spam filter) and were moved back to the inbox afterwards are picked up and processed like any new mail, while everything Plauna already knows is skipped.
+
 - Login-name-and-password-protected web UI (the login name defaults to =root=; the password can be set via an environment variable, changed in the UI, or auto-generated on first launch).
 
 - Per-category destination folders: choose exactly which IMAP folder each category's mail is moved to.
@@ -365,6 +367,8 @@ When you start Plauna, it starts a web server on the port which you specified (d
 
    The "Batch size" field (default 100) limits one run to that many /new/ e-mails. Plauna walks the folder from the newest message to the oldest, identifies each message by its Message-ID first and skips e-mails that are already stored without downloading them again - skipped e-mails do not use up the batch. Once the batch is full, a message reports how many e-mails were saved, how many were skipped and how many older e-mails are still unexamined. Simply run the same parse again to continue with the next batch. Leave the field blank to process the whole folder in one go.
 
+   The "Only e-mails of the last N days" field restricts a run to the e-mails that /arrived/ in the folder within that many days. The check uses the day an e-mail reached the mail server (the IMAP received date), not its Date header, and counts whole calendar days, today included: with 7 days on the 14th everything received since the 7th is read. Moving an e-mail between folders keeps its received date, so the window is measured from when the e-mail arrived, not from when you moved it back: an e-mail that sat in the spam folder for 20 days is only found with at least 20 days. The field combines with the batch size and leaves everything else about the run unchanged: already stored e-mails are skipped without being downloaded, and the finished run's message names the period. Leave it blank for no time limit.
+
    Forgot to tick "Move e-mails after categorization"? Every finished run offers "Move to category folders" (on the connection page and, while reviewing the batch, on the E-mails page). It moves the categorized e-mails of that batch into their category folders in the background and reports how many were moved; e-mails without a category stay where they are, and you can run it again after correcting categories. To move everything at once, regardless of which run stored it, use the table "E-mails Still in Their Original Folders" on the connection page: it lists, per folder, how many stored e-mails are still recorded there with and without a category, and "Move N to category folders" moves all categorized ones.
 
    The "Skipped" column of a run counts e-mails that were already in Plauna's database and therefore not saved or categorized again. They come from two places, and the run's message tells them apart: e-mails saved by an earlier run of the same folder that have not been moved yet (they disappear from the folder once you move them), and duplicates of e-mails that Plauna stored from another folder or account - shown as "elsewhere" in the table. Those duplicates never belong to a batch and stay in the folder; delete or move them by hand if they bother you.
@@ -376,6 +380,18 @@ When you start Plauna, it starts a web server on the port which you specified (d
    Every run is listed under "Recent Folder Parse Runs" on the connection page, which reloads itself while a run is in progress. As soon as a run has finished, both the summary message and the table offer a "Review" link that opens the E-mails page filtered to exactly the e-mails this run saved, so their detected categories can be checked and corrected inline while they are still fresh. The batch filter appears as a removable chip and combines with the other filters, e.g. with "E-mails without A Category Only" to see which e-mails of the batch the model could not assign. A run that was still in progress when Plauna was stopped is shown as aborted; its e-mails are kept, and running the parse again continues after them.
 
 3. Just leave Plauna running and watch it save your e-mails. Beware: Depending on how many e-mails you receive on any given day, this method may be very slow.
+
+*** Re-scanning Recent E-mails (e.g. after rescuing mail from the spam folder)
+
+Live monitoring only sees mail that arrives in the watched folder while Plauna is connected. If your mail server's spam filter (Rspamd, for example) files a legitimate e-mail straight into the spam folder, Plauna never sees it. After you move such an e-mail back to the inbox, live monitoring may notice it right away, but nothing guarantees that (Plauna could have been disconnected or restarting at that moment, or many e-mails may arrive at once). So do not rely on it: after rescuing mail, use the "Re-scan Recent E-mails" box at the top of the connection page (Admin → IMAP Connections → your account):
+
+1. Enter how many days to look back (default 7) - at least as many as the oldest e-mail you moved back. Because the received date survives the move, an e-mail that arrived five days ago and was moved back today still belongs to "the last 5 days".
+
+2. Keep "Move e-mails after categorization" ticked (the default) to treat the rescued e-mails like normal incoming mail: they are categorized and moved into their category folder. Untick it to only record them in Plauna and leave them in the inbox.
+
+3. Click "Re-scan E-mails". The run starts in the background, reads only the e-mails of that period from the watched folder, saves and categorizes those Plauna does not know yet and skips every e-mail it already stored. A message on the next page load reports the result with a link to review exactly the e-mails that were added, and the run is listed under "Recent Folder Parse Runs". Running it again is harmless.
+
+The days field is required here - a blank field is refused rather than reading the whole folder. To re-scan another folder, or to combine the period with a batch size or a fixed category, use "Parse E-mails from Folders" and its "Only e-mails of the last N days" field instead.
 
    
 ** Language Detection

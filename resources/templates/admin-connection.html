@@ -74,7 +74,24 @@
   </div>
   {% if folders|not-empty %}
   <div class="grow-2">
-    <h4 class="text-lg">Parse E-mails from Folders</h4>
+    <h4 class="text-lg">Re-scan Recent E-mails</h4>
+    <form id="rescan" class="space-y-4" action="/admin/connections/{{id}}/controls" method="POST">
+      <input type="hidden" name="operation" value="rescan"/>
+      <input type="hidden" name="redirect-url" value="/admin/connections/{{id}}"/>
+      <p class="text-sm opacity-70">Reads the e-mails that arrived in <strong>{{monitored-folder}}</strong> during the last days once more and processes only those Plauna does not know yet; everything already stored is skipped. Use it for e-mails that landed somewhere else first and were moved back afterwards, e.g. out of the spam folder. The days are counted from the day an e-mail reached the server, today included - moving it between folders does not change that.</p>
+      <div class="flex gap-2">
+        <label for="rescan-days">Days to look back</label>
+        <input class="input" id="rescan-days" name="since-days" type="number" min="1" max="36500" step="1" value="7" required>
+      </div>
+      <div class="flex gap-2">
+        <label for="rescan-move">Move e-mails after categorization</label>
+        <input class="checkbox" id="rescan-move" name="move" type="checkbox" checked>
+      </div>
+      <div class="form-field">
+        <button form="rescan" class="btn btn-primary">Re-scan E-mails</button>
+      </div>
+    </form>
+    <h4 class="text-lg mt-8">Parse E-mails from Folders</h4>
     <form id="parse" class="space-y-4" action="/admin/connections/{{id}}/controls" method="POST">
       <input type="hidden" name="operation" value="parse"/>
       <input type="hidden" name="redirect-url" value="/admin/connections/{{id}}"/>
@@ -98,6 +115,13 @@
           <input class="input" id="batch-size" name="batch-size" type="number" min="1" step="1" value="100" placeholder="Leave blank for the whole folder">
         </div>
         <p class="text-sm opacity-70">Stop after this many new e-mails have been saved and categorized. E-mails that are already stored are skipped and do not count, so running the same parse again continues with the next batch. Leave blank to process the whole folder in one go.</p>
+      </div>
+      <div class="form-field">
+        <label for="since-days">Only e-mails of the last N days</label>
+        <div class="form-control">
+          <input class="input" id="since-days" name="since-days" type="number" min="1" max="36500" step="1" placeholder="Leave blank for all e-mails">
+        </div>
+        <p class="text-sm opacity-70">Only read e-mails that arrived in the folder within this many days (counted from the day they reached the server, today included). Combines with the batch size. Leave blank for no time limit.</p>
       </div>
       <label for="assigned-category">Assign following category for all e-mails in folder. Leave blank for automatic category detection.</label>
         <div class="form-control">

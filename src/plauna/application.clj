@@ -415,6 +415,14 @@
   (into #{} (map (fn [row] (str (or (:category row) uncategorized-token))))
         (int/fetch-header-categories db other-filters-where)))
 
+(defn- context-zone-id
+  "The time zone that decides which calendar day it is: the context's :time-zone when given (tests),
+   otherwise the configured preference."
+  [context]
+  (if-let [configured-zone (:time-zone context)]
+    (java.time.ZoneId/of configured-zone)
+    (preferences/zone-id)))
+
 (defn fetch-emails
   "Returns a list of emails. Customizable by parameters which can contain the following keys:
    :size, :page, :filter (all, enrieched-only, or without-category), :search-text (matches the
@@ -432,9 +440,7 @@
         subject-selection (checklist-selection parameters :subject-values :subject-values-exclude :subject-values-none)
         from-selection (checklist-selection parameters :from-keys :from-keys-exclude :from-keys-none)
         to-selection (checklist-selection parameters :to-keys :to-keys-exclude :to-keys-none)
-        zone-id (if-let [configured-zone (:time-zone context)]
-                  (java.time.ZoneId/of configured-zone)
-                  (preferences/zone-id))
+        zone-id (context-zone-id context)
         date-filter (date->where (:date-from parameters) (:date-to parameters) zone-id)
         date-filter-active? (some? date-filter)
         fulltext-min-token-length (when (= :mariadb (:db-type context))
@@ -847,9 +853,21 @@
    folder or the connection is gone, and going on would record one failure per remaining message."
   50)
 
+(defn- contiguous-runs
+  "Split sequence numbers into [from to] pairs of consecutive numbers. The numbers of a date search can
+   have gaps, and one FETCH over min..max would then also load the envelopes of every message between."
+  [numbers]
+  (reduce (fn [runs n]
+            (let [[_ to] (peek runs)]
+              (if (and (some? to) (= n (inc to)))
+                (conj (pop runs) [(first (peek runs)) n])
+                (conj runs [n n]))))
+          []
+          (sort numbers)))
+
 (defn- prefetch-identities-safely! [client folder numbers]
-  (when (seq numbers)
-    (try (int/prefetch-message-identities client folder (apply min numbers) (apply max numbers))
+  (doseq [[from to] (contiguous-runs numbers)]
+    (try (int/prefetch-message-identities client folder from to)
          (catch Throwable _ nil))))
 
 (defn- process-folder-messages!
@@ -891,6 +909,27 @@
                      (update :examined inc)
                      (cond-> (= :skipped-elsewhere outcome) (update :skipped-elsewhere inc)))))))))
 
+(defn- since-date
+  "The calendar day a :since-days run reaches back to: that many days before today in the configured zone."
+  [days context]
+  (.minusDays (java.time.LocalDate/now ^java.time.ZoneId (context-zone-id context)) (long days)))
+
+(defn- sequence-numbers-to-read
+  "The sequence numbers a run examines, newest (highest) first: the whole folder, its most recent :limit
+   messages or - with :since-days - the messages received within that many days (again capped by :limit).
+   Throws when the server cannot answer the date search."
+  [client bulk {:keys [limit since-days]} context]
+  (let [message-count (:message-count bulk)]
+    (if (some? since-days)
+      (if (pos? message-count)
+        (cond->> (sort > (int/message-numbers-since client (:folder bulk) (since-date since-days context)))
+          (some? limit) (take limit))
+        [])
+      ;; Sequence numbers are 1-based; higher = more recent. With :limit take only the top N, without it
+      ;; everything down to 1.
+      (let [lowest (if limit (max 1 (- (inc message-count) limit)) 1)]
+        (range message-count (dec lowest) -1)))))
+
 (defn read-emails-from-folder
   "Read emails from a folder and process them. Returns the number of messages in the folder.
    Emails are read over a DEDICATED IMAP connection (separate from the IDLE monitor, so the two never
@@ -901,6 +940,10 @@
      whole folder. The reconnect back-fill uses this so a large mailbox isn't fully re-scanned every
      time; already-saved messages are skipped either way (see incoming-email-workflow), so a bounded
      scan still catches up every genuinely-missed message within the window.
+   - :since-days N to process only the messages RECEIVED within the last N days (whole calendar days,
+     today included: with 7 on the 14th, everything received since the 7th). This finds e-mails that
+     were moved into the folder later - e.g. out of the spam folder - wherever they ended up in the
+     folder, while everything already stored is skipped as usual. Combines with :limit and :batch-size.
    - :batch-size N to stop after N messages were NEWLY saved and categorized. Already stored messages
      do not count towards the batch, so repeating the same parse works through a large folder in
      batches of N: each run skips what earlier runs stored and continues with the next N unknown
@@ -910,23 +953,28 @@
    - :on-complete, a function called with a summary map once the background thread has finished:
      {:folder :message-count :batch-size :processed :skipped :skipped-elsewhere :errors :examined :remaining}
      where :remaining is the number of (older) messages that were not examined because the batch was
-     full and :skipped-elsewhere the part of :skipped that was stored from another folder (duplicates)."
+     full and :skipped-elsewhere the part of :skipped that was stored from another folder (duplicates).
+     A :since-days run adds :since-days to the summary."
   [connection-data folder-name options {:keys [client db] :as context}]
   (let [bulk (int/open-folder-for-bulk-read client connection-data folder-name)
         folder (:folder bulk)
         message-count (:message-count bulk)
-        limit (:limit options)
         batch-size (:batch-size options)
+        since-days (:since-days options)
         options (assoc options :known-failures (known-failures db (:connection-id bulk) folder-name))
         on-complete (or (:on-complete options) (fn [_] nil))
-        ;; Lowest sequence number to process. With :limit, take only the top N (most recent) messages;
-        ;; without it, everything down to 1. (Sequence numbers are 1-based; higher = more recent.)
-        lowest (if limit (max 1 (- (inc message-count) limit)) 1)
-        to-process (inc (- message-count lowest))
-        summary (empty-folder-summary folder-name message-count batch-size)]
-    (if (> message-count 0)
+        ;; Searching can fail (e.g. the connection dropped): the dedicated Store opened above must not leak.
+        sequence-numbers (try (sequence-numbers-to-read client bulk options context)
+                              (catch Throwable e
+                                (int/close-folder-for-bulk-read client bulk)
+                                (throw e)))
+        to-process (count sequence-numbers)
+        summary (cond-> (empty-folder-summary folder-name message-count batch-size)
+                  (some? since-days) (assoc :since-days since-days))]
+    (if (pos? to-process)
       (do
         (t/log! :info ["There are" message-count "emails in" folder-name "-" to-process "will get processed asynchronously"
+                       (if since-days (str "(received in the last " since-days " day(s))") "")
                        (if batch-size (str "(stopping after " batch-size " newly saved emails)") "")])
         ;; A real thread (run-completing! uses async/thread), not async/go: each email does blocking JDBC
         ;; and IMAP work, and a long blocking loop inside a go block would tie up a shared dispatch thread.
@@ -938,7 +986,7 @@
                                           ;; Going downward means the numbers we have not processed yet are never affected, so no
                                           ;; message is skipped or referenced after it moved. (Sequence numbers are 1-based.)
                                           (process-folder-messages! client folder-name folder options context bulk
-                                                                    (range message-count (dec lowest) -1) summary)
+                                                                    sequence-numbers summary)
                                           (finally
                                             (int/close-folder-for-bulk-read client bulk)))]
                              (t/log! :info ["Finished parsing" folder-name "-" (:processed result) "new," (:skipped result) "already stored,"
@@ -946,6 +994,8 @@
                              result))))
       (do
         (int/close-folder-for-bulk-read client bulk)
-        (t/log! :info ["There are no emails in the folder. Doing nothing."])
+        (t/log! :info [(if since-days
+                         (str "No emails were received in " folder-name " within the last " since-days " day(s). Doing nothing.")
+                         "There are no emails in the folder. Doing nothing.")])
         (on-complete summary)))
     message-count))

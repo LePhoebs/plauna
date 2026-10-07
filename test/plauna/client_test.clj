@@ -2,12 +2,17 @@
   (:require [clojure.test :refer :all]
             [plauna.client :as client :refer [->ConnectionData]]
             [plauna.database :as db]
+            [plauna.interfaces :as int-protocol]
             [plauna.core.email :as core-email :refer [->Email ->Participant]]
             [taoensso.telemere :as t])
   (:import (java.util Properties)
            (java.io ByteArrayInputStream)
-           (jakarta.mail Session)
-           (jakarta.mail.internet MimeMessage)))
+           (java.time LocalDate ZoneId)
+           (jakarta.mail Message Session)
+           (jakarta.mail.internet MimeMessage)
+           (jakarta.mail.search ComparisonTerm ReceivedDateTerm SearchTerm)
+           (org.eclipse.angus.mail.imap IMAPFolder IMAPMessage)
+           (org.mockito ArgumentCaptor Mockito)))
 
 (t/set-ns-filter! {:disallow "plauna.*"})
 
@@ -323,3 +328,39 @@
     (is (nil? (:date header)))
     (is (= [] (client/participants-from-raw-headers message nil)))
     (is (nil? (client/header-date-seconds "not a date")))))
+
+(deftest received-since-message-numbers-searches-the-received-date-from-the-given-day
+  (let [folder (Mockito/mock IMAPFolder)
+        message (fn [n] (let [m (Mockito/mock IMAPMessage)]
+                          (.thenReturn (Mockito/when (.getMessageNumber m)) (int n))
+                          m))
+        since (LocalDate/of 2026 9 30)
+        ;; Built before the stubbing starts: Mockito does not allow stubbing a mock inside another stubbing.
+        answer (into-array Message [(message 9) (message 3) (message 7)])]
+    (.thenReturn (Mockito/when (.search folder ^SearchTerm (Mockito/any SearchTerm))) answer)
+    (is (= [3 7 9] (client/received-since-message-numbers folder since))
+        "The sequence numbers come back ascending whatever order the server answers in")
+    (let [captor (ArgumentCaptor/forClass SearchTerm)]
+      (.search ^IMAPFolder (Mockito/verify folder) ^SearchTerm (.capture captor))
+      (let [^ReceivedDateTerm term (.getValue captor)]
+        (is (instance? ReceivedDateTerm term) "The RECEIVED date (INTERNALDATE) is searched, not the Date header")
+        (is (= ComparisonTerm/GE (.getComparison term)) "On or after the day: IMAP SINCE")
+        (is (= since (-> (.getDate term) .toInstant (.atZone (ZoneId/systemDefault)) .toLocalDate))
+            "The date is the requested calendar day in the JVM's own zone, in which the mail library writes it"))))
+  "The date search sends SINCE <day> to the server and returns the matching sequence numbers.")
+
+(deftest received-since-message-numbers-is-empty-when-nothing-matches
+  (let [folder (Mockito/mock IMAPFolder)]
+    (.thenReturn (Mockito/when (.search folder ^SearchTerm (Mockito/any SearchTerm)))
+                 (into-array Message []))
+    (is (= [] (client/received-since-message-numbers folder (LocalDate/of 2026 10 1))))))
+
+(deftest the-imap-client-answers-the-date-search-through-received-since-message-numbers
+  (let [folder (Mockito/mock IMAPFolder)
+        message (let [m (Mockito/mock IMAPMessage)]
+                  (.thenReturn (Mockito/when (.getMessageNumber m)) (int 4))
+                  m)
+        answer (into-array Message [message])]
+    (.thenReturn (Mockito/when (.search folder ^SearchTerm (Mockito/any SearchTerm))) answer)
+    (is (= [4] (int-protocol/message-numbers-since (client/->ImapClient) folder (LocalDate/of 2026 10 1)))
+        "The protocol method of the real client is wired to the folder it is given")))

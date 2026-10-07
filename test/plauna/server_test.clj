@@ -380,6 +380,29 @@
       (is (= "imap.example.com" (:host connection)))
       (is (not (contains? connection :secret))))))
 
+(deftest the-rescan-label-and-the-rescan-action-use-the-same-watched-folder
+  (let [live (client/->ConnectionData {:id "connection-1" :folder "INBOX"} nil nil nil nil nil)]
+    (with-redefs [db/get-connection (fn [_] {:id "connection-1" :host "h" :folder "Archive"})
+                  client/monitor->map (fn [_] {:connected true})]
+      (swap! client/connections assoc "connection-1" live)
+      (try
+        (is (= "INBOX" (:monitored-folder (server/connection-information "connection-1")))
+            "A saved but not yet applied edit of the watched folder does not change what the live monitor watches")
+        (finally (swap! client/connections dissoc "connection-1")))
+      (is (= "Archive" (:monitored-folder (server/connection-information "connection-1")))
+          "Without a live connection the stored folder is the answer")))
+  (with-redefs [db/get-connection (fn [_] {:id "connection-2" :host "h" :folder ""})
+                client/monitor->map (fn [_] {:connected false})]
+    (is (= "INBOX" (:monitored-folder (server/connection-information "connection-2")))
+        "A blank watched folder means INBOX")))
+
+(deftest folder-parse-summary-message-does-not-claim-the-whole-folder-for-a-since-days-batch
+  (let [period (server/folder-parse-summary-message {:folder "INBOX" :processed 2 :skipped 3 :errors 0 :remaining 0 :batch-size 50 :since-days 1})
+        whole (server/folder-parse-summary-message {:folder "INBOX" :processed 2 :skipped 3 :errors 0 :remaining 0 :batch-size 50})]
+    (is (str/includes? (:content period) "All e-mails of that period have been examined"))
+    (is (not (str/includes? (:content period) "The folder has been examined completely")))
+    (is (str/includes? (:content whole) "The folder has been examined completely") "Without a period the message is unchanged")))
+
 (deftest oauth-start-stores-only-the-provider-id-in-the-browser-session
   (let [provider {:id 12
                   :name "Example"
@@ -464,6 +487,25 @@
     (is (= :info (:type with-errors)))
     (is (str/includes? (:content with-errors) "2 could not be read"))
     (is (not (str/includes? (:content with-errors) "examined completely")) "No batch size: the batch note is left out")))
+
+(deftest parse-since-days-accepts-only-positive-integers-and-caps-absurd-ones
+  (is (= 7 (server/parse-since-days "7")))
+  (is (= 30 (server/parse-since-days " 30 ")))
+  (is (nil? (server/parse-since-days "")) "Blank means no time limit")
+  (is (nil? (server/parse-since-days nil)))
+  (is (nil? (server/parse-since-days "abc")))
+  (is (nil? (server/parse-since-days "0")))
+  (is (nil? (server/parse-since-days "-3")))
+  (is (= server/max-since-days (server/parse-since-days "999999")) "A look-back beyond any mailbox is capped, not rejected")
+  (is (nil? (server/parse-since-days "99999999999")) "A number that does not even fit an integer is no limit"))
+
+(deftest folder-parse-summary-message-names-the-period-of-a-since-days-run
+  (let [week (server/folder-parse-summary-message {:folder "INBOX" :processed 3 :skipped 9 :errors 0 :remaining 0 :batch-size nil :since-days 7})
+        day (server/folder-parse-summary-message {:folder "INBOX" :processed 0 :skipped 2 :errors 0 :remaining 0 :batch-size nil :since-days 1})
+        plain (server/folder-parse-summary-message {:folder "INBOX" :processed 3 :skipped 9 :errors 0 :remaining 0 :batch-size nil})]
+    (is (str/starts-with? (:content week) "Finished parsing INBOX (e-mails received in the last 7 days): 3 new e-mail(s) saved and categorized, 9 already stored"))
+    (is (str/includes? (:content day) "(e-mails received in the last day)"))
+    (is (str/starts-with? (:content plain) "Finished parsing INBOX: 3 new") "Without a period the message reads as before")))
 
 (deftest folder-parse-summary-message-links-to-the-batch-review
   (let [with-emails (server/folder-parse-summary-message {:folder "Old" :processed 3 :skipped 0 :errors 0 :remaining 0 :batch-size 100 :batch-id "run-1"})
@@ -763,3 +805,59 @@
         (is (str/includes? (:body second-response) "Too many failed login attempts")))))
   (auth/record-login-success!)
   "The brake refuses fast retries instead of parking a request thread")
+
+(deftest rescan-control-requires-the-number-of-days
+  (server/empty-global-messages)
+  (with-redefs [client/connection-data-from-id (fn [_] (throw (ex-info "must not even look for the connection" {})))]
+    (let [routes (server/make-routes {})
+          rescan (fn [params] (routes {:request-method :post :uri "/admin/connections/c1/controls"
+                                       :params (merge {:operation "rescan" :redirect-url "/admin/connections/c1"} params)
+                                       :session {:authenticated true}}))]
+      (doseq [days [nil "" "abc" "0" "-2"]]
+        (is (= 303 (:status (rescan {:since-days days})))))
+      (let [messages (server/take-messages!)]
+        (is (= 5 (count messages)))
+        (is (every? #(and (= :alert (:type %)) (str/includes? (:content %) "how many days")) messages)
+            "A blank field is refused instead of silently reading the whole folder"))))
+  "The one-click re-scan never degrades into a full-folder parse.")
+
+(deftest rescan-control-starts-a-since-days-run-on-the-watched-folder
+  (server/empty-global-messages)
+  (let [started (atom nil)]
+    (with-redefs [client/connection-data-from-id (fn [_] {:config {:id "c1" :folder "Posteingang"}})
+                  server/start-folder-parse! (fn [_ id folder options] (reset! started [id folder options]) 42)]
+      (let [routes (server/make-routes {})
+            response (routes {:request-method :post :uri "/admin/connections/c1/controls"
+                              :params {:operation "rescan" :since-days "7" :move "on" :folder "Spam" :batch-size "5" :redirect-url "/admin/connections/c1"}
+                              :session {:authenticated true}})]
+        (is (= 303 (:status response)))
+        (is (= ["c1" "Posteingang" {:move? true :since-days 7}] @started)
+            "The folder is the one the live connection watches (a submitted folder or batch size is ignored); the period is passed on")
+        (let [[message] (server/take-messages!)]
+          (is (= :success (:type message)))
+          (is (str/includes? (:content message) "Only e-mails received in the last 7 days"))))))
+  (server/empty-global-messages)
+  (let [started (atom nil)]
+    (with-redefs [client/connection-data-from-id (fn [_] {:config {:id "c1"}})
+                  server/start-folder-parse! (fn [_ id folder options] (reset! started [id folder options]) 3)]
+      ((server/make-routes {}) {:request-method :post :uri "/admin/connections/c1/controls"
+                                :params {:operation "rescan" :since-days "2" :redirect-url "/admin/connections/c1"}
+                                :session {:authenticated true}})
+      (is (= ["c1" "INBOX" {:move? false :since-days 2}] @started)
+          "No configured folder means INBOX, and an unticked box means no move"))))
+
+(deftest parse-control-passes-the-since-days-field-on
+  (server/empty-global-messages)
+  (let [started (atom nil)]
+    (with-redefs [server/start-folder-parse! (fn [_ id folder options] (reset! started [id folder options]) 10)]
+      ((server/make-routes {}) {:request-method :post :uri "/admin/connections/c1/controls"
+                                :params {:operation "parse" :folder "Archive" :since-days "14" :batch-size "50" :redirect-url "/admin/connections/c1"}
+                                :session {:authenticated true}})
+      (is (= ["c1" "Archive" {:move? false :batch-size 50 :since-days 14 :assigned-category nil}] @started))
+      (server/empty-global-messages)
+      ((server/make-routes {}) {:request-method :post :uri "/admin/connections/c1/controls"
+                                :params {:operation "parse" :folder "Archive" :since-days "" :redirect-url "/admin/connections/c1"}
+                                :session {:authenticated true}})
+      (is (= ["c1" "Archive" {:move? false :batch-size nil :since-days nil :assigned-category nil}] @started)
+          "A blank period field keeps the whole-folder behaviour of before")))
+  (server/empty-global-messages))

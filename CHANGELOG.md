@@ -125,6 +125,14 @@ All notable changes to this project will be documented in this file.
 - Require a configurable login name in addition to the web UI password. Existing and new
   installations default to `root`; administrators can change the case-sensitive name under Login
   Settings after re-entering the current password.
+- Re-scan the e-mails of the last N days: the connection page has a "Re-scan Recent E-mails" box
+  (days required, default 7; "Move e-mails after categorization" ticked by default) that re-reads
+  the watched folder and processes only the e-mails Plauna does not know yet - for mail that landed
+  in the spam folder first and was moved back to the inbox. The "Parse E-mails from Folders" form
+  gets the same limit as an optional "Only e-mails of the last N days" field, combinable with the
+  batch size. The period is matched against the day the e-mail reached the server (IMAP received
+  date, whole calendar days, today included), which a move between folders keeps; the finished
+  run's message names the period.
 - Parse IMAP folders in batches: the "Parse E-mails from Folders" form has a "Batch size" field
   (default 100) that stops a run after that many newly saved e-mails. Already stored e-mails are
   recognised by their Message-ID alone, skipped without downloading the body again and do not count

@@ -39,6 +39,7 @@
   (move-email-to-category [this connection-id original-message original-folder category])
   (move-emails-by-id [this connection-id moves] "Move several stored messages ([{:message-id :category}]) into their category folders over ONE dedicated connection. Returns the per-move results in order: true, :not-found or false.")
   (prefetch-message-identities [this folder from to] "Best-effort bulk fetch of the envelopes of messages from..to (sequence numbers) so the following per-message identity lookups need no round trip.")
+  (message-numbers-since [this folder since] "The sequence numbers (ascending) of the messages of a folder opened for bulk reading that were RECEIVED on or after the calendar day since (a java.time.LocalDate). The server compares whole days and ignores the time of day. The received date (IMAP INTERNALDATE) is used rather than the Date header because moving a message between folders keeps it, while the Date header can be arbitrarily old or wrong.")
   (nth-email-from-folder [this n folder])
   (nth-message-id-from-folder [this n folder] "Return only the Message-ID of message number n in a folder (a cheap header fetch, without the body), or nil when the message has none.")
   (nth-message-identity-from-folder [this n folder] "Best-effort identification of message number n for the failure list: {:uid :message-id :subject}, each nil when it cannot be read.")

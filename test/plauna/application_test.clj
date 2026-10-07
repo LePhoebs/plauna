@@ -570,6 +570,128 @@
     (is (= {:folder "Empty" :message-count 0 :batch-size 100 :processed 0 :skipped 0 :skipped-elsewhere 0 :errors 0 :examined 0 :remaining 0}
            (await-summary summary)))))
 
+(defn- since-test-client
+  "A folder of message-count messages whose Message-IDs are id-<n>; a date search answers with
+   matching-numbers (ascending, like the real client) and remembers what it was asked in searched."
+  [message-count matching-numbers searched full-reads prefetches]
+  (reify int/EmailClient
+    (open-folder-for-bulk-read [_ _ _]
+      {:message-count message-count :connection-id "test-connection" :folder :test-folder})
+    (close-folder-for-bulk-read [_ _] nil)
+    (current-folder-name [_ folder] (str folder))
+    (message-numbers-since [_ folder since]
+      (is (= :test-folder folder) "The search runs on the folder object of the dedicated bulk-read handle")
+      (swap! searched conj since)
+      matching-numbers)
+    (prefetch-message-identities [_ _ from to]
+      (swap! prefetches conj [from to]))
+    (nth-message-id-from-folder [_ n _] (str "id-" n))
+    (nth-email-from-folder [_ n _]
+      (swap! full-reads conj n)
+      {:email {:header {:message-id (str "id-" n) :subject (str "email-" n)}} :message n})))
+
+(deftest read-emails-from-folder-since-days-reads-only-the-messages-found-by-the-date-search
+  (let [searched (atom [])
+        full-reads (atom [])
+        prefetches (atom [])
+        saved (atom [])
+        summary (promise)
+        ;; 3 and 4 were moved into the folder later, so they sit between messages the search does not match.
+        client (since-test-client 12 [3 4 10 11 12] searched full-reads prefetches)
+        analyzer (reify int/Analyzer
+                   (enrich-email [_ email] (assoc email :metadata {:category nil})))
+        db (reify int/DB
+             (email-exists? [_ message-id] (= "id-11" message-id))
+             (save-email [_ email] (swap! saved conj (-> email :header :message-id)))
+             (update-email-folder [_ _ _] nil))
+        today (java.time.LocalDate/now (java.time.ZoneId/of "UTC"))]
+    (is (= 12 (app/read-emails-from-folder {} "INBOX" {:move? false :since-days 7 :on-complete #(deliver summary %)}
+                                           {:client client :analyzer analyzer :db db :time-zone "UTC"}))
+        "The return value is still the number of messages in the folder")
+    (let [result (await-summary summary)]
+      (is (= [(.minusDays today 7)] @searched) "The search reaches back to the day 7 days ago (today included)")
+      (is (= [12 10 4 3] @full-reads) "Only matching messages are read, newest first; the known one (11) is skipped")
+      (is (= ["id-12" "id-10" "id-4" "id-3"] @saved))
+      (is (= #{[3 4] [10 12]} (set @prefetches)) "Envelopes are prefetched per run of consecutive numbers, never across the gap 5..9")
+      (is (= {:folder "INBOX" :message-count 12 :since-days 7 :processed 4 :skipped 1 :errors 0 :examined 5 :remaining 0}
+             (select-keys result [:folder :message-count :since-days :processed :skipped :errors :examined :remaining])))))
+  "A :since-days run examines exactly the messages the server reports as received in the period, wherever they sit in the folder.")
+
+(deftest read-emails-from-folder-since-days-honours-the-batch-size
+  (let [full-reads (atom [])
+        summary (promise)
+        client (since-test-client 20 [5 6 7 8 9] (atom []) full-reads (atom []))
+        analyzer (reify int/Analyzer
+                   (enrich-email [_ email] (assoc email :metadata {:category nil})))
+        db (reify int/DB
+             (email-exists? [_ _] false)
+             (save-email [_ _] nil)
+             (update-email-folder [_ _ _] nil))]
+    (app/read-emails-from-folder {} "INBOX" {:move? false :since-days 3 :batch-size 2 :on-complete #(deliver summary %)}
+                                 {:client client :analyzer analyzer :db db :time-zone "UTC"})
+    (let [result (await-summary summary)]
+      (is (= [9 8] @full-reads))
+      (is (= {:processed 2 :remaining 3 :since-days 3}
+             (select-keys result [:processed :remaining :since-days])))))
+  "The batch stops after N new e-mails inside the period and reports the rest of the period as not examined.")
+
+(deftest read-emails-from-folder-since-days-is-capped-by-limit
+  (let [full-reads (atom [])
+        summary (promise)
+        client (since-test-client 20 [5 6 7 8 9] (atom []) full-reads (atom []))
+        analyzer (reify int/Analyzer
+                   (enrich-email [_ email] (assoc email :metadata {:category nil})))
+        db (reify int/DB
+             (email-exists? [_ _] false)
+             (save-email [_ _] nil)
+             (update-email-folder [_ _ _] nil))]
+    (app/read-emails-from-folder {} "INBOX" {:move? false :since-days 3 :limit 2 :on-complete #(deliver summary %)}
+                                 {:client client :analyzer analyzer :db db :time-zone "UTC"})
+    (await-summary summary)
+    (is (= [9 8] @full-reads))))
+
+(deftest read-emails-from-folder-since-days-without-matches-completes-and-closes-the-connection
+  (let [closed (atom 0)
+        summary (promise)
+        client (reify int/EmailClient
+                 (open-folder-for-bulk-read [_ _ _] {:message-count 500 :connection-id "c" :folder :f})
+                 (close-folder-for-bulk-read [_ _] (swap! closed inc))
+                 (message-numbers-since [_ _ _] []))]
+    (is (= 500 (app/read-emails-from-folder {} "INBOX" {:since-days 7 :on-complete #(deliver summary %)}
+                                            {:client client :db (reify int/DB) :time-zone "UTC"})))
+    (is (= {:folder "INBOX" :message-count 500 :batch-size nil :since-days 7 :processed 0 :skipped 0 :skipped-elsewhere 0 :errors 0 :examined 0 :remaining 0}
+           (await-summary summary)) "A period without mail still reports completion, so the run never stays 'running'")
+    (is (= 1 @closed) "The dedicated connection is released"))
+  "Nothing received in the period: nothing to do, nothing left open.")
+
+(deftest read-emails-from-folder-since-days-skips-the-search-in-an-empty-folder
+  (let [summary (promise)
+        client (reify int/EmailClient
+                 (open-folder-for-bulk-read [_ _ _] {:message-count 0 :connection-id "c" :folder :f})
+                 (close-folder-for-bulk-read [_ _] nil)
+                 (message-numbers-since [_ _ _] (throw (ex-info "must not be called" {}))))]
+    (app/read-emails-from-folder {} "INBOX" {:since-days 7 :on-complete #(deliver summary %)}
+                                 {:client client :db (reify int/DB) :time-zone "UTC"})
+    (is (= 0 (:message-count (await-summary summary))))))
+
+(deftest read-emails-from-folder-since-days-releases-the-connection-when-the-search-fails
+  (let [closed (atom 0)
+        client (reify int/EmailClient
+                 (open-folder-for-bulk-read [_ _ _] {:message-count 5 :connection-id "c" :folder :f})
+                 (close-folder-for-bulk-read [_ _] (swap! closed inc))
+                 (message-numbers-since [_ _ _] (throw (ex-info "SEARCH failed" {}))))]
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"SEARCH failed"
+                          (app/read-emails-from-folder {} "INBOX" {:since-days 7}
+                                                       {:client client :db (reify int/DB) :time-zone "UTC"})))
+    (is (= 1 @closed) "The failed search must not leak the dedicated IMAP connection")))
+
+(deftest contiguous-runs-split-numbers-at-every-gap
+  (is (= [] (#'app/contiguous-runs [])))
+  (is (= [[7 7]] (#'app/contiguous-runs [7])))
+  (is (= [[3 5] [9 9] [12 13]] (#'app/contiguous-runs [13 3 4 5 9 12]))
+      "Unsorted input is handled; runs are ascending")
+  "Prefetching one FETCH per run keeps a date search with gaps from loading the envelopes in between.")
+
 (deftest fetch-emails-applies-date-filter
   (let [captured (atom nil)
         db (stub-emails-db #(reset! captured %) {:data [] :total 0})]

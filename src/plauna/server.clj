@@ -933,10 +933,23 @@
   ;; Form fields use SQL-style underscores while rows read from next.jdbc use kebab-case.
   (update params :client_secret keep-existing-when-blank (:client-secret existing)))
 
+(defn- watched-folder
+  "The folder the live monitor of connection id watches (INBOX when none is configured). It is read
+   from the live connection - the settings it connected with - and not from the stored row, which a
+   saved edit changes without reconnecting; stored-folder is only the answer for a connection that is
+   not registered. The page label and the one-click re-scan both use this, so they always agree."
+  [id stored-folder]
+  (client/monitor-folder-name (if-let [connection-data (client/connection-data-from-id id)]
+                                (get-in connection-data [:config :folder])
+                                stored-folder)))
+
 (defn connection-information [id]
   (let [conn (db/get-connection id)]
     ;; A stored password must never enter the template context, even though the password input is blank.
-    (dissoc (merge conn (client/monitor->map (get @client/connections (:id conn)))) :secret)))
+    ;; :monitored-folder is the folder the one-click "re-scan recent e-mails" form reads.
+    (-> (merge conn (client/monitor->map (get @client/connections (:id conn))))
+        (assoc :monitored-folder (watched-folder (:id conn) (:folder conn)))
+        (dissoc :secret))))
 (defn connection-folders [conn]
   (if (= true (:connected conn))
     (client/folders-in-store (:store (client/connection-data-from-id (:id conn))))
@@ -976,20 +989,39 @@
   (let [parsed (try (Integer/parseInt (st/trim (str value))) (catch NumberFormatException _ nil))]
     (when (and parsed (pos? parsed)) parsed)))
 
+(def max-since-days
+  "The longest look-back the folder parse accepts. Anything beyond it reaches back past the oldest
+   possible mail anyway; the cap keeps a typo from producing an absurd date."
+  36500)
+
+(defn parse-since-days
+  "Parse the optional 'only e-mails of the last N days' field of the folder parse form. Blank,
+   non-numeric or non-positive input means 'no time limit'; more than max-since-days is capped."
+  [value]
+  (some-> (parse-batch-size value) (min max-since-days)))
+
 (defn batch-emails-url [batch-id] (str "/emails?batch=" batch-id))
+
+(defn since-days-text
+  "'the last day' / 'the last 7 days': how a look-back of n days reads in a message."
+  [n]
+  (if (= 1 n) "the last day" (str "the last " n " days")))
 
 (defn folder-parse-summary-message
   "Turn the summary of a finished folder parse into a toast for the next page load. The remaining count
    tells the user whether another run of the same batch is needed; the link opens the e-mails this run
    saved so their detected categories can be checked right away."
-  [{:keys [folder processed skipped skipped-elsewhere errors remaining batch-size batch-id aborted]}]
+  [{:keys [folder processed skipped skipped-elsewhere errors remaining batch-size batch-id aborted since-days]}]
   (let [remaining-text (cond
                          (some? aborted) (str " The run was " aborted ". " remaining " e-mail(s) were not examined - check the connection and run the parse again.")
                          (pos? remaining) (str " " remaining " older e-mail(s) were not examined because the batch of " batch-size " was full - run the parse again to continue.")
+                         (and (some? batch-size) (some? since-days)) " All e-mails of that period have been examined; there is nothing left for another batch."
                          (some? batch-size) " The folder has been examined completely; there is nothing left for another batch."
                          :else "")]
     (cond-> {:type (if (or (pos? errors) (some? aborted)) :info :success)
-             :content (str "Finished parsing " folder ": " processed " new e-mail(s) saved and categorized, "
+             :content (str "Finished parsing " folder
+                           (when since-days (str " (e-mails received in " (since-days-text since-days) ")"))
+                           ": " processed " new e-mail(s) saved and categorized, "
                            skipped " already stored e-mail(s) skipped"
                            (when (pos? skipped)
                              (str " (" (- skipped (or skipped-elsewhere 0)) " saved by earlier runs of this folder and still waiting to be moved, "
@@ -1030,7 +1062,7 @@
    is stored when the background thread finishes and surfaced as a toast with a review link.
    Throws when the connection is not active or the folder cannot be opened - the route turns that
    into an alert."
-  [context id folder move? batch-size assigned-category]
+  [context id folder {:keys [move? batch-size assigned-category since-days]}]
   (let [conn-data (client/connection-data-from-id id)]
     (when (or (nil? conn-data) (not (client/connected? conn-data)))
       (throw (ex-info "The connection is not active. Connect first, then parse." {:type :inactive-connection})))
@@ -1039,10 +1071,51 @@
     (run-as-parse-batch! id folder batch-size
                          {:move? move?
                           :batch-size batch-size
+                          :since-days since-days
                           :assigned-category (:name assigned-category)
                           :assigned-category-id (:id assigned-category)}
                          folder-parse-summary-message
                          (fn [_ options] (app/read-emails-from-folder conn-data folder options context)))))
+
+(defn- start-parse-response
+  "Start a folder parse and answer the controls request with its outcome: a toast on the connection page,
+   an alert when the run could not be started (inactive connection, unknown folder, dropped store)."
+  [context request id folder {:keys [move? batch-size since-days] :as parse-options}]
+  (try
+    (let [message-count (start-folder-parse! context id folder parse-options)]
+      (redirect-request request {:type :success :content (str "Started parsing " folder " asynchronously. There are " message-count " emails in the folder. "
+                                                              (when since-days (str "Only e-mails received in " (since-days-text since-days) " are read; e-mails already stored are skipped. "))
+                                                              (if batch-size
+                                                                (str "Batch size: " batch-size " new e-mails; already stored e-mails are skipped and do not count. ")
+                                                                (if since-days "Batch size: unlimited. " "Batch size: unlimited (whole folder). "))
+                                                              "Move folders after parsing: " move?)}))
+    (catch clojure.lang.ExceptionInfo e
+      (redirect-request request {:type :alert :content (.getMessage e)}))
+    (catch Exception e
+      ;; Typically the folder does not exist or the store dropped: an alert, not an error page.
+      (t/log! {:level :warn :error e} ["Could not start parsing folder" folder "of connection" id])
+      (redirect-request request {:type :alert :content (str "Could not start parsing " folder ": " (.getMessage e))}))))
+
+(defn- parse-control-response [context request id]
+  (let [params (:params request)]
+    (start-parse-response context request id (:folder params)
+                          {:move? (some? (:move params))
+                           :batch-size (parse-batch-size (:batch-size params))
+                           :since-days (parse-since-days (:since-days params))
+                           :assigned-category (when-not (st/blank? (:assigned-category params)) (db/category-by-id (:assigned-category params)))})))
+
+(defn- rescan-control-response
+  "The one-click 're-scan recent e-mails': the watched folder of the live connection, restricted to the
+   last N days. Unlike the general parse form the number of days is required - a blank field must not
+   silently turn into a read of the whole folder."
+  [context request id]
+  (let [params (:params request)
+        since-days (parse-since-days (:since-days params))]
+    (if (nil? since-days)
+      (redirect-request request {:type :alert :content "Please enter how many days to look back: a whole number of at least 1."})
+      (start-parse-response context request id
+                            (watched-folder id nil)
+                            {:move? (some? (:move params)) :since-days since-days}))))
 
 (defn batch-move-url [batch-id] (str "/parse-batches/" batch-id "/move"))
 
@@ -1732,24 +1805,8 @@
                                             (client/forget-disconnected-cache!)
                                             (redirect-request request))
              (= "connect" operation) (connect-control-response context request id)
-             (= "parse" operation) (let [params (:params request)
-                                         folder (:folder params)
-                                         move (some? (:move params))
-                                         batch-size (parse-batch-size (:batch-size params))
-                                         assigned-category (when-not (st/blank? (:assigned-category params)) (db/category-by-id (:assigned-category params)))]
-                                     (try
-                                       (let [message-count (start-folder-parse! context id folder move batch-size assigned-category)]
-                                         (redirect-request request {:type :success :content (str "Started parsing " folder " asynchronously. There are " message-count " emails in the folder. "
-                                                                                                (if batch-size
-                                                                                                  (str "Batch size: " batch-size " new e-mails; already stored e-mails are skipped and do not count. ")
-                                                                                                  "Batch size: unlimited (whole folder). ")
-                                                                                                "Move folders after parsing: " move)}))
-                                       (catch clojure.lang.ExceptionInfo e
-                                         (redirect-request request {:type :alert :content (.getMessage e)}))
-                                       (catch Exception e
-                                         ;; Typically the folder does not exist or the store dropped: an alert, not an error page.
-                                         (t/log! {:level :warn :error e} ["Could not start parsing folder" folder "of connection" id])
-                                         (redirect-request request {:type :alert :content (str "Could not start parsing " folder ": " (.getMessage e))}))))
+             (= "parse" operation) (parse-control-response context request id)
+             (= "rescan" operation) (rescan-control-response context request id)
              :else (redirect-request request {:type :alert :content (str "Unknown connection operation: " operation)}))))
 
    (comp/POST "/metadata/languages" request
