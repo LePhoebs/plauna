@@ -333,3 +333,28 @@
   (is (= ["search-1"] (db/content-match-message-ids "needle_in")))
   (is (= [] (db/content-match-message-ids "needle%in")) "LIKE wildcards in the search text are literal")
   "The one-time body search resolution finds exactly the bodies containing the text")
+
+(deftest retry-until-connected-waits-for-the-database
+  (let [calls (atom 0)
+        pauses (atom [])
+        attempt! (fn [] (if (< (swap! calls inc) 4) (throw (ex-info "Connection refused" {})) :pool))]
+    (is (= :pool (db/retry-until-connected attempt! nil #(swap! pauses conj %) (constantly 0)))
+        "Without a timeout the attempts go on until the database answers")
+    (is (= 4 @calls))
+    (is (= [2000 4000 8000] @pauses) "The pause doubles after every failure")))
+
+(deftest retry-until-connected-caps-the-pause
+  (let [calls (atom 0)
+        pauses (atom [])
+        attempt! (fn [] (if (< (swap! calls inc) 7) (throw (ex-info "down" {})) :pool))]
+    (db/retry-until-connected attempt! nil #(swap! pauses conj %) (constantly 0))
+    (is (= [2000 4000 8000 16000 30000 30000] @pauses))))
+
+(deftest retry-until-connected-gives-up-after-the-timeout
+  (let [clock (atom 0)
+        calls (atom 0)
+        attempt! (fn [] (swap! calls inc) (throw (ex-info "still down" {})))]
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"still down"
+                          (db/retry-until-connected attempt! 10 #(swap! clock + %) (fn [] @clock)))
+        "The last failure is rethrown once the startup timeout is used up")
+    (is (= 3 @calls) "Attempts at 0 s, 2 s and 6 s; the next pause would end after the 10 s deadline")))

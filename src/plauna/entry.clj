@@ -201,7 +201,11 @@
   (register-shutdown-hook!)
   (let [application-config (files/parse-config-from-cli-arguments args)
         db-config (db-cfg/load-config)]
-    (db/setup-db! db-config)
+    (try (db/setup-db! db-config)
+         (catch Exception e
+           ;; Only reached with PLAUNA_DB_STARTUP_TIMEOUT set; exit so a restart policy can try again.
+           (t/log! {:level :error :error e} "MariaDB could not be reached within the startup timeout. Exiting.")
+           (System/exit 1)))
     (when (= :sqlite (db/db-type))
       (files/check-and-create-database-file))
     (let [context {:config application-config :client (ImapClient.) :db (SqliteDB.)

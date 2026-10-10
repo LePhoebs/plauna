@@ -26,7 +26,9 @@
   "Returns the effective DB config map, with env vars taking precedence over the file.
    Result is one of:
      {:type :sqlite}
-     {:type :mariadb :host ... :port ... :name ... :user ... :password ...}"
+     {:type :mariadb :host ... :port ... :name ... :user ... :password ... :startup-timeout-seconds ...}
+   :startup-timeout-seconds (PLAUNA_DB_STARTUP_TIMEOUT) limits how long startup waits for MariaDB;
+   nil means wait indefinitely."
   []
   (let [file-cfg  (or (read-file) {})
         db-type   (or (some-> (env-str "PLAUNA_DB_TYPE") keyword) (:type file-cfg) :sqlite)]
@@ -36,7 +38,9 @@
        :port     (or (some-> (env-str "PLAUNA_DB_PORT") Integer/parseInt) (:port file-cfg) 3306)
        :name     (or (env-str "PLAUNA_DB_NAME")     (:name file-cfg)     "plauna")
        :user     (or (env-str "PLAUNA_DB_USER")     (:user file-cfg)     "plauna")
-       :password (or (env-str "PLAUNA_DB_PASSWORD") (:password file-cfg) "")}
+       :password (or (env-str "PLAUNA_DB_PASSWORD") (:password file-cfg) "")
+       :startup-timeout-seconds (or (some-> (env-str "PLAUNA_DB_STARTUP_TIMEOUT") Integer/parseInt)
+                                    (:startup-timeout-seconds file-cfg))}
       {:type :sqlite})))
 
 (defn save-config!

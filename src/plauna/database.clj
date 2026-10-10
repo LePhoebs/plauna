@@ -32,28 +32,58 @@
   (str "jdbc:sqlite:" (files/path-to-db-file)
        "?busy_timeout=30000&journal_mode=WAL&synchronous=NORMAL&foreign_keys=true"))
 
+(def mariadb-retry-initial-ms
+  "Pause after the first failed attempt to reach MariaDB at startup. It doubles after every further
+   failure up to mariadb-retry-max-ms."
+  2000)
+
+(def mariadb-retry-max-ms 30000)
+
+(defn retry-until-connected
+  "Call attempt! until it returns a value instead of throwing, pausing between failures with an
+   exponential back-off. timeout-seconds nil (or not positive) waits indefinitely; otherwise the last
+   failure is rethrown once the time is up. sleep! and now-ms are injectable for tests."
+  ([attempt! timeout-seconds] (retry-until-connected attempt! timeout-seconds #(Thread/sleep (long %)) #(System/currentTimeMillis)))
+  ([attempt! timeout-seconds sleep! now-ms]
+   (let [deadline (when (and timeout-seconds (pos? timeout-seconds))
+                    (+ (now-ms) (* 1000 (long timeout-seconds))))]
+     (loop [attempt 1
+            pause mariadb-retry-initial-ms]
+       (let [result (try {:value (attempt!)}
+                         (catch Exception e {:error e}))]
+         (if (contains? result :value)
+           (:value result)
+           (let [^Exception e (:error result)]
+             (if (and deadline (>= (+ (now-ms) pause) deadline))
+               (throw e)
+               (do (t/log! :warn ["MariaDB is not reachable yet (attempt" attempt "):" (.getMessage e)
+                                  "- retrying in" (quot pause 1000) "s. Plauna does not start before the database is available."])
+                   (sleep! pause)
+                   (recur (inc attempt) (min mariadb-retry-max-ms (* 2 pause))))))))))))
+
+(defn- open-mariadb-pool ^HikariDataSource [{:keys [host port name user password]}]
+  (let [hcfg (HikariConfig.)]
+    (.setJdbcUrl hcfg (str "jdbc:mariadb://" host ":" port "/" name))
+    (.setUsername hcfg user)
+    (.setPassword hcfg (or password ""))
+    (.setMaximumPoolSize hcfg 10)
+    (.setMinimumIdle hcfg 2)
+    (.setConnectionTimeout hcfg 30000)
+    (.setValidationTimeout hcfg 5000)
+    ;; The constructor opens a first connection and throws when the server cannot be reached.
+    (HikariDataSource. hcfg)))
+
 (defn setup-db!
   "Initialise the datasource for the given db-config map.
    Must be called once at startup before any other DB function.
-   Falls back to SQLite if MariaDB connection fails."
-  [{:keys [type host port name user password] :as cfg}]
+   A configured MariaDB that cannot be reached yet (e.g. its container is still starting after a
+   reboot) is retried until it answers - or until :startup-timeout-seconds, after which this throws.
+   It never falls back to SQLite: that would silently serve an old, unrelated data set."
+  [{:keys [type host port name startup-timeout-seconds] :as cfg}]
   (reset! active-db-type type)
   (when (= :mariadb type)
-    (try
-      (let [hcfg (HikariConfig.)]
-        (.setJdbcUrl hcfg (str "jdbc:mariadb://" host ":" port "/" name))
-        (.setUsername hcfg user)
-        (.setPassword hcfg (or password ""))
-        (.setMaximumPoolSize hcfg 10)
-        (.setMinimumIdle hcfg 2)
-        (.setConnectionTimeout hcfg 30000)
-        (.setValidationTimeout hcfg 5000)
-        (reset! mariadb-pool (HikariDataSource. hcfg))
-        (t/log! :info ["Connected to MariaDB at" (str host ":" port "/" name)]))
-      (catch Exception e
-        (t/log! :error ["Failed to initialise MariaDB connection pool, falling back to SQLite:" (.getMessage e)])
-        (reset! active-db-type :sqlite)
-        (reset! mariadb-pool nil))))
+    (reset! mariadb-pool (retry-until-connected #(open-mariadb-pool cfg) startup-timeout-seconds))
+    (t/log! :info ["Connected to MariaDB at" (str host ":" port "/" name)]))
   cfg)
 
 (defn ds
