@@ -96,6 +96,13 @@
 (defn- table-count [ds table]
   (long (or (:count (jdbc/execute-one! ds [(str "SELECT COUNT(*) AS count FROM " table)] {:builder-fn as-unqualified-lower-maps})) 0)))
 
+(defn table-counts
+  "Row counts of the given tables in ds, as {table count}. A table that cannot be counted (missing in
+   an old schema) maps to nil."
+  [ds tables]
+  (into {} (for [table tables]
+             [table (try (table-count ds table) (catch Exception _ nil))])))
+
 (defn- row-chars [row]
   (reduce + 0 (map #(count (str %)) (vals row))))
 

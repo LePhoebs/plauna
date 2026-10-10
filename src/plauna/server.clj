@@ -980,6 +980,78 @@
     (client/disconnect connection-data))
   (connect-control-response context request id))
 
+(def sqlite-delete-confirmation "Delete SQLite")
+
+(def ^:private compared-tables
+  "Tables whose row counts the database page shows for the old SQLite file next to MariaDB, so the
+   user can see that the SQLite file is an outdated copy before deleting it."
+  [["connections" "IMAP connections"] ["headers" "E-mails"] ["categories" "Categories"]])
+
+(defn- format-bytes [bytes]
+  (cond (>= bytes (* 1024 1024 1024)) (format "%.1f GB" (/ bytes 1024.0 1024.0 1024.0))
+        (>= bytes (* 1024 1024)) (format "%.1f MB" (/ bytes 1024.0 1024.0))
+        (>= bytes 1024) (format "%.1f KB" (/ bytes 1024.0))
+        :else (str bytes " B")))
+
+(defn- sqlite-file-exists? []
+  (.exists (clojure.java.io/file (files/path-to-db-file))))
+
+(defn- database-status []
+  (if (= :mariadb (db/db-type))
+    (let [cfg (db-cfg/load-config)]
+      {:type "mariadb" :host (:host cfg) :port (:port cfg) :name (:name cfg) :user (:user cfg)})
+    {:type "sqlite" :path (files/path-to-db-file)}))
+
+(defn old-sqlite-info
+  "What the database page shows about a SQLite file left behind after switching to MariaDB, or nil
+   when SQLite is the active database or no file exists."
+  []
+  (when (and (= :mariadb (db/db-type)) (sqlite-file-exists?))
+    (let [tables (map first compared-tables)
+          sqlite-counts (db-mig/table-counts (db-mig/sqlite-ds) tables)
+          mariadb-counts (db-mig/table-counts (db/ds) tables)]
+      {:path (files/path-to-db-file)
+       :size (format-bytes (files/database-files-size))
+       :counts (mapv (fn [[table label]] {:label label
+                                          :sqlite (or (get sqlite-counts table) "–")
+                                          :mariadb (or (get mariadb-counts table) "–")})
+                     compared-tables)})))
+
+(defn delete-old-sqlite!
+  "Delete the SQLite file left behind after the switch to MariaDB. Refused while SQLite is the active
+   database and without the exact confirmation text. Returns the message for the database page."
+  [confirmation]
+  (cond
+    (not= :mariadb (db/db-type))
+    {:type "error" :text "SQLite is the active database; it cannot be deleted."}
+
+    (not= sqlite-delete-confirmation (some-> confirmation st/trim))
+    {:type "error" :text (str "Deletion not confirmed. Enter ‘" sqlite-delete-confirmation "’ exactly.")}
+
+    (not (sqlite-file-exists?))
+    {:type "error" :text "There is no SQLite file to delete."}
+
+    :else
+    (try (files/delete-database-file)
+         (t/log! :info ["Deleted the old SQLite database" (files/path-to-db-file) "on request."])
+         {:type "success" :text "The old SQLite database was deleted."}
+         (catch Exception e
+           (t/log! {:level :error :error e} "Could not delete the old SQLite database.")
+           {:type "error" :text (str "Could not delete the SQLite file: " (.getMessage e))}))))
+
+(defn- render-database-page [extra]
+  (let [cfg (db-cfg/load-config)]
+    (success-html-with-body
+     (selmer/render-file "admin-database.html"
+                         (merge {:db-status (database-status)
+                                 :saved-config (when (= :mariadb (:type cfg)) (dissoc cfg :password))
+                                 :sqlite-exists (sqlite-file-exists?)
+                                 :old-sqlite (old-sqlite-info)
+                                 :sqlite-delete-confirmation sqlite-delete-confirmation
+                                 :header "Database"
+                                 :active-nav :admin}
+                                extra)))))
+
 (defn empty-global-messages [] (take-messages!))
 
 (defn parse-batch-size
@@ -1344,19 +1416,7 @@
         :body    dump}))
 
    (comp/GET "/admin/database" {}
-     (let [cfg        (db-cfg/load-config)
-           saved      (when (= :mariadb (:type cfg)) (dissoc cfg :password))
-           db-status  (if (= :mariadb (db/db-type))
-                        {:type "mariadb" :host (:host cfg) :port (:port cfg)
-                         :name (:name cfg) :user (:user cfg)}
-                        {:type "sqlite" :path (files/path-to-db-file)})]
-       (success-html-with-body
-        (selmer/render-file "admin-database.html"
-                            {:db-status db-status
-                             :saved-config saved
-                             :sqlite-exists (.exists (clojure.java.io/file (files/path-to-db-file)))
-                             :header "Database"
-                             :active-nav :admin}))))
+     (render-database-page {}))
 
    (comp/POST "/admin/database/config" request
      (let [{:keys [host port name user password]} (:params request)
@@ -1379,42 +1439,26 @@
                 :user     user
                 :password (if (st/blank? password) (:password existing "") password)}
            result (db-mig/test-connection! cfg)]
-       (success-html-with-body
-        (selmer/render-file "admin-database.html"
-                            {:db-status (if (= :mariadb (db/db-type))
-                                          {:type "mariadb" :host (:host existing) :port (:port existing)
-                                           :name (:name existing) :user (:user existing)}
-                                          {:type "sqlite" :path (files/path-to-db-file)})
-                             :saved-config (dissoc (db-cfg/load-config) :password)
-                             :sqlite-exists (.exists (clojure.java.io/file (files/path-to-db-file)))
-                             :message (if (:ok result)
-                                        {:type "success" :text "Connection successful!"}
-                                        {:type "error"   :text (str "Connection failed: " (:error result))})
-                             :header "Database"
-                             :active-nav :admin}))))
+       (render-database-page {:saved-config (dissoc existing :password)
+                              :message (if (:ok result)
+                                         {:type "success" :text "Connection successful!"}
+                                         {:type "error"   :text (str "Connection failed: " (:error result))})})))
 
    (comp/POST "/admin/database/migrate" {}
      (let [result (db-mig/migrate!)]
-       (success-html-with-body
-        (selmer/render-file "admin-database.html"
-                            {:db-status (if (= :mariadb (db/db-type))
-                                          (let [cfg (db-cfg/load-config)]
-                                            {:type "mariadb" :host (:host cfg) :port (:port cfg)
-                                             :name (:name cfg) :user (:user cfg)})
-                                          {:type "sqlite" :path (files/path-to-db-file)})
-                             :saved-config (dissoc (db-cfg/load-config) :password)
-                             :sqlite-exists (.exists (clojure.java.io/file (files/path-to-db-file)))
-                             :message (cond
-                                        (not (:ok result))
-                                        {:type "error" :text (str "Migration failed: " (:error result))}
-                                        (pos? (:skipped-total result 0))
-                                        {:type "error" :text (str "Migration finished with " (:skipped-total result) " skipped row(s) — check the logs for details. Do not restart until the issue is resolved.")}
-                                        :else
-                                        {:type "success" :text "Migration complete with no losses. Save the configuration above and restart Plauna to switch to MariaDB."})
-                             :migration-counts (when (:ok result)
-                                                 (map (fn [[t v]] {:table t :inserted (:inserted v) :skipped (:skipped v) :total (:total v)}) (:counts result)))
-                             :header "Database"
-                             :active-nav :admin}))))
+       (render-database-page {:saved-config (dissoc (db-cfg/load-config) :password)
+                              :message (cond
+                                         (not (:ok result))
+                                         {:type "error" :text (str "Migration failed: " (:error result))}
+                                         (pos? (:skipped-total result 0))
+                                         {:type "error" :text (str "Migration finished with " (:skipped-total result) " skipped row(s) — check the logs for details. Do not restart until the issue is resolved.")}
+                                         :else
+                                         {:type "success" :text "Migration complete with no losses. Save the configuration above and restart Plauna to switch to MariaDB."})
+                              :migration-counts (when (:ok result)
+                                                  (map (fn [[t v]] {:table t :inserted (:inserted v) :skipped (:skipped v) :total (:total v)}) (:counts result)))})))
+
+   (comp/POST "/admin/database/delete-sqlite" request
+     (render-database-page {:message (delete-old-sqlite! (get-in request [:params :confirmation]))}))
 
    (comp/GET "/admin/password" {}
      (success-html-with-body

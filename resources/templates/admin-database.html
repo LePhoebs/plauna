@@ -72,7 +72,8 @@
       <h3 class="card-title">Migrate SQLite &rarr; MariaDB</h3>
       <p class="mb-3 text-sm opacity-80">
         Copies all data from the local SQLite file to the configured MariaDB database.
-        The SQLite file is not deleted. Migration is idempotent — running it again skips
+        The SQLite file is not deleted; once Plauna runs on MariaDB, this page offers to delete it.
+        Migration is idempotent — running it again skips
         duplicate rows. After a successful migration, save the config above and restart Plauna.
       </p>
       {% if sqlite-exists %}
@@ -100,6 +101,49 @@
       {% endif %}
     </div>
   </div>
+
+  {% if old-sqlite %}
+  <!-- Old SQLite file -->
+  <div class="card card-border border-warning">
+    <div class="card-body">
+      <h3 class="card-title">Old SQLite Database</h3>
+      <p class="mb-3 text-sm opacity-80">
+        Plauna uses MariaDB, but the SQLite file from before the migration still exists
+        (<code>{{old-sqlite.path}}</code>, {{old-sqlite.size}}). Plauna no longer reads it. Once you have
+        checked that everything arrived in MariaDB, you can delete it to free the space.
+        This cannot be undone.
+      </p>
+      <table class="table table-sm w-auto mb-3">
+        <thead>
+          <tr><th></th><th class="text-right">SQLite (old)</th><th class="text-right">MariaDB (active)</th></tr>
+        </thead>
+        <tbody>
+          {% for row in old-sqlite.counts %}
+          <tr>
+            <td>{{row.label}}</td>
+            <td class="text-right">{{row.sqlite}}</td>
+            <td class="text-right">{{row.mariadb}}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <form action="/admin/database/delete-sqlite" method="post" class="flex flex-col gap-3 max-w-md">
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">Enter “{{sqlite-delete-confirmation}}” to confirm</legend>
+          <input id="sqlite-delete-confirmation" class="input" type="text" name="confirmation" autocomplete="off" />
+        </fieldset>
+        <div>
+          <button id="sqlite-delete-submit" class="btn btn-error" type="submit" disabled>Delete SQLite file</button>
+        </div>
+      </form>
+      <script>
+        document.getElementById('sqlite-delete-confirmation').addEventListener('input', (e) => {
+          document.getElementById('sqlite-delete-submit').disabled = e.target.value.trim() !== '{{sqlite-delete-confirmation}}';
+        });
+      </script>
+    </div>
+  </div>
+  {% endif %}
 
 </div>
 

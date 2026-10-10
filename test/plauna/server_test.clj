@@ -10,7 +10,8 @@
             [plauna.database :as db]
             [plauna.files :as files]
             [plauna.preferences :as preferences]
-            [plauna.server :as server])
+            [plauna.server :as server]
+            [next.jdbc])
   (:import [java.time Instant LocalTime ZoneId ZonedDateTime]
            [java.util.concurrent ScheduledExecutorService TimeUnit]))
 
@@ -861,3 +862,43 @@
       (is (= ["c1" "Archive" {:move? false :batch-size nil :since-days nil :assigned-category nil}] @started)
           "A blank period field keeps the whole-folder behaviour of before")))
   (server/empty-global-messages))
+
+(defn- temp-dir []
+  (str (java.nio.file.Files/createTempDirectory "plauna-sqlite-test" (make-array java.nio.file.attribute.FileAttribute 0))))
+
+(defn- sqlite-with-connections [path n]
+  (let [ds (next.jdbc/get-datasource {:jdbcUrl (str "jdbc:sqlite:" path)})]
+    (next.jdbc/execute! ds ["CREATE TABLE connections (id TEXT)"])
+    (dotimes [i n] (next.jdbc/execute! ds ["INSERT INTO connections VALUES (?)" (str i)]))
+    ds))
+
+(deftest old-sqlite-is-only-offered-while-mariadb-is-active
+  (let [dir (temp-dir)]
+    (with-redefs [files/file-dir (constantly dir)]
+      (sqlite-with-connections (files/path-to-db-file) 1)
+      (with-redefs [db/db-type (constantly :sqlite)]
+        (is (nil? (server/old-sqlite-info)) "The active SQLite database is never offered for deletion"))
+      (let [active-ds (sqlite-with-connections (str dir "/active.db") 3)]
+        (with-redefs [db/db-type (constantly :mariadb)
+                      db/ds (constantly active-ds)]
+          (let [info (server/old-sqlite-info)]
+            (is (= (files/path-to-db-file) (:path info)))
+            (is (= {:label "IMAP connections" :sqlite 1 :mariadb 3} (first (:counts info)))
+                "The page compares the outdated SQLite copy with the active database")
+            (is (= "–" (:sqlite (second (:counts info)))) "A table the file does not have is shown as a dash")))))))
+
+(deftest delete-old-sqlite-requires-mariadb-and-confirmation
+  (let [dir (temp-dir)]
+    (with-redefs [files/file-dir (constantly dir)]
+      (sqlite-with-connections (files/path-to-db-file) 1)
+      (let [db-file (java.io.File. ^String (files/path-to-db-file))]
+        (with-redefs [db/db-type (constantly :sqlite)]
+          (is (= "error" (:type (server/delete-old-sqlite! server/sqlite-delete-confirmation))))
+          (is (.exists db-file) "The active SQLite database must never be deleted"))
+        (with-redefs [db/db-type (constantly :mariadb)]
+          (is (= "error" (:type (server/delete-old-sqlite! "delete"))))
+          (is (.exists db-file) "Without the exact confirmation nothing is deleted")
+          (is (= "success" (:type (server/delete-old-sqlite! " Delete SQLite "))))
+          (is (not (.exists db-file)))
+          (is (= "error" (:type (server/delete-old-sqlite! server/sqlite-delete-confirmation)))
+              "A second request reports that there is nothing left to delete"))))))

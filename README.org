@@ -558,6 +558,7 @@ If you are already running Plauna on SQLite and want to switch:
 3. Click *Save Configuration* — this writes =db-config.edn= to the data directory.
 4. Click *Start Migration* — Plauna will create the schema on MariaDB and copy all rows from SQLite. The SQLite file is not deleted.
 5. Restart Plauna. It will now use MariaDB.
+6. Optional: once Plauna runs on MariaDB, the "Database" page shows the SQLite file left behind, its size and a comparison of connections, e-mails and categories in SQLite and MariaDB. After checking that everything arrived, enter =Delete SQLite= to delete the file (including its WAL files). Plauna never reads it again, and deleting it cannot be undone. The option only appears while MariaDB is the active database.
 
 On the first start after upgrading to a version with FULLTEXT support, Flyway creates =idx_bodies_content_fulltext= on =bodies(content)= automatically. Creating the first FULLTEXT index can rebuild a large existing =bodies= table once, so that startup may take longer than usual. No separate search service or manually maintained index is required.
 

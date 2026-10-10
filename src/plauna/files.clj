@@ -37,16 +37,27 @@
       (do (.mkdirs (io/file (file-dir)))
           (.createNewFile db-file)))))
 
+(defn path-to-db-file []
+  (str (io/file (file-dir) database-file)))
+
+(defn- database-files
+  "The SQLite file and its WAL/shared-memory companions, as far as they exist."
+  []
+  (let [db-file (path-to-db-file)]
+    (filter #(.exists ^File %) (map io/file [db-file (str db-file "-wal") (str db-file "-shm")]))))
+
+(defn database-files-size
+  "Bytes occupied by the SQLite file together with its WAL/shared-memory companions."
+  []
+  (reduce + 0 (map #(.length ^File %) (database-files))))
+
 (defn delete-database-file []
-  (let [db-file (io/file (file-dir) database-file)]
+  (let [db-file (io/file (path-to-db-file))]
     (if (.exists db-file)
       (do (io/delete-file db-file)
           (io/delete-file (str db-file "-shm") true)
           (io/delete-file (str db-file "-wal") true))
       nil)))
-
-(defn path-to-db-file []
-  (str (io/file (file-dir) database-file)))
 
 (defn training-file [language]
   (let [file (io/file (file-dir) (str "train-" language ".train"))]
