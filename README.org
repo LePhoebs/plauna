@@ -502,6 +502,7 @@ PLAUNA_DB_NAME=plauna
 PLAUNA_DB_USER=plauna
 PLAUNA_DB_PASSWORD=secret
 PLAUNA_DB_STARTUP_TIMEOUT=600  # optional: give up after this many seconds (default: wait indefinitely)
+PLAUNA_DB_SSL_MODE=disable     # optional: TLS to MariaDB, see below (default: disable)
 #+end_src
 
 Example docker-compose snippet:
@@ -548,6 +549,8 @@ volumes:
 Place the Compose file in the repository root and start it with =docker compose up --build -d=. The =--build= flag ensures that the Plauna image is created locally from the current source tree.
 
 The health check prevents Plauna from starting before MariaDB is ready. Without it Plauna still works: when the configured MariaDB server cannot be reached during startup (for example because both containers start at the same time after a NAS reboot), Plauna waits and retries with a growing pause of up to 30 seconds, logging every attempt, and only starts once the database answers. It never falls back to SQLite, which would silently show an old or empty data set. Set =PLAUNA_DB_STARTUP_TIMEOUT= to stop waiting after that many seconds; Plauna then exits with status 1 so a container restart policy can start it again.
+
+=PLAUNA_DB_SSL_MODE= (or =:ssl-mode= in =db-config.edn=) sets the MariaDB driver's =sslMode=. It defaults to =disable=: an unencrypted connection, which is what Plauna always used and what a MariaDB container on the same Docker network needs no setup for. Use =trust= to encrypt without checking the certificate, or =verify-ca= / =verify-full= to encrypt and verify it (MariaDB 11.4 and newer can be verified without a CA, through the password, when the user has one). The value is passed to the driver unchanged; an unknown value makes the connection fail at startup.
 
 *** Via the web UI
 

@@ -61,9 +61,20 @@
                    (sleep! pause)
                    (recur (inc attempt) (min mariadb-retry-max-ms (* 2 pause))))))))))))
 
-(defn- open-mariadb-pool ^HikariDataSource [{:keys [host port name user password]}]
+(def default-mariadb-ssl-mode
+  "The MariaDB driver's sslMode when none is configured. Driver 4 defaults to verify-full (TLS with a
+   certificate a trusted CA signed), which fails against a server without TLS or with a self-signed
+   certificate - the usual MariaDB container next to Plauna. 'disable' keeps the behaviour of driver 3;
+   set PLAUNA_DB_SSL_MODE to trust, verify-ca or verify-full to encrypt the connection."
+  "disable")
+
+(defn mariadb-jdbc-url [{:keys [host port name ssl-mode]}]
+  (str "jdbc:mariadb://" host ":" port "/" name
+       "?sslMode=" (if (string/blank? ssl-mode) default-mariadb-ssl-mode (string/trim ssl-mode))))
+
+(defn- open-mariadb-pool ^HikariDataSource [{:keys [user password] :as cfg}]
   (let [hcfg (HikariConfig.)]
-    (.setJdbcUrl hcfg (str "jdbc:mariadb://" host ":" port "/" name))
+    (.setJdbcUrl hcfg (mariadb-jdbc-url cfg))
     (.setUsername hcfg user)
     (.setPassword hcfg (or password ""))
     (.setMaximumPoolSize hcfg 10)

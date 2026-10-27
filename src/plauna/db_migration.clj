@@ -38,9 +38,9 @@
    (jdbc/get-datasource
     {:jdbcUrl (str "jdbc:sqlite:" path "?busy_timeout=10000&journal_mode=WAL")})))
 
-(defn- mariadb-ds ^HikariDataSource [{:keys [host port name user password]}]
+(defn- mariadb-ds ^HikariDataSource [{:keys [user password] :as cfg}]
   (let [hcfg (HikariConfig.)]
-    (.setJdbcUrl hcfg (str "jdbc:mariadb://" host ":" port "/" name))
+    (.setJdbcUrl hcfg (db/mariadb-jdbc-url cfg))
     (.setUsername hcfg user)
     (.setPassword hcfg (or password ""))
     (.setMaximumPoolSize hcfg 5)

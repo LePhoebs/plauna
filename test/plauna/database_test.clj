@@ -358,3 +358,12 @@
                           (db/retry-until-connected attempt! 10 #(swap! clock + %) (fn [] @clock)))
         "The last failure is rethrown once the startup timeout is used up")
     (is (= 3 @calls) "Attempts at 0 s, 2 s and 6 s; the next pause would end after the 10 s deadline")))
+
+(deftest mariadb-url-keeps-the-unencrypted-default-of-driver-3-unless-configured
+  (is (= "jdbc:mariadb://db:3306/plauna?sslMode=disable"
+         (db/mariadb-jdbc-url {:host "db" :port 3306 :name "plauna"}))
+      "Driver 4 would otherwise require a CA-verified TLS certificate")
+  (is (= "jdbc:mariadb://db:3306/plauna?sslMode=disable"
+         (db/mariadb-jdbc-url {:host "db" :port 3306 :name "plauna" :ssl-mode "  "})))
+  (is (= "jdbc:mariadb://db:3306/plauna?sslMode=verify-full"
+         (db/mariadb-jdbc-url {:host "db" :port 3306 :name "plauna" :ssl-mode " verify-full "}))))

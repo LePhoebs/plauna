@@ -89,6 +89,15 @@ All notable changes to this project will be documented in this file.
 
 ### 🛡️ Hardening
 
+- All dependencies brought up to date, among them Clojure 1.12.6, core.async 1.9.865, telemere 1.4.0,
+  next.jdbc 1.4.72, HoneySQL 2.8.85, sqlite-jdbc 3.53.4.0, Flyway 13.11.1, ring 1.15.6 and selmer
+  1.13.5. The MariaDB driver moves to 4.0.0 and HikariCP to 7.1.0. Driver 4 switches TLS on by default
+  and requires a CA-verified certificate, which fails against a MariaDB without TLS (anything before
+  11.4 unless configured); Plauna therefore keeps connecting unencrypted unless `PLAUNA_DB_SSL_MODE`
+  (or `:ssl-mode` in `db-config.edn`) asks for TLS.
+- This includes the updates upstream made for known vulnerabilities: OpenNLP (critical CVEs), the Jetty
+  server (pinned to 12.1.14), jsoup, jackson-core and Flyway 13 (with flyway-mysql). Existing SQLite and
+  MariaDB databases migrated by Flyway 11 are taken over unchanged.
 - IMAP connections get a connect timeout (15 s) and a longer read timeout (30 s instead of 5 s, so a
   slow body fetch no longer counts as a dead connection). STARTTLS is required when selected instead
   of silently falling back to plaintext.
