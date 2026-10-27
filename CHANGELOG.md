@@ -95,6 +95,10 @@ All notable changes to this project will be documented in this file.
   and requires a CA-verified certificate, which fails against a MariaDB without TLS (anything before
   11.4 unless configured); Plauna therefore keeps connecting unencrypted unless `PLAUNA_DB_SSL_MODE`
   (or `:ssl-mode` in `db-config.edn`) asks for TLS.
+- Frontend packages updated: Tailwind CSS 4.3.3, daisyUI 5.7.50, Vega 6.4.0, Vega-Lite 6.5.0 and
+  Vega-Embed 7.3.0. Pages keep their look: selects stay classic (daisyUI 5.1+ would otherwise size
+  them to the selected option in Chromium browsers), the connection and OAuth provider tables keep
+  their desktop cell padding, and the e-mail list's pagination buttons keep their rounded corners.
 - This includes the updates upstream made for known vulnerabilities: OpenNLP (critical CVEs), the Jetty
   server (pinned to 12.1.14), jsoup, jackson-core and Flyway 13 (with flyway-mysql). Existing SQLite and
   MariaDB databases migrated by Flyway 11 are taken over unchanged.

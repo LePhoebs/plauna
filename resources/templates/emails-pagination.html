@@ -6,32 +6,32 @@
       <form action="/emails" method="get">
         {% include "emails-pagination-fields.html" %}
         <input type="hidden" name="page" value="1" />
-        <button class="btn join-item text-xs lg:text-md text-nowrap">&laquo; First</button>
+        <button class="btn text-xs lg:text-md text-nowrap">&laquo; First</button>
       </form>
       <form action="/emails" method="get">
         {% include "emails-pagination-fields.html" %}
         <input type="hidden" name="page" value="{{page.page|add:-1}}" />
-        <button class="btn join-item text-xs lg:text-md text-nowrap">&lsaquo; Back</button>
+        <button class="btn text-xs lg:text-md text-nowrap">&lsaquo; Back</button>
       </form>
       {% else %}
-      <button disabled class="btn join-item text-xs lg:text-md text-nowrap">&laquo; First</button>
-      <button disabled class="btn join-item text-xs lg:text-md text-nowrap">&lsaquo; Back</button>
+      <button disabled class="btn text-xs lg:text-md text-nowrap">&laquo; First</button>
+      <button disabled class="btn text-xs lg:text-md text-nowrap">&lsaquo; Back</button>
       {% endif %}
       <p class="text-sm lg:text-md text-nowrap mx-2">{{page.page}} of {{page.total-pages}}</p>
       {% if page.page < page.total-pages %}
       <form action="/emails" method="get">
         {% include "emails-pagination-fields.html" %}
         <input type="hidden" name="page" value="{{page.page|add:1}}" />
-        <button class="btn join-item text-xs lg:text-md text-nowrap">Next &rsaquo;</button>
+        <button class="btn text-xs lg:text-md text-nowrap">Next &rsaquo;</button>
       </form>
       <form action="/emails" method="get">
         {% include "emails-pagination-fields.html" %}
         <input type="hidden" name="page" value="{{page.total-pages}}" />
-        <button class="btn join-item text-xs lg:text-md text-nowrap">Last &raquo;</button>
+        <button class="btn text-xs lg:text-md text-nowrap">Last &raquo;</button>
       </form>
       {% else %}
-      <button disabled class="btn join-item text-xs lg:text-md text-nowrap">Next &rsaquo;</button>
-      <button disabled class="btn join-item text-xs lg:text-md text-nowrap">Last &raquo;</button>
+      <button disabled class="btn text-xs lg:text-md text-nowrap">Next &rsaquo;</button>
+      <button disabled class="btn text-xs lg:text-md text-nowrap">Last &raquo;</button>
       {% endif %}
     </div>
   </div>

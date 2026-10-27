@@ -5,3 +5,11 @@
 @plugin "daisyui" {
   themes: autumn --default;
 }
+
+/* Since 5.1 daisyUI renders .select with the customizable `appearance: base-select` where the browser
+   supports it (Chromium). Such a select is as wide as its CURRENT option, so filter selects shrink to
+   "All" and jump in width on every change. Keep the classic select with the browser's own picker. */
+.select,
+.select select {
+  appearance: none;
+}
