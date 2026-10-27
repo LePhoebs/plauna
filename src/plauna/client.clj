@@ -11,7 +11,7 @@
    [clojure.core.async :as async])
   (:import
    (plauna.core.email Header Body-Part Participant Email)
-   (jakarta.mail Store Session Folder BodyPart Multipart Message Message$RecipientType Flags$Flag AuthenticationFailedException MessagingException FetchProfile FetchProfile$Item)
+   (jakarta.mail Store Session Folder BodyPart Multipart Message Message$RecipientType Flags$Flag AuthenticationFailedException MessagingException FetchProfile FetchProfile$Item UIDFolder$FetchProfileItem)
    (jakarta.mail.internet InternetAddress MailDateFormat MimeMessage MimePart MimeUtility)
    (org.eclipse.angus.mail.imap IMAPFolder IMAPMessage)
    (jakarta.mail.event ConnectionAdapter ConnectionEvent MessageCountAdapter MessageCountEvent MessageCountListener)
@@ -942,6 +942,173 @@
       (catch Exception e
         (t/log! {:level :error :error e} ["Could not back-fill missed messages from" folder-name])))))
 
+;; Learning from manual moves: the category folders of every account are scanned periodically for
+;; messages that arrived since the last scan. A message the user moved there in a mail client takes
+;; the folder's category. A scan over a short-lived Store is used instead of IDLE on every category
+;; folder, which would need one permanently open IMAP connection per folder.
+
+(defn category-folders
+  "The folders of an account that stand for exactly one category: {folder-name {:id :name}}. A
+   category's folder is its destination folder, or the default 'Categories/<Name>'. Left out are the
+   monitored folder (a category whose mail is left in place there says nothing about a move) and
+   folders shared by several categories (a message there cannot tell which one it means)."
+  [separator categories monitored-folder]
+  (let [folder-of (fn [{:keys [name destination_folder]}]
+                    (if (s/blank? destination_folder)
+                      (str parent-folder-name separator (s/capitalize name))
+                      (s/trim destination_folder)))
+        monitored (monitor-folder-name monitored-folder)
+        ;; INBOX is case-insensitive in IMAP, every other folder name is not.
+        same-folder? (fn [a b] (if (= "INBOX" (s/upper-case b)) (= "INBOX" (s/upper-case a)) (= a b)))]
+    (into {}
+          (for [[folder categories-of-folder] (group-by folder-of categories)
+                :when (= 1 (count categories-of-folder))
+                :when (not (same-folder? folder monitored))]
+            [folder (select-keys (first categories-of-folder) [:id :name])]))))
+
+(def category-folder-scan-chunk-size
+  "Messages whose envelope and UID are fetched with one IMAP command during a category folder scan."
+  200)
+
+(defn- last-uid-in-folder
+  "The highest UID a message of the open folder can have right now: UIDNEXT - 1, or the UID of the last
+   message when the server does not report UIDNEXT. 0 for an empty folder."
+  ^long [^IMAPFolder folder]
+  (let [uid-next (.getUIDNext folder)]
+    (cond (pos? uid-next) (dec uid-next)
+          (pos? (.getMessageCount folder)) (.getUID folder (.getMessage folder (.getMessageCount folder)))
+          :else 0)))
+
+(defn- learn-from-scanned-message!
+  "Run one message of a category folder through app/learn-category-from-folder!. A message that cannot
+   be read is recorded as a failure of the folder and reported as :errors."
+  [context connection-id ^IMAPFolder folder folder-name category ^IMAPMessage message]
+  (try
+    (set-message-as-peek message)
+    (app/learn-category-from-folder! context {:connection-id connection-id
+                                              :folder folder
+                                              :folder-name folder-name
+                                              :category category
+                                              :message-id (message-id-of message)
+                                              :read-email (fn [] {:email (message->email message) :message message})})
+    (catch Exception e
+      (t/log! {:level :error :error e} ["A message in the category folder" folder-name "could not be read or processed; recording it as a failure."])
+      (record-monitor-failure! context connection-id folder folder-name message e)
+      :errors)))
+
+(defn scan-category-folder!
+  "Handle the messages that arrived in one category folder since the previous scan. The first scan of a
+   folder (or one whose UIDVALIDITY changed) only records where the folder ends now: what is already in
+   it was filed before and is not treated as a move. Progress is saved after every chunk. Returns
+   {:folder :learned :saved :confirmed :errors} plus :baseline or :missing."
+  [^Store store connection-id ^String folder-name category {:keys [db] :as context}]
+  (let [^IMAPFolder folder (.getFolder store folder-name)
+        summary {:folder folder-name :learned 0 :saved 0 :confirmed 0 :errors 0}]
+    (if-not (.exists folder)
+      (assoc summary :missing true)
+      (try
+        (.open folder Folder/READ_ONLY)
+        (let [uid-validity (.getUIDValidity folder)
+              last-uid (last-uid-in-folder folder)
+              watermark (int/fetch-category-folder-watermark db connection-id folder-name)]
+          (cond
+            (or (nil? watermark) (not= uid-validity (:uid-validity watermark)))
+            (do (int/save-category-folder-watermark db connection-id folder-name uid-validity last-uid)
+                (t/log! :info ["Watching the category folder" folder-name "for e-mails moved there from now on."])
+                (assoc summary :baseline true))
+
+            (<= last-uid (:last-uid watermark))
+            summary
+
+            :else
+            (let [messages (.getMessagesByUID folder (inc (long (:last-uid watermark))) last-uid)
+                  profile (doto (FetchProfile.)
+                            (.add FetchProfile$Item/ENVELOPE)
+                            (.add UIDFolder$FetchProfileItem/UID))]
+              (reduce (fn [summary chunk]
+                        (let [chunk-array (into-array Message chunk)]
+                          (.fetch folder chunk-array profile)
+                          (let [result (reduce (fn [summary message]
+                                                 (update summary (learn-from-scanned-message! context connection-id folder folder-name category message) inc))
+                                               summary
+                                               chunk)]
+                            ;; Failed messages are recorded as failures, so the scan moves past them as well.
+                            (int/save-category-folder-watermark db connection-id folder-name uid-validity
+                                                                (.getUID folder ^Message (last chunk)))
+                            result)))
+                      summary
+                      (partition-all category-folder-scan-chunk-size (remove nil? messages))))))
+        (finally (close-folder-without-expunge! folder))))))
+
+(defn scan-category-folders!
+  "Scan every category folder of a connection over a short-lived Store (the IDLE monitor is left
+   undisturbed). One folder that cannot be scanned does not stop the others. Returns the summaries."
+  [^ConnectionData connection-data {:keys [db] :as context}]
+  (let [config (:config connection-data)
+        id (:id config)]
+    (when (oauth2? config) (refresh-access-token config))
+    (with-open [^Store store (login config)]
+      (let [folders (category-folders (folder-separator store) (int/fetch-categories db) (:folder config))
+            summaries (mapv (fn [[folder-name category]]
+                              (try (scan-category-folder! store id folder-name category context)
+                                   (catch Exception e
+                                     (t/log! {:level :warn :error e} ["Could not scan the category folder" folder-name "of" (:user config)])
+                                     {:folder folder-name :failed true})))
+                            folders)
+            totals (apply merge-with + (map #(select-keys % [:learned :saved :errors]) summaries))]
+        (if (some pos? (vals totals))
+          (t/log! :info ["Category folder scan of" (:user config) "-" (:learned totals 0) "recategorized," (:saved totals 0) "newly saved," (:errors totals 0) "failed"])
+          (t/log! :debug ["Category folder scan of" (:user config) "found no moved e-mails."]))
+        summaries))))
+
+(defonce ^:private category-folder-scans
+  ;; connection id -> the ScheduledFuture of its periodic category folder scan.
+  (atom {}))
+
+(defonce ^:private category-folder-scans-running (atom #{}))
+
+(defn- run-category-folder-scan!
+  "Scan the category folders of the connection registered under id on its own thread, unless a scan
+   of it is still running. Does nothing while the connection is down: the scan picks up the moves
+   made meanwhile once it is back, because it continues from the saved UIDs."
+  [id context]
+  (let [[before _] (swap-vals! category-folder-scans-running conj id)]
+    (when-not (contains? before id)
+      (async/thread
+        (try
+          (when-let [connection-data (connection-data-from-id id)]
+            (when (and (pos? (p/category-folder-scan-interval)) (connected? connection-data))
+              (scan-category-folders! connection-data context)))
+          (catch Exception e
+            (t/log! {:level :error :error e} ["The category folder scan of connection" id "failed."]))
+          (finally (swap! category-folder-scans-running disj id)))))))
+
+(defn- cancel-category-folder-scan! [id]
+  (let [[before _] (swap-vals! category-folder-scans dissoc id)]
+    (when-let [^ScheduledFuture scheduled (get before id)]
+      (.cancel scheduled false))))
+
+(def category-folder-scan-initial-delay-seconds
+  "Wait after connecting before the first category folder scan, so it does not compete with the
+   reconnect back-fill."
+  60)
+
+(defn schedule-category-folder-scans
+  "Scan the connection's category folders every category-folder-scan-interval seconds (read when the
+   connection is established; 0 schedules nothing). Replaces an earlier schedule of the same id."
+  [connection-data context]
+  (let [id (get-in connection-data [:config :id])
+        interval (p/category-folder-scan-interval)]
+    (cancel-category-folder-scan! id)
+    (when (pos? interval)
+      (let [scheduled (.scheduleWithFixedDelay ^ScheduledExecutorService executor-service
+                                               ^Runnable (fn [] (run-category-folder-scan! id context))
+                                               (long category-folder-scan-initial-delay-seconds) (long interval) TimeUnit/SECONDS)
+            [before _] (swap-vals! category-folder-scans assoc id scheduled)]
+        (when-let [^ScheduledFuture existing (get before id)]
+          (.cancel existing false))))
+    connection-data))
+
 (defn disconnect [^AutoCloseable connection-data]
   ;; Mark the close as intentional BEFORE closing: the store's CLOSED event is delivered
   ;; asynchronously and must not be mistaken for a dropped connection.
@@ -980,6 +1147,9 @@
   (doseq [[_ ^ScheduledFuture scheduled] @health-checks]
     (.cancel scheduled true))
   (reset! health-checks {})
+  (doseq [[_ ^ScheduledFuture scheduled] @category-folder-scans]
+    (.cancel scheduled true))
+  (reset! category-folder-scans {})
   (.shutdownNow ^ScheduledExecutorService executor-service)
   (.shutdownNow ^ExecutorService idle-executor))
 
@@ -1012,7 +1182,8 @@
   (t/log! :info ["Removing message count listener from folder" (-> connection-data :config :folder)])
   (let [connection-id (:id (:config connection-data))
         sf ^ScheduledFuture (get @health-checks connection-id)]
-    (when (some? sf) (.cancel sf true)))
+    (when (some? sf) (.cancel sf true))
+    (cancel-category-folder-scan! connection-id))
   (.removeMessageCountListener ^IMAPFolder (:folder connection-data) (:message-count-listener connection-data))
   connection-data)
 
@@ -1160,7 +1331,8 @@
   (refresh-access-token connection-config)
   (try (let [connection-data (-> (construct-connection-data connection-config context)
                                  (start-monitoring context)
-                                 (schedule-health-checks context))]
+                                 (schedule-health-checks context)
+                                 (schedule-category-folder-scans context))]
          (backfill-monitored-folder! connection-data context)
          connection-data)
        (catch AuthenticationFailedException e (t/log! :error e))))
@@ -1168,7 +1340,8 @@
 (defmethod connect :default [connection-config context]
   (let [connection-data (-> (construct-connection-data connection-config context)
                             (start-monitoring context)
-                            (schedule-health-checks context))]
+                            (schedule-health-checks context)
+                            (schedule-category-folder-scans context))]
     (backfill-monitored-folder! connection-data context)
     connection-data))
 

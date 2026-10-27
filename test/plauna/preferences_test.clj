@@ -35,3 +35,11 @@
   (return-fn-for-preferences "Europe/Berlin")
   (t/is (= "Europe/Berlin" (sut/time-zone)))
   (t/is (= (java.time.ZoneId/of "Europe/Berlin") (sut/zone-id))))
+
+(t/deftest category-folder-scan-interval-defaults-to-five-minutes-and-can-be-turned-off
+  (swap! sut/cache (fn [_] (c/ttl-cache-factory {} :ttl 1)))
+  (return-fn-for-preferences nil)
+  (t/is (= 300 (sut/category-folder-scan-interval)))
+  (swap! sut/cache (fn [_] (c/ttl-cache-factory {} :ttl 1)))
+  (return-fn-for-preferences "0")
+  (t/is (= 0 (sut/category-folder-scan-interval)) "0 is a value, not a missing setting"))

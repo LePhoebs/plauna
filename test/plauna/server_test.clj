@@ -902,3 +902,10 @@
           (is (not (.exists db-file)))
           (is (= "error" (:type (server/delete-old-sqlite! server/sqlite-delete-confirmation)))
               "A second request reports that there is nothing left to delete"))))))
+
+(deftest category-folder-scan-interval-accepts-zero-but-not-negative-values
+  (let [valid? (deref #'server/valid-preference?)]
+    (is (valid? :category-folder-scan-interval "0"))
+    (is (valid? :category-folder-scan-interval "300"))
+    (is (not (valid? :category-folder-scan-interval "-5")))
+    (is (not (valid? :category-folder-scan-interval "soon")))))

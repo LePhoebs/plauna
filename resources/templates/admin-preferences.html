@@ -26,6 +26,11 @@
       <input class="input" name="client-health-check-interval" value="{{client-health-check-interval}}">
     </div>
     <div>
+      <label class="block mb-2 text-sm font-medium text-gray-900" for="category-folder-scan-interval">Category Folder Scan Interval</label>
+      <input class="input" name="category-folder-scan-interval" type="number" min="0" value="{{category-folder-scan-interval}}">
+      <div class="text-xs text-gray-500 mt-1">Seconds between two checks for e-mails you moved into a category folder in your mail client; they take that category. 0 turns it off.</div>
+    </div>
+    <div>
       <label class="block mb-2 text-sm font-medium text-gray-900" for="automatic-training-time">Daily Training Time</label>
       <input class="input" name="automatic-training-time" type="time" value="{{automatic-training-time}}" required>
     </div>

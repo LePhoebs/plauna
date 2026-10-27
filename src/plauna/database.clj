@@ -508,6 +508,38 @@
                                                    :where  [:= :message-id message-id]}) builder-function-kebab)]
     (when row {:folder (:folder row) :connection-id (:connection-id row)})))
 
+(defn email-category-state
+  "What Plauna knows about a stored e-mail's category and location: {:category-id :folder :connection-id}
+   (each nil when unknown), or nil when no e-mail with this message-id is stored."
+  [message-id]
+  (let [row (jdbc/execute-one! (ds) (honey/format {:select [:headers.message-id :metadata.category :metadata.folder :metadata.connection-id]
+                                                   :from   :headers
+                                                   :left-join [:metadata [:= :metadata.message-id :headers.message-id]]
+                                                   :where  [:= :headers.message-id message-id]}) builder-function-kebab)]
+    (when row {:category-id (:category row) :folder (:folder row) :connection-id (:connection-id row)})))
+
+(defn category-folder-watermark
+  "How far the category folder scan has read folder of the connection: {:uid-validity :last-uid}, or nil
+   when the folder was never scanned."
+  [connection-id folder]
+  (let [row (jdbc/execute-one! (ds) (honey/format {:select [:uid-validity :last-uid]
+                                                   :from   :category-folder-watermarks
+                                                   :where  [:and [:= :connection-id connection-id] [:= :folder folder]]}) builder-function-kebab)]
+    (when row {:uid-validity (long (:uid-validity row)) :last-uid (long (:last-uid row))})))
+
+(defn save-category-folder-watermark!
+  [connection-id folder uid-validity last-uid]
+  (if (mariadb?)
+    (jdbc/execute! (ds)
+      ["INSERT INTO category_folder_watermarks (connection_id, folder, uid_validity, last_uid, updated_at) VALUES (?, ?, ?, ?, UNIX_TIMESTAMP()) ON DUPLICATE KEY UPDATE uid_validity = VALUES(uid_validity), last_uid = VALUES(last_uid), updated_at = VALUES(updated_at)"
+       connection-id folder uid-validity last-uid])
+    (jdbc/execute! (ds) (-> (insert-into :category-folder-watermarks)
+                            (values [{:connection-id connection-id :folder folder :uid-validity uid-validity
+                                      :last-uid last-uid :updated-at (sql-now)}])
+                            (upsert (-> (on-conflict :connection-id :folder)
+                                        (do-update-set :uid-validity :last-uid :updated-at)))
+                            (honey/format)))))
+
 (defn categorized-message-ids-in-folder
   "The Message-IDs of stored, categorized e-mails whose recorded location is the folder of the connection."
   [connection-id folder]
@@ -1178,6 +1210,11 @@
   (fetch-parse-batch-message-ids [_ batch-id] (parse-batch-message-ids batch-id))
   (fetch-email-location [_ message-id] (email-location message-id))
   (fetch-categorized-message-ids-in-folder [_ connection-id folder] (categorized-message-ids-in-folder connection-id folder))
+  (fetch-email-category-state [_ message-id] (email-category-state message-id))
+  (update-email-category [_ message-id category-id confidence] (update-metadata-category message-id category-id confidence))
+  (update-email-connection [_ message-id connection-id] (update-email-connection message-id connection-id))
+  (fetch-category-folder-watermark [_ connection-id folder] (category-folder-watermark connection-id folder))
+  (save-category-folder-watermark [_ connection-id folder uid-validity last-uid] (save-category-folder-watermark! connection-id folder uid-validity last-uid))
   (fetch-parse-batch [_ id] (parse-batch id))
   (fetch-content-match-ids [_ search-text] (content-match-message-ids search-text))
   (save-email [_ email]

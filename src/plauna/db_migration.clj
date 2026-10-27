@@ -23,6 +23,7 @@
   ["preferences" "contacts" "categories" "category_training_preferences"
    "auth_providers" "headers" "connections" "bodies" "communications"
    "metadata" "oauth_tokens" "parse_batches" "parse_batch_emails" "parse_failures"
+   "category_folder_watermarks"
    "training_tokens"])
 
 (def insert-batch-rows 200)

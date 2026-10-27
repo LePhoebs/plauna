@@ -651,6 +651,40 @@
           (t/log! :debug ["Email with subject:" (-> email-message :email :header :subject) "was successfully saved to the database"])
           {:status :processed :move (move-message move? folder connection-id email-message category context)})))))
 
+(defn learn-category-from-folder!
+  "Handle one message that arrived in a category folder of an account - moved there by the user in a
+   mail client, or filed there by Plauna itself. The folder stands for exactly one category, so:
+   - a stored e-mail with another (or no) category takes the folder's category as an explicit user
+     decision (confidence 1.0, like a change on the e-mail page) and its new location: :learned
+   - a stored e-mail that already has that category only gets its location recorded: :confirmed
+   - an unknown e-mail is read with read-email (returning {:email :message}), saved with the folder's
+     category and left where it is: :saved
+   category is {:id :name}; folder is the open IMAP folder, folder-name its full name."
+  [{:keys [db] :as context} {:keys [connection-id folder folder-name category message-id read-email]}]
+  (let [state (int/fetch-email-category-state db message-id)
+        record-location! (fn []
+                           (when (not= folder-name (:folder state))
+                             (int/update-email-folder db message-id folder-name))
+                           (when (and (some? connection-id) (not= connection-id (:connection-id state)))
+                             (int/update-email-connection db message-id connection-id)))]
+    (cond
+      (nil? state)
+      (let [{:keys [status]} (incoming-email-workflow (read-email) connection-id folder
+                                                      {:move? false :assigned-category (:name category) :assigned-category-id (:id category)}
+                                                      context)]
+        (when (= :processed status)
+          (t/log! :info ["Saved the new e-mail" message-id "found in" folder-name "with its category" (:name category)]))
+        (if (= :processed status) :saved :confirmed))
+
+      (and (some? (:category-id state)) (== (:category-id state) (:id category)))
+      (do (record-location!) :confirmed)
+
+      :else
+      (do (int/update-email-category db message-id (:id category) 1.0)
+          (record-location!)
+          (t/log! :info ["Learned category" (:name category) "for" message-id "from its move into" folder-name])
+          :learned))))
+
 (defn handle-incoming-imap-email
   "Handle incoming emails synchronously on a single thread. Returns a result."
   [parsed-email {:keys [connection-id origin-folder message] :as options} context]

@@ -53,6 +53,13 @@
                                                         :client-health-check-interval
                                                         (fn [key] (preference-with-default key or 60))))
 
+(defn category-folder-scan-interval
+  "Seconds between two scans of the category folders for e-mails moved there in a mail client; 0 turns
+   the scan off."
+  [] (w/lookup-or-miss cache
+                       :category-folder-scan-interval
+                       (fn [key] (preference-with-default key or 300))))
+
 (defn automatic-training-time [] (w/lookup-or-miss cache
                                                    :automatic-training-time
                                                    (fn [key] (preference-with-default key or "02:00"))))

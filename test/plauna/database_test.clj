@@ -359,6 +359,28 @@
         "The last failure is rethrown once the startup timeout is used up")
     (is (= 3 @calls) "Attempts at 0 s, 2 s and 6 s; the next pause would end after the 10 s deadline")))
 
+(deftest email-category-state-reports-category-and-location
+  (let [cat (ensure-category "state-cat")]
+    (db/save-headers [{:mime-type "text/plain" :subject "s" :message-id "state-1" :date 1 :in-reply-to nil}
+                      {:mime-type "text/plain" :subject "t" :message-id "state-2" :date 1 :in-reply-to nil}])
+    (db/update-metadata-batch [{:message-id "state-1" :language "eng" :language-confidence 0.9 :category-id cat :category-confidence 0.7 :connection-id "conn-state"}])
+    (db/update-email-folder "state-1" "Categories/State-cat")
+    (is (= {:category-id cat :folder "Categories/State-cat" :connection-id "conn-state"} (db/email-category-state "state-1")))
+    (is (= {:category-id nil :folder nil :connection-id nil} (db/email-category-state "state-2"))
+        "A stored e-mail without metadata is still reported as stored")
+    (is (nil? (db/email-category-state "no-such-state")))))
+
+(deftest category-folder-watermarks-round-trip-and-follow-their-connection
+  (db/add-connection {:id "conn-wm" :host "h" :user "u" :secret "s" :folder "INBOX" :debug false :security "ssl" :port 993 :check-ssl-certs true :auth-type "basic"})
+  (is (nil? (db/category-folder-watermark "conn-wm" "Categories/Work")))
+  (db/save-category-folder-watermark! "conn-wm" "Categories/Work" 77 10)
+  (is (= {:uid-validity 77 :last-uid 10} (db/category-folder-watermark "conn-wm" "Categories/Work")))
+  (db/save-category-folder-watermark! "conn-wm" "Categories/Work" 77 25)
+  (is (= {:uid-validity 77 :last-uid 25} (db/category-folder-watermark "conn-wm" "Categories/Work")) "Saving again moves the mark")
+  (is (nil? (db/category-folder-watermark "conn-wm" "Categories/Other")))
+  (db/delete-connection "conn-wm")
+  (is (nil? (db/category-folder-watermark "conn-wm" "Categories/Work")) "Deleting the connection drops its marks"))
+
 (deftest mariadb-url-keeps-the-unencrypted-default-of-driver-3-unless-configured
   (is (= "jdbc:mariadb://db:3306/plauna?sslMode=disable"
          (db/mariadb-jdbc-url {:host "db" :port 3306 :name "plauna"}))

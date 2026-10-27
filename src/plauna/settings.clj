@@ -14,6 +14,7 @@
    :categorization-threshold     0.65
    :categorization-algorithm     "naive-bayes"
    :client-health-check-interval 60
+   :category-folder-scan-interval 300
    :automatic-training-time      "02:00"
    :time-zone                    (.getId (ZoneId/systemDefault))
    :session-generation           0})

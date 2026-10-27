@@ -118,6 +118,15 @@ All notable changes to this project will be documented in this file.
 
 ### ✨ Features
 
+- Plauna learns from e-mails you move into a category folder in your mail client. Every account's
+  category folders are scanned periodically (setting `category-folder-scan-interval`, default 300
+  seconds, `0` turns it off) over a short-lived IMAP connection. A stored e-mail found there takes the
+  folder's category as an explicit user decision (confidence 100%); an unknown one is saved with that
+  category. The scan remembers how far it has read each folder by IMAP UID and UIDVALIDITY (new
+  `category_folder_watermarks` table), so it only reads newly arrived messages and catches up on moves
+  made while Plauna was down. Inspired by the folder watching of upstream release 2026-09-30.0, but
+  without keeping one IMAP connection open per category folder.
+
 - Faster training: the classification features of each e-mail are computed once and cached in the
   new `training_tokens` table (invalidated when an e-mail is re-fetched), the languages train in
   parallel, and the MaxEnt trainers use several processor cores. A new "MaxEnt, L-BFGS" model option

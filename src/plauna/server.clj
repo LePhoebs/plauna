@@ -861,6 +861,9 @@
     :client-health-check-interval
     (try (pos? (Long/parseLong value)) (catch Exception _ false))
 
+    :category-folder-scan-interval
+    (try (not (neg? (Long/parseLong value))) (catch Exception _ false))
+
     :automatic-training-time
     (try (LocalTime/parse value) true (catch Exception _ false))
 
@@ -1541,6 +1544,7 @@
      (let [language-datection-threshold (p/language-detection-threshold)
            categorization-threshold (p/categorization-threshold)
            client-health-check-interval (p/client-health-check-interval)
+           category-folder-scan-interval (p/category-folder-scan-interval)
            automatic-training-time (p/automatic-training-time)
            time-zone (p/time-zone)
            categorization-model (p/categorization-model)
@@ -1552,6 +1556,7 @@
            :categorization-threshold categorization-threshold
            :log-level log-level
            :client-health-check-interval client-health-check-interval
+           :category-folder-scan-interval category-folder-scan-interval
            :automatic-training-time automatic-training-time
            :time-zone time-zone
            :categorization-model categorization-model

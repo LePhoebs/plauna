@@ -38,6 +38,8 @@ You can parse your e-mails from mbox files or directly by connecting to your IMA
 
 - Per-category destination folders: choose exactly which IMAP folder each category's mail is moved to.
 
+- Learning from your mail client: move an e-mail into a category folder in Outlook, Thunderbird or on your phone, and Plauna gives it that category - as if you had changed it in Plauna's own UI, so the next training learns from it. E-mails Plauna did not know yet are saved with that category.
+
 - Responsive web UI that also works on mobile, so you can recategorize e-mails on the go.
 
 - Re-fetch an individual e-mail from the IMAP server to fill in content that was missed when it was first read.
@@ -164,6 +166,7 @@ Example file with the user-facing keys (the initial =time-zone= is the host syst
   "categorization-threshold": 0.65,
   "categorization-algorithm": "naive-bayes",
   "client-health-check-interval": 60,
+  "category-folder-scan-interval": 300,
   "automatic-training-time": "02:00",
   "time-zone": "Europe/Berlin"
 }
@@ -174,6 +177,7 @@ Example file with the user-facing keys (the initial =time-zone= is the host syst
 - =categorization-threshold= — confidence (0–1) below which a category is not assigned; default 0.65.
 - =categorization-algorithm= — =naive-bayes= or =maxent=; default =naive-bayes=. Change this through the Preferences page so Plauna can confirm and train the target model safely.
 - =client-health-check-interval= — IMAP connection health-check period in seconds; default 60.
+- =category-folder-scan-interval= — seconds between two scans of the category folders for e-mails you moved there in a mail client (see [[*Learning From E-mails You Move in Your Mail Client][Learning From E-mails You Move in Your Mail Client]]); default 300, =0= turns the scan off. A new interval applies when a connection is next (re)connected; =0= takes effect immediately.
 - =automatic-training-time= — local wall-clock time for the daily model training; default =02:00=.
 - =time-zone= — IANA time zone used for training schedules, displayed dates and date filters; the system time zone is used initially.
 
@@ -413,6 +417,21 @@ By default, e-mails of a category are moved to a sub-folder of "Categories" name
 - Set it to the folder the mail is already in (e.g. =INBOX=) to *leave that category's mail in place* instead of moving it. More generally, whenever the source and destination folder are the same, Plauna performs no move.
 
 Changing a destination folder does not move e-mails that were already filed; it only affects future moves.
+
+*** Learning From E-mails You Move in Your Mail Client
+
+You do not have to open Plauna to correct a category. Move the e-mail into the right category folder in any mail client and Plauna picks the change up:
+
+- Every few minutes (=category-folder-scan-interval=, default 300 seconds) Plauna looks into the category folders of every connected account over a separate, short-lived IMAP connection and handles only the messages that arrived there since its previous look. It remembers how far it has read each folder (by IMAP UID) in the database, so moves made while Plauna was stopped or disconnected are picked up afterwards as well.
+- An e-mail Plauna already knows with a different or no category takes the folder's category with 100% confidence - exactly like a change in Plauna's e-mail list - and its new location is recorded. The next training (daily or manual) learns from it.
+- An e-mail Plauna does not know yet is saved with the folder's category and stays where it is.
+- E-mails Plauna filed into the folder itself are recognised by their category and only get their location confirmed; their confidence is not changed.
+
+A category folder is the category's destination folder, or =Categories/<Name>= when none is set. Two kinds of folders are never treated as category folders: the monitored folder of the account (a category whose destination is, say, =INBOX= keeps its mail in place, so a message there says nothing about a move), and a folder that is the destination of more than one category (it cannot tell which category a message means).
+
+The first scan of a folder - right after installing this version, after adding a category, or after the mail server recreated a folder (a new UIDVALIDITY) - only notes where the folder currently ends. E-mails that were already in it are not touched; to categorize an existing folder use "Parse E-mails from Folders" with a fixed category. Messages that cannot be read are listed under "Messages That Could Not Be Read" on the connection page like any other read failure.
+
+Note that a mail-server filter (e.g. Sieve) delivering new mail directly into a category folder has the same effect as a manual move: that mail gets the folder's category.
 
 *** Category Colors
 
