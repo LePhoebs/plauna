@@ -13,3 +13,59 @@
 .select select {
   appearance: none;
 }
+
+/* Pull to refresh of the installed web app (js/pull-to-refresh.js). The browser's own overscroll
+   gesture must not compete with it. */
+html.plauna-ptr {
+  overscroll-behavior-y: contain;
+}
+
+.plauna-ptr-indicator {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) - 48px);
+  left: 50%;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 9999px;
+  background: var(--color-base-100, #fff);
+  color: var(--color-base-content, #333);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.2);
+  opacity: 0;
+  transform: translate(-50%, 0);
+  pointer-events: none;
+}
+
+.plauna-ptr-arrow {
+  width: 20px;
+  height: 20px;
+}
+
+.plauna-ptr-ready {
+  color: var(--color-primary, #820712);
+}
+
+.plauna-ptr-spinner {
+  display: none;
+  width: 20px;
+  height: 20px;
+  border: 2.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 9999px;
+  animation: plauna-ptr-spin 0.7s linear infinite;
+}
+
+.plauna-ptr-refreshing .plauna-ptr-arrow {
+  display: none;
+}
+
+.plauna-ptr-refreshing .plauna-ptr-spinner {
+  display: block;
+}
+
+@keyframes plauna-ptr-spin {
+  to { transform: rotate(360deg); }
+}

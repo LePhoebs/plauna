@@ -46,7 +46,7 @@ You can parse your e-mails from mbox files or directly by connecting to your IMA
 
 - Learning from your mail client: move an e-mail into a category folder in Outlook, Thunderbird or on your phone, and Plauna gives it that category - as if you had changed it in Plauna's own UI, so the next training learns from it. E-mails Plauna did not know yet are saved with that category.
 
-- Responsive web UI that also works on mobile, so you can recategorize e-mails on the go.
+- Responsive web UI that also works on mobile, so you can recategorize e-mails on the go. Added to the home screen it runs as a web app; pull down at the top of a page to reload it.
 
 - Re-fetch an individual e-mail from the IMAP server to fill in content that was missed when it was first read.
 

@@ -306,6 +306,9 @@ All notable changes to this project will be documented in this file.
 
 ### ✨ Features
 
+- Pull to refresh in the installed web app: pulling down at the top of a page reloads it. A web app
+  added to the home screen has no reload button, and on iOS no native gesture, so a page could not be
+  updated without leaving it. In a normal browser tab the browser's own gesture stays in charge.
 - "Parse E-mails from Folders" can give the assigned category to e-mails Plauna has stored already
   ("Also assign the category to e-mails Plauna has stored already"). They were always skipped, so a new
   category could not learn from e-mails sorted out by hand before - e.g. old ones in the trash. Such an
