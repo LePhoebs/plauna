@@ -86,8 +86,15 @@
                         (cond (number? value) (long value)
                               :else (try (Long/parseLong (str value)) (catch Exception _ 0)))))))
 
-(defn bump-session-generation! []
-  (update-preference :session-generation (inc (long (session-generation)))))
+(defn bump-session-generation!
+  "End every session: increase the generation in one locked read-change-write (see
+   settings/swap-settings!), so two credential changes at once cannot write the same new value."
+  []
+  (settings/swap-settings! (fn [settings]
+                             (update settings :session-generation
+                                     (fn [g] (inc (long (cond (number? g) g
+                                                              :else (or (parse-long (str g)) 0))))))))
+  (w/evict cache :session-generation))
 
 (defn last-successful-training-at []
   (some-> (settings/fetch-setting :last-successful-training-at) str java.time.Instant/parse))

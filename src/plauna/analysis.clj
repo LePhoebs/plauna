@@ -2,6 +2,7 @@
   (:require [clojure.string :as st]
             [plauna.database :as db]
             [plauna.core.events :as events]
+            [plauna.messaging :as messaging]
             [plauna.core.email :as core-email]
             [plauna.preferences :as p]
             [plauna.util.text-transform :as tt]
@@ -267,6 +268,8 @@
       (isTrainingFinished [_] @finished)
       (display [_ _] nil))))
 
+(declare label-format-property)
+
 (defn train-model
   "The equivalent of DocumentCategorizerME/train that also reports iteration progress: OpenNLP only
    accepts a progress monitor through TrainingConfiguration, which the convenience method does not
@@ -275,12 +278,17 @@
    (train-model language file model progress-fn 1))
   (^DoccatModel [^String language ^File file model progress-fn threads]
   (let [parameters (training-parameters model threads)
-        manifest (HashMap.)
+        ;; Labels are category ids (format-training-lines): say so in the model, so they are never
+        ;; mistaken for names (see label-format-property).
+        manifest (doto (HashMap.) (.put label-format-property "ids"))
         factory (DoccatFactory.)
         ^EventTrainer trainer (TrainerFactory/getEventTrainer parameters manifest
                                                               (TrainingConfiguration. (progress-monitor progress-fn) nil))
-        ^ObjectStream events (DocumentCategorizerEventStream. (training-data-stream file) (.getFeatureGenerators factory))
-        maxent-model (.train trainer events)]
+        ;; Both streams are closed, also when training fails or is cancelled: each holds the training
+        ;; file open, and the nightly runs for every language would otherwise pile up file handles.
+        maxent-model (with-open [^ObjectStream samples (training-data-stream file)
+                                 ^ObjectStream events (DocumentCategorizerEventStream. samples (.getFeatureGenerators factory))]
+                       (.train trainer events))]
     (DoccatModel. language maxent-model manifest factory))))
 
 (defn training-file-outcomes
@@ -342,18 +350,43 @@
 (defn- model-stamp [^File model-file]
   [(.lastModified model-file) (.length model-file)])
 
-(defn categorizer-for
-  "The (cached) categorizer for a model file, reloaded when the file changed."
-  ^DocumentCategorizerME [^File model-file]
+(def label-format-property
+  "Manifest property in which a model trained by Plauna records how its labels name categories. Its
+   value \"ids\" means category ids (see format-training-lines). Models trained before it was written
+   have none: their labels may be ids or - in older models - names, which digits alone cannot tell."
+  "plauna-label-format")
+
+(defn- named-with-algorithm?
+  "True for a model file named train-<language>-<algorithm>.bin. Plauna writes models under such names
+   only since 7 August 2026 (MaxEnt next to Naive Bayes), and its labels are category ids since
+   10 July 2026: a model with such a name has id labels for certain. Only the older
+   train-<language>.bin name can hold a model with category names as labels."
+  [^File model-file]
+  (let [file-name (.getName model-file)]
+    (boolean (some #(st/ends-with? file-name (str "-" (:id %) ".bin")) supported-categorization-models))))
+
+(defn- cached-model
+  "{:categorizer :label-format} of a model file, cached and reloaded when the file changed."
+  [^File model-file]
   (let [path (.getAbsolutePath model-file)
         stamp (model-stamp model-file)
         cached (get @categorizer-cache path)]
     (if (and cached (= stamp (:stamp cached)))
-      (:categorizer cached)
-      (let [categorizer (DocumentCategorizerME. (DoccatModel. model-file))]
+      cached
+      (let [model (DoccatModel. model-file)
+            entry {:stamp stamp
+                   :categorizer (DocumentCategorizerME. model)
+                   :label-format (when (or (= "ids" (.getManifestProperty model ^String label-format-property))
+                                           (named-with-algorithm? model-file))
+                                   :ids)}]
         (t/log! :info ["Loaded categorization model" path])
-        (swap! categorizer-cache assoc path {:stamp stamp :categorizer categorizer})
-        categorizer))))
+        (swap! categorizer-cache assoc path entry)
+        entry))))
+
+(defn categorizer-for
+  "The (cached) categorizer for a model file, reloaded when the file changed."
+  ^DocumentCategorizerME [^File model-file]
+  (:categorizer (cached-model model-file)))
 
 (defn forget-cached-models!
   "Drop every cached model (tests and diagnostics; production relies on the file stamp)."
@@ -430,14 +463,32 @@
 (defn- categories-by-name []
   (cached-reference :categories-by-name #(into {} (map (juxt :name identity)) (db/get-categories))))
 
+(defn model-label-format
+  "How the labels of a model name categories: :ids when the model says so in its manifest (every model
+   Plauna trains now, see label-format-property) or its file name proves it (see
+   named-with-algorithm?), nil when it is not known - an old train-<language>.bin, which the next
+   training replaces. nil without a model."
+  [^File model-file]
+  (when (.exists model-file)
+    (:label-format (cached-model model-file))))
+
 (defn label->category
-  "Resolve a model label to its category row. Labels are category ids (see format-training-lines);
-   fall back to a name lookup so models trained before ids were used as labels keep working until
-   the next re-training. Returns nil when the label matches no existing category."
-  [label]
-  (when (some? label)
-    (or (when-let [id (parse-long (str label))] (get (categories-by-id) id))
-        (get (categories-by-name) label))))
+  "Resolve a model label to its category row, or nil when it names no existing category. With the
+   model's label-format (see model-label-format) a label is ONLY an id or ONLY a name: guessing would
+   resolve the legacy name \"7\" to the category with id 7, or a deleted category's id to a category
+   that happens to be named like that number. Without a format (old callers) the id is tried first."
+  ([label] (label->category label nil))
+  ([label label-format]
+   (when (some? label)
+     (case label-format
+       :ids (some->> (parse-long (str label)) (get (categories-by-id)))
+       :names (get (categories-by-name) (str label))
+       ;; Unknown format (an old train-<language>.bin): a label that is a number may be an id or a name -
+       ;; and the category it meant may be deleted while the other reading still exists. Nothing tells
+       ;; them apart, so it stays unresolved (the e-mail uncategorized) until the next training writes
+       ;; a model whose format is known. Only a label that is no number is certainly a name.
+       (when-not (parse-long (str label))
+         (get (categories-by-name) (str label)))))))
 
 (defn category-for-email
   "The model's category for the e-mail in the given language, or nil. cleaned-body (optional) is the
@@ -448,10 +499,12 @@
    (when (and (some? email) (some? language-code))
      (when (some #(= language-code %) (activated-languages))
        (let [model-file (files/model-file language-code (p/categorization-model))
-             tokens (classification-tokens-for-model email language-code model-file cleaned-body)]
-         (categorize-tokens tokens model-file
-                            ;; A database hiccup must not make every label unusable: then all compete, as before.
-                            (fn [label] (try (some? (label->category label)) (catch Exception _ true)))))))))
+             tokens (classification-tokens-for-model email language-code model-file cleaned-body)
+             label-format (model-label-format model-file)]
+         (assoc (categorize-tokens tokens model-file
+                                   ;; A database hiccup must not make every label unusable: then all compete, as before.
+                                   (fn [label] (try (some? (label->category label label-format)) (catch Exception _ true))))
+                :label-format label-format))))))
 
 (defn category-scores-for-email
   "The model's probability for each existing category of the e-mail in the given language, most
@@ -464,10 +517,11 @@
               (some #(= language-code %) (activated-languages)))
      (let [model-file (files/model-file language-code (p/categorization-model))]
        (when (.exists ^File model-file)
-         (let [tokens (classification-tokens-for-model email language-code model-file cleaned-body)]
+         (let [tokens (classification-tokens-for-model email language-code model-file cleaned-body)
+               label-format (model-label-format model-file)]
            (into []
                  (keep (fn [{:keys [name confidence]}]
-                         (when-let [category (label->category name)]
+                         (when-let [category (label->category name label-format)]
                            (assoc (select-keys category [:id :name :color]) :confidence confidence))))
                  (category-scores-for-tokens tokens model-file))))))))
 
@@ -489,7 +543,7 @@
                                nil))
         ;; Resolving the label reads the categories from the database: a failure there must not lose
         ;; the e-mail either.
-        category (try (label->category (:name category-result))
+        category (try (label->category (:name category-result) (:label-format category-result))
                       (catch Exception e
                         (t/log! {:level :warn :error e} ["Resolving the category of" (-> email :header :message-id) "failed; saving it without a category."])
                         nil))]
@@ -555,7 +609,10 @@
     (async/pipeline 4
                     events-channel
                     ;; keep: an already stored e-mail yields nil and is dropped (see handle-enrichment).
-                    (keep handle-enrichment)
+                    ;; A barrier is passed on in order towards the database loop (see messaging/barrier!).
+                    (keep (fn [event] (if (messaging/barrier-event? event)
+                                        (assoc event :type :enriched-email)
+                                        (handle-enrichment event))))
                     local-chan
                     true
                     (fn [^Throwable th] (t/log! {:level :error :error th} (.getMessage th))))))

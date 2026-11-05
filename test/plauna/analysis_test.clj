@@ -239,3 +239,87 @@
         tokens (set (analysis/classification-tokens email nil))]
     (is (every? tokens ["sender-address:bounce@mcsv.net" "sender-domain:mcsv.net" "from-address:news@shop.de" "from-domain:shop.de"]))
     (is (every? tokens ["subject:hallo" "subject:welt"]) "A no-break space separates words like in the training file")))
+
+(deftest labels-are-resolved-by-the-models-label-format
+  (with-redefs-fn {#'analysis/categories-by-id (fn [] {2 {:id 2 :name "7"} 7 {:id 7 :name "Invoices"}})
+                   #'analysis/categories-by-name (fn [] {"7" {:id 2 :name "7"} "Invoices" {:id 7 :name "Invoices"} "9" {:id 3 :name "9"}})}
+    (fn []
+      (is (= 2 (:id (analysis/label->category "7" :names))) "A legacy model's label \"7\" is the category named 7")
+      (is (= 7 (:id (analysis/label->category "7" :ids))) "A current model's label 7 is the category with id 7")
+      (is (nil? (analysis/label->category "9" :ids)) "A deleted category's id never falls back to a category named like it"))))
+
+(defn- write-model! [^java.io.File file model]
+  (with-open [os (io/output-stream file)]
+    (.serialize ^opennlp.tools.doccat.DoccatModel model os)))
+
+(defn- legacy-model
+  "A model as OpenNLP trains it without Plauna: no label format in its manifest."
+  [lines]
+  (let [training-file (java.io.File/createTempFile "plauna-legacy-" ".train")]
+    (try
+      (spit training-file lines)
+      (with-open [samples (analysis/training-data-stream training-file)]
+        (opennlp.tools.doccat.DocumentCategorizerME/train "eng" samples
+                                                          (doto (opennlp.tools.util.TrainingParameters/defaultParams)
+                                                            (.put opennlp.tools.util.TrainingParameters/CUTOFF_PARAM (int 0)))
+                                                          (opennlp.tools.doccat.DoccatFactory.)))
+      (finally (io/delete-file training-file true)))))
+
+(deftest a-legacy-model-with-numeric-names-is-never-resolved-to-another-category
+  (let [model-file (java.io.File/createTempFile "plauna-legacy-model-" ".bin")]
+    (try
+      (analysis/forget-cached-models!)
+      (write-model! model-file (legacy-model (str "7 subject:invoice body:payment\n7 subject:receipt body:purchase\n"
+                                                  "8 subject:dinner body:tomorrow\n8 subject:weekend body:meeting\n")))
+      (with-redefs-fn {#'analysis/categories-by-id (fn [] {2 {:id 2 :name "7"} 3 {:id 3 :name "8"} 7 {:id 7 :name "Invoices"}})
+                       #'analysis/categories-by-name (fn [] {"7" {:id 2 :name "7"} "8" {:id 3 :name "8"} "Invoices" {:id 7 :name "Invoices"}})}
+        (fn []
+          (let [label-format (analysis/model-label-format model-file)
+                label (:name (analysis/categorize-tokens ["subject:invoice" "body:payment"] model-file))]
+            (is (nil? label-format) "Digits alone do not make a model one with id labels")
+            (is (= "7" label))
+            (is (nil? (analysis/label->category label label-format))
+                "\"7\" is the name of category 2 AND the id of Invoices: unresolved, never Invoices")
+            (is (nil? (analysis/label->category "8" label-format))
+                "A number from an old model is never guessed, even when only one reading exists"))))
+      (finally
+        (analysis/forget-cached-models!)
+        (io/delete-file model-file true)))))
+
+(deftest models-trained-by-plauna-say-their-labels-are-ids
+  (let [training-file (java.io.File/createTempFile "plauna-training-" ".train")
+        model-file (java.io.File/createTempFile "plauna-model-" ".bin")]
+    (try
+      (analysis/forget-cached-models!)
+      (spit training-file (str "7 subject:invoice body:payment\n7 subject:receipt body:purchase\n"
+                               "8 subject:dinner body:tomorrow\n8 subject:weekend body:meeting\n"))
+      (write-model! model-file (:model (first (analysis/train-data [{:language "eng" :file training-file}] "naive-bayes"))))
+      (is (= :ids (analysis/model-label-format model-file)))
+      (with-redefs-fn {#'analysis/categories-by-id (fn [] {2 {:id 2 :name "7"} 7 {:id 7 :name "Invoices"}})
+                       #'analysis/categories-by-name (fn [] {"7" {:id 2 :name "7"} "Invoices" {:id 7 :name "Invoices"}})}
+        #(is (= 7 (:id (analysis/label->category "7" (analysis/model-label-format model-file))))))
+      (finally
+        (analysis/forget-cached-models!)
+        (io/delete-file training-file true)
+        (io/delete-file model-file true)))))
+
+(deftest an-old-model-whose-category-was-deleted-is-not-resolved-to-another
+  (with-redefs-fn {#'analysis/categories-by-id (fn [] {7 {:id 7 :name "Invoices"}})
+                   #'analysis/categories-by-name (fn [] {"Invoices" {:id 7 :name "Invoices"} "Newsletter" {:id 4 :name "Newsletter"}})}
+    (fn []
+      (is (nil? (analysis/label->category "7" nil))
+          "The category named \"7\" was deleted: its label must not become Invoices, the category with id 7")
+      (is (= 4 (:id (analysis/label->category "Newsletter" nil))) "A label that is no number is a name"))))
+
+(deftest a-model-named-with-its-algorithm-has-id-labels
+  (let [dir (.toFile (java.nio.file.Files/createTempDirectory "plauna-models" (make-array java.nio.file.attribute.FileAttribute 0)))
+        model-file (io/file dir "train-eng-naive-bayes.bin")]
+    (try
+      (analysis/forget-cached-models!)
+      (write-model! model-file (legacy-model (str "7 subject:invoice body:payment\n7 subject:receipt body:purchase\n"
+                                                  "8 subject:dinner body:tomorrow\n8 subject:weekend body:meeting\n")))
+      (is (= :ids (analysis/model-label-format model-file))
+          "Plauna names model files with the algorithm only since its labels are ids")
+      (finally
+        (analysis/forget-cached-models!)
+        (run! #(io/delete-file % true) (reverse (file-seq dir)))))))

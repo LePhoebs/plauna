@@ -59,8 +59,19 @@
           (io/delete-file (str db-file "-wal") true))
       nil)))
 
+(defn valid-language-code?
+  "True for a language code that may become part of a file name: letters, then optional -/_ parts
+   (eng, de, zh-Hant). Nothing that could leave the data directory, such as / or .."
+  [language]
+  (boolean (and (string? language) (re-matches #"[A-Za-z]{2,8}(?:[-_][A-Za-z0-9]{1,8})*" language))))
+
+(defn- checked-language ^String [language]
+  (if (valid-language-code? language)
+    language
+    (throw (ex-info (str "Not a valid language code for a file name: " (pr-str language)) {:language language}))))
+
 (defn training-file [language]
-  (let [file (io/file (file-dir) (str "train-" language ".train"))]
+  (let [file (io/file (file-dir) (str "train-" (checked-language language) ".train"))]
     (if (.exists file)
       file
       (do (.createNewFile file)
@@ -96,13 +107,13 @@
 (defn model-files [] (files-with-type :model))
 
 (defn- model-file-for-write [^String language model]
-  (io/file (file-dir) (str "train-" language "-" model ".bin")))
+  (io/file (file-dir) (str "train-" (checked-language language) "-" model ".bin")))
 
 (defn model-file
   "Return a model file. The two-argument form keeps Naive Bayes and MaxEnt side by side. For Naive
    Bayes it transparently reads the legacy train-<lang>.bin name until that model is retrained."
   ([^String language]
-   ^File (io/file (file-dir) (str "train-" language ".bin")))
+   ^File (io/file (file-dir) (str "train-" (checked-language language) ".bin")))
   ([^String language model]
    (let [specific (model-file-for-write language model)
          legacy (model-file language)]

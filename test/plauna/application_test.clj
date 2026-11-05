@@ -1446,3 +1446,31 @@
                                                   {:db (recategorize-db writes)} "c1" "<old@x>")]
     (is (nil? outcome))
     (is (= [] @writes))))
+
+(deftest a-retry-leaves-another-message-under-the-same-uid-alone
+  (let [resolved (atom [])
+        client (reify int/EmailClient
+                 (email-by-uid-from-folder [_ _ _] {:email {:header {:message-id "<other@x>"}} :message nil :uid-validity 2}))
+        db (reify int/DB
+             (email-exists? [_ _] (throw (ex-info "must not look further" {})))
+             (resolve-parse-failures [_ connection-id folder uid message-id] (swap! resolved conj [connection-id folder uid])))]
+    (is (= :gone (#'app/retry-one-failure! client db :folder "INBOX" "c1" {:known-failures {:uids #{1} :message-ids #{}}}
+                                           {:uid 1 :uid-validity 1 :message-id "<failed@x>"} {})))
+    (is (= [["c1" "INBOX" 1]] @resolved) "The stale entry is dropped; the message under the UID is not processed")
+    (is (= :gone (#'app/retry-one-failure! client db :folder "INBOX" "c1" {:known-failures {:uids #{1} :message-ids #{}}}
+                                           {:uid 1 :message-id "<failed@x>"} {}))
+        "Without a UIDVALIDITY the recorded Message-ID decides")))
+
+(deftest a-folder-parse-stops-when-plauna-pauses
+  (let [stopped @#'app/bulk-work-stopped
+        read (atom 0)
+        client (reify int/EmailClient
+                 (nth-message-id-from-folder [_ _ _] (swap! read inc) "<x@y>"))]
+    (try
+      (reset! stopped true)
+      (let [summary (#'app/process-folder-messages! client "INBOX" :folder {} {} {} [3 2 1]
+                                                     {:processed 0 :skipped 0 :errors 0 :examined 0})]
+        (is (re-find #"pausing" (:aborted summary)))
+        (is (= 3 (:remaining summary)))
+        (is (zero? @read) "No e-mail is read, so nothing more is written"))
+      (finally (reset! stopped false)))))

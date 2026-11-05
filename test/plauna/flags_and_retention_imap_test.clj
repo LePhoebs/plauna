@@ -189,3 +189,45 @@
                        (set (map (juxt :type :address) (:participants email))))))
               (finally (.close folder false))))))
       (finally (.stop greenmail)))))
+
+(deftest a-message-id-search-only-acts-on-the-exact-message
+  (let [greenmail (doto (GreenMail. ServerSetupTest/IMAP) (.start))]
+    (try
+      (.setUser greenmail imap-user "secret")
+      (let [config (connection-config greenmail)]
+        (with-open [^Store store (client/login config)]
+          (.appendMessages (.getFolder store "INBOX") (into-array Message [(message "<abc@example.com>") (message "<ABC@example.com>") (message "<xabc@example.com>")]))
+          (.create (.getFolder store "Work") Folder/HOLDS_MESSAGES))
+        (with-redefs [db/update-email-folder (fn [& _] [{:next.jdbc/update-count 1}])
+                      db/update-email-connection (fn [& _] nil)]
+          (is (true? (client/move-message-on-dedicated-store! config "INBOX" "Work" "<abc@example.com>" nil))))
+        (is (= #{} (flags-of config "Work" "<ABC@example.com>")) "The search finds case variants too ...")
+        (with-open [^Store store (client/login config)]
+          (let [count-in (fn [name] (let [f (doto (.getFolder store ^String name) (.open Folder/READ_ONLY))]
+                                      (try (.getMessageCount f) (finally (.close f false)))))]
+            (is (= 1 (count-in "Work")) "... but only the exact Message-ID is moved")
+            (is (= 2 (count-in "INBOX")) "<ABC@example.com> and <xabc@example.com> stay"))))
+      (finally (.stop greenmail)))))
+
+(deftest retention-keeps-the-copy-the-user-unflagged
+  (let [greenmail (doto (GreenMail. ServerSetupTest/IMAP) (.start))]
+    (try
+      (.setUser greenmail imap-user "secret")
+      (let [config (connection-config greenmail)]
+        (with-open [^Store store (client/login config)]
+          (.appendMessages (.getFolder store "INBOX") (into-array Message [(message "<twice@x>") (message "<twice@x>")]))
+          (.create (.getFolder store "Trash") Folder/HOLDS_MESSAGES)
+          (let [inbox (doto (.getFolder store "INBOX") (.open Folder/READ_WRITE))]
+            (try (.setFlag (first (.getMessages inbox)) Flags$Flag/FLAGGED true)
+                 (finally (.close inbox false)))))
+        (with-redefs [client/connection-data-from-id (fn [_] {:config config})
+                      client/connected? (constantly true)
+                      db/mark-email-expired! (fn [& _] (throw (ex-info "A kept copy must keep the record" {})))
+                      db/category-by-name (fn [_] {:name "parcels" :destination_folder "INBOX" :flag_color "orange"})]
+          (is (= {:protected 1} (client/trash-expired-emails! "conn-flags" [{:message-id "<twice@x>" :folder "INBOX" :protect? true :category "parcels"}]))))
+        (with-open [^Store store (client/login config)]
+          (let [count-in (fn [name] (let [f (doto (.getFolder store ^String name) (.open Folder/READ_ONLY))]
+                                      (try (.getMessageCount f) (finally (.close f false)))))]
+            (is (= 1 (count-in "Trash")) "The flagged copy goes")
+            (is (= 1 (count-in "INBOX")) "The unflagged copy stays"))))
+      (finally (.stop greenmail)))))

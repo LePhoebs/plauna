@@ -8,6 +8,8 @@
             [plauna.client :as client]
             [plauna.client.oauth :as oauth]
             [plauna.database :as db]
+            [plauna.db-config]
+            [plauna.db-migration]
             [plauna.files :as files]
             [plauna.preferences :as preferences]
             [plauna.server :as server]
@@ -587,7 +589,7 @@
     (is (str/includes? (:content nothing) "2 failed again"))))
 
 (deftest training-outcome-message-names-skipped-and-failed-languages
-  (with-redefs [analysis/label->category (fn [label] (when (= "7" label) {:id 7 :name "Rechnungen"}))]
+  (with-redefs [analysis/label->category (fn [label & _] (when (= "7" label) {:id 7 :name "Rechnungen"}))]
     (is (nil? (server/training-outcome-message [{:language "deu"}] [] [])) "Everything trained: the default success message applies")
     (let [partial (server/training-outcome-message [{:language "deu"}]
                                                    [{:language "eng" :samples 12 :labels #{"7"}}]
@@ -1066,3 +1068,132 @@
   (let [message (:content (server/folder-parse-summary-message {:folder "Trash" :processed 0 :skipped 5 :skipped-elsewhere 0 :recategorized 4 :errors 0 :remaining 0}))]
     (is (str/includes? message "1 already stored e-mail(s) skipped"))
     (is (str/includes? message "4 already stored e-mail(s) given the chosen category"))))
+
+(deftest anonymous-requests-cannot-upload
+  (let [handler (server/wrap-authentication (fn [_] {:status 200}))]
+    (is (= 415 (:status (handler {:request-method :post :uri "/login" :session {}
+                                  :headers {"content-type" "multipart/form-data; boundary=x" "content-length" "10115"}}))))
+    (is (= 413 (:status (handler {:request-method :post :uri "/css/x" :session {}
+                                  :headers {"content-type" "application/x-www-form-urlencoded" "content-length" "1000000"}}))))
+    (is (= 200 (:status (handler {:request-method :post :uri "/login" :session {}
+                                  :headers {"content-type" "application/x-www-form-urlencoded" "content-length" "40"}}))))
+    (is (= 200 (:status (handler {:request-method :post :uri "/emails/parse" :session {:authenticated true :auth-generation 0 :authenticated-at (System/currentTimeMillis)}
+                                  :headers {"content-type" "multipart/form-data; boundary=x" "content-length" "10115"}})))
+        "A logged-in upload is not affected")))
+
+(deftest training-follows-the-wall-clock-after-a-dst-change
+  (let [zone (java.time.ZoneId/of "Europe/Berlin")
+        now (java.time.ZonedDateTime/of 2026 3 29 4 0 0 0 zone)
+        delay (server/daily-training-delay-millis now (java.time.LocalTime/of 2 0) (.toInstant now))]
+    (is (= (java.time.ZonedDateTime/of 2026 3 30 2 0 0 0 zone) (.plusNanos now (* delay 1000000))))))
+
+(deftest a-new-language-is-offered-even-with-as-many-old-preferences
+  (let [added (atom nil)]
+    (with-redefs [db/get-language-preferences (fn [] (if @added [{:language "eng"} {:language "deu"}] [{:language "eng"}]))
+                  db/get-languages (fn [] [{:language "deu"}])
+                  db/add-language-preferences (fn [prefs] (reset! added prefs))]
+      (server/language-preferences)
+      (is (= [["deu" false]] @added)))))
+
+(deftest invalid-language-codes-are-refused
+  (let [response ((server/make-routes {}) {:request-method :post :uri "/metadata/language" :session {:authenticated true}
+                                           :params {:message-id "m" :language "../../etc"}})]
+    (is (= 400 (:status response)))))
+
+(deftest maintenance-refuses-changes-until-the-restart
+  (let [flag @#'server/maintenance?
+        handler (server/wrap-maintenance (fn [_] {:status 200}))]
+    (try
+      (reset! flag true)
+      (is (= 503 (:status (handler {:request-method :post :uri "/metadata/category"}))))
+      (is (= 503 (:status (handler {:request-method :get :uri "/emails"}))) "Only the database page stays open: some pages write while shown")
+      (is (= 200 (:status (handler {:request-method :post :uri "/admin/database/config"}))) "The database page still works")
+      (finally (reset! flag false)))))
+
+(deftest a-refused-migration-gives-the-lock-back
+  (let [job @#'server/event-bus-job]
+    (with-redefs-fn {#'server/render-database-page (fn [page] {:status 200 :page page})
+                     #'server/running-writers (constantly [])
+                     #'plauna.db-migration/migrate! (fn [_pause!] {:ok false :error "MariaDB already contains e-mails."})
+                     #'plauna.db-config/load-config (constantly {:type :mariadb})}
+      (fn []
+        (let [response ((server/make-routes {}) {:request-method :post :uri "/admin/database/migrate" :session {:authenticated true}})]
+          (is (re-find #"already contains" (get-in response [:page :message :text])))
+          (is (nil? @job) "An import or another attempt may run again")
+          (is (false? (server/in-maintenance?)) "Nothing was paused"))))))
+
+(deftest a-migration-waits-for-running-work-before-anything-is-paused
+  (let [migrated (atom false)]
+    (with-redefs-fn {#'server/render-database-page (fn [page] {:status 200 :page page})
+                     #'server/running-writers (constantly ["a folder parse or retry"])
+                     #'plauna.db-migration/migrate! (fn [_] (reset! migrated true) {:ok true})
+                     #'plauna.db-config/load-config (constantly {:type :mariadb})}
+      (fn []
+        (let [response ((server/make-routes {}) {:request-method :post :uri "/admin/database/migrate" :session {:authenticated true}})]
+          (is (re-find #"wait until this has finished: a folder parse" (get-in response [:page :message :text])))
+          (is (false? @migrated))
+          (is (nil? @@#'server/event-bus-job)))))))
+
+(deftest the-copy-only-starts-once-nothing-writes
+  (let [busy-until (+ (System/currentTimeMillis) 300)]
+    (with-redefs-fn {#'server/running-writers (fn [] (if (< (System/currentTimeMillis) busy-until) ["a folder parse or retry"] []))}
+      (fn []
+        (is (true? (server/await-no-writers! 5000 50)))
+        (is (>= (System/currentTimeMillis) busy-until) "It returned only after the parse had ended"))))
+  (with-redefs-fn {#'server/running-writers (constantly ["a training run"])}
+    (fn []
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"could not pause.*a training run.*Nothing was copied"
+                            (server/await-no-writers! 200 50))
+          "Work that does not end stops the migration instead of copying a changing database"))))
+
+(deftest maintenance-also-refuses-the-oauth-callback
+  (let [flag @#'server/maintenance?
+        handler (server/wrap-maintenance (fn [_] {:status 200}))]
+    (try
+      (reset! flag true)
+      (is (= 503 (:status (handler {:request-method :get :uri "/oauth2/callback"}))))
+      (finally (reset! flag false)))))
+
+(deftest maintenance-lets-only-the-database-page-through
+  (let [flag @#'server/maintenance?
+        added (atom nil)]
+    (try
+      (reset! flag true)
+      (with-redefs [db/get-language-preferences (fn [] [{:language "eng"}])
+                    db/get-languages (fn [] [{:language "deu"}])
+                    db/add-language-preferences (fn [prefs] (reset! added prefs))]
+        (let [handler (server/wrap-maintenance (server/make-routes {}))]
+          (is (= 503 (:status (handler {:request-method :get :uri "/admin/languages" :session {:authenticated true}}))))
+          (is (nil? @added) "Showing the language page would have recorded \"deu\"")))
+      (let [handler (server/wrap-maintenance (fn [_] {:status 200}))]
+        (is (= 200 (:status (handler {:request-method :get :uri "/admin/database"}))))
+        (is (= 200 (:status (handler {:request-method :post :uri "/login"}))))
+        (is (= 200 (:status (handler {:request-method :get :uri "/css/tailwind.css"}))))
+        (is (= 503 (:status (handler {:request-method :get :uri "/emails"})))))
+      (finally (reset! flag false)))))
+
+(deftest e-mails-that-could-not-be-saved-stop-the-copy
+  (let [copied (atom false)
+        flag @#'server/maintenance?
+        job @#'server/event-bus-job]
+    (try
+      (with-redefs-fn {#'server/render-database-page (fn [page] {:status 200 :page page})
+                       #'server/running-writers (constantly [])
+                       #'plauna.messaging/barrier! (constantly {:ok false :failed ["<lost@x>"]})
+                       #'plauna.client/disconnect-all (fn [] nil)
+                       #'plauna.client/stop-health-checks! (fn [] nil)
+                       #'server/stop-training-scheduler! (fn [] nil)
+                       #'server/stop-retention-scheduler! (fn [] nil)
+                       #'plauna.application/stop-bulk-work! (fn [] nil)
+                       ;; Like the real migrate!: the copy only follows a pause that returned.
+                       #'plauna.db-migration/migrate! (fn [pause!]
+                                                        (try (pause!) (reset! copied true) {:ok true}
+                                                             (catch Exception e {:ok false :error (.getMessage e)})))
+                       #'plauna.db-config/load-config (constantly {:type :mariadb})}
+        (fn []
+          (let [response ((server/make-routes {}) {:request-method :post :uri "/admin/database/migrate" :session {:authenticated true}})
+                text (get-in response [:page :message :text])]
+            (is (false? @copied) "Nothing is copied")
+            (is (re-find #"1 e-mail\(s\) could not be saved.*<lost@x>" text))
+            (is (re-find #"Start the migration again" text) "The way on is named"))))
+      (finally (reset! flag false) (reset! job nil)))))

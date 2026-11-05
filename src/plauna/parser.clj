@@ -2,6 +2,7 @@
   (:require
    [plauna.core.email :refer [construct-email] :as core-email]
    [plauna.core.events :as events]
+   [plauna.messaging :as messaging]
    [clojure.string :as st]
    [clojure.java.io :refer [input-stream copy]]
    [clojure.core.async :refer [chan sub] :as async]
@@ -181,13 +182,15 @@
     (sub publisher :received-email local-channel)
     (async/pipeline 4
                     events-channel
-                    (comp (map (fn [event] [event (:payload event)]))
-                          (map parse-or-discard)
-                          (map (fn [[original-event parsed-email]]
-                                 (cond
-                                   (nil? parsed-email) (discarded-email-event original-event :unparseable)
-                                   (with-message-id? parsed-email) (parsed-email-event original-event parsed-email)
-                                   :else (discarded-email-event original-event :no-message-id)))))
+                    (map (fn [event]
+                           (if (messaging/barrier-event? event)
+                             ;; Passed on in order, behind every e-mail received before it (see messaging/barrier!).
+                             (assoc event :type :parsed-enrichable-email)
+                             (let [[original-event parsed-email] (parse-or-discard [event (:payload event)])]
+                               (cond
+                                 (nil? parsed-email) (discarded-email-event original-event :unparseable)
+                                 (with-message-id? parsed-email) (parsed-email-event original-event parsed-email)
+                                 :else (discarded-email-event original-event :no-message-id))))))
                     local-channel
                     true
                     (fn [^Throwable th]

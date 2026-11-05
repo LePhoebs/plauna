@@ -114,6 +114,39 @@ All notable changes to this project will be documented in this file.
 - Setting a category and its retention start are one statement now.
 - Cancelling a training run (by saving new training times) left its per-language trainers reporting
   into the next run's progress.
+- A search by Message-ID treated every hit of the IMAP SEARCH as the e-mail, but servers match
+  case-insensitively and by substring: moving, flagging or trashing `<abc@x>` also hit `<ABC@x>` and
+  `<xabc@x>`. Every hit is now checked against its exact Message-ID header.
+- The clean-up trashed every copy of an e-mail as soon as one copy was still flagged; the copy the user
+  unflagged now stays, and the e-mail counts as protected.
+- An unreadable `db-config.edn` or an unknown database type (`:mariad`) started Plauna on SQLite. Both
+  now stop it with the reason; the file is saved through a temporary file and an atomic move.
+- The SQLite → MariaDB copy ran while IMAP, folder parses, moves, training and clean-up kept writing to
+  SQLite, so the copy could be inconsistent and later changes went missing. It now starts only while
+  nothing writes; right before copying Plauna closes every page but the database page, the login and
+  static files, stops the connection retries, schedules and IMAP monitors, makes running parses and
+  moves stop and waits for them, and then sends a barrier through the event bus that the database loop
+  answers only after everything queued before it is saved (or cancels the copy after two minutes). A
+  save that failed - also a single e-mail of a batch that was otherwise saved on retry - is reported
+  by the barrier and stops the copy, naming the Message-IDs; a second attempt copies without them. It
+  stays paused until the restart. A refused attempt pauses nothing and no longer keeps imports
+  blocked.
+- Retrying a failed message by UID could process another message after the folder was recreated.
+  Failures record the folder's UIDVALIDITY (V25); a retry whose UIDVALIDITY or Message-ID differs drops
+  the entry without touching the message.
+- A model label was resolved as a category id first and as a name second, so a legacy model's label
+  "7" could hit the category with id 7, and a deleted category's id a category named like it. A model
+  is now known to have id labels from its manifest (`plauna-label-format`, written by every training)
+  or from its file name `train-<language>-<algorithm>.bin` (used only since labels are ids), and is
+  then resolved by id only. In an old `train-<language>.bin` a number is never guessed: it stays
+  unresolved until the next training; only labels that are no number resolve, as names.
+- Training left its input file open on every run; the streams are closed now, also on errors.
+- A new language was not offered for training when as many old language preferences were stored as
+  languages occur now; missing languages are added by set difference.
+- The connection page reloaded itself while a background job ran even after a form had been changed,
+  throwing the input away; it now only shows a notice then.
+- After the switch to summer time the nightly training was planned an hour late (03:00 instead of
+  02:00) on the following days; the time is now joined with each calendar day on its own.
 - On MariaDB, an e-mail whose Message-ID contains non-ASCII characters could not be saved: the id
   columns are ASCII. Such ids are now stored as `=?UTF-8?B?…?=` and decoded again for IMAP searches and
   the details page; copying a SQLite database to MariaDB converts them as well. ASCII ids are unchanged.
@@ -231,6 +264,12 @@ All notable changes to this project will be documented in this file.
 - The SQLite → MariaDB copy only runs into a MariaDB database without e-mails; a second run would have
   brought back everything deleted since the switch.
 - New index on `metadata(connection_id, folder)` (V24) for the connection page and the folder scans.
+- Requests without a login may not send uploads (multipart, 415) or bodies over 64 KB (413): the login
+  page, static files and the OAuth callback are public, and the parameter middleware behind them read
+  any body - an upload was even spooled to disk.
+- Language codes are checked before they become part of training and model file names; a manual
+  language that is not a code is refused.
+- The session generation is increased in one locked read-change-write.
 - On MariaDB, Plauna warns at startup when the text columns do not use `utf8mb4`.
 - Removed the unreachable `/training/new` route and its unused page.
 

@@ -3,6 +3,7 @@
             [clojure.walk :refer [postwalk]]
             [plauna.files :as files]
             [plauna.util.async :as async-utils]
+            [plauna.messaging :as messaging]
             [plauna.core.email :as core.email]
             [clojure.string :as string]
             [next.jdbc :as jdbc]
@@ -485,19 +486,22 @@
   "Keep the database event loop alive when a batch save fails: the transaction has already rolled
    back, so nothing partial was written. A failed batch of several e-mails is retried one e-mail at a
    time, so a single row the database rejects (a column limit on MariaDB, a constraint) costs that one
-   e-mail and not the other 499 of an import."
+   e-mail and not the other 499 of an import. Returns the Message-IDs that could not be saved in the
+   end (empty when everything was saved), so the barrier can tell (see database-event-loop)."
   [buffer]
   (try
     (save-emails-in-buffer buffer)
+    []
     (catch Exception e
       (if (<= (buffer-size buffer) 1)
-        (t/log! {:level :error :error e}
-                ["Saving e-mail" (or (some :message-id (:headers buffer)) (some :message-id (:metadata buffer)) (some :message-id (:languages buffer)))
-                 "failed and was rolled back. It was not written and will be picked up by a later backfill or re-parse:" (.getMessage e)])
+        (let [message-id (or (some :message-id (:headers buffer)) (some :message-id (:metadata buffer)) (some :message-id (:languages buffer)))]
+          (t/log! {:level :error :error e}
+                  ["Saving e-mail" message-id
+                   "failed and was rolled back. It was not written and will be picked up by a later backfill or re-parse:" (.getMessage e)])
+          [(or message-id "(unknown Message-ID)")])
         (do (t/log! {:level :warn :error e}
                     ["Saving a batch of" (buffer-size buffer) "e-mails failed and was rolled back; retrying them one by one so a single rejected e-mail does not discard the others:" (.getMessage e)])
-            (doseq [single (buffer->single-email-buffers buffer)]
-              (save-buffer-logging-errors! single)))))))
+            (vec (mapcat save-buffer-logging-errors! (buffer->single-email-buffers buffer))))))))
 
 (defn- metadata-only-event?
   "True for a re-enrichment of an e-mail that is already stored (see plauna.server's language
@@ -518,6 +522,13 @@
     ;; thread also lets shutdown block until the final partial buffer has been flushed.
     (async/thread
       (try
+        (let [;; Message-IDs whose save failed since the last barrier: a barrier confirms that everything
+              ;; before it was SAVED, so it reports them instead of plain success (see messaging/barrier!).
+              failed (volatile! [])
+              save! (fn [buffer]
+                      (let [not-saved (save-buffer-logging-errors! buffer)]
+                        (when (and (sequential? not-saved) (every? string? not-saved))
+                          (vswap! failed into not-saved))))]
         (loop [event (async/<!! local-chan)
                buffer (empty-buffer)]
           (cond
@@ -525,23 +536,32 @@
             (do
               (when (pos? (buffer-size buffer))
                 (t/log! :info ["Database event loop is stopping; flushing" (buffer-size buffer) "buffered email(s)."])
-                (save-buffer-logging-errors! buffer))
+                (save! buffer))
               :stopped)
+
+            ;; Everything that came before the barrier is saved - its transaction committed - before the
+            ;; barrier is confirmed (see messaging/barrier!).
+            (messaging/barrier-event? event)
+            (do (when (pos? (buffer-size buffer))
+                  (save! buffer))
+                (deliver (get-in event [:options :barrier]) {:failed @failed})
+                (vreset! failed [])
+                (recur (async/<!! local-chan) (empty-buffer)))
 
             (= :timed-out event)
             (do (when (pos? (buffer-size buffer))
                   (t/log! :debug ["Received timeout. Saving everything in the buffer."])
-                  (save-buffer-logging-errors! buffer))
+                  (save! buffer))
                 (recur (async/<!! local-chan) (empty-buffer)))
 
             (>= (buffer-size buffer) batch-size)
             (do (t/log! :debug ["DB buffer full. Emptying"])
-                (save-buffer-logging-errors! (add-to-buffer (:payload event) buffer (metadata-only-event? event)))
+                (save! (add-to-buffer (:payload event) buffer (metadata-only-event? event)))
                 (recur (async/<!! local-chan) (empty-buffer)))
 
             :else
             (recur (async-utils/fetch-or-timeout!! local-chan 1000)
-                   (add-to-buffer (:payload event) buffer (metadata-only-event? event)))))
+                   (add-to-buffer (:payload event) buffer (metadata-only-event? event))))))
         (catch Throwable t
           (t/log! {:level :error :error t} "The database event loop crashed. Its subscriptions are released so the supervisor's restart can take over.")
           :crashed)
@@ -743,6 +763,11 @@
                                            :errors (or errors 0) :remaining (or remaining 0)}
                                      :where [:= :id id]})))
 
+(defn running-parse-batch-count
+  "How many folder parse runs (or retries) are running right now."
+  []
+  (long (or (:count (jdbc/execute-one! (ds) ["SELECT COUNT(*) AS count FROM parse_batches WHERE status = 'running'"] builder-function)) 0)))
+
 (defn abort-running-parse-batches!
   "Called at startup: a run that was still 'running' when Plauna stopped can never finish, so mark it
    aborted instead of showing it as running forever."
@@ -832,12 +857,13 @@
 
 (defn record-parse-failure!
   "Insert a failure, or bump the attempt count of the entry that already exists for the same message."
-  [{:keys [connection-id folder uid message-number message-id subject error]}]
+  [{:keys [connection-id folder uid uid-validity message-number message-id subject error]}]
   (let [now (epoch-seconds)
         error-text (some-> error str (subs 0 (min 1000 (count (str error)))))]
     (if-let [existing (existing-parse-failure connection-id folder uid message-number)]
       (jdbc/execute! (ds) (honey/format {:update :parse-failures
                                          :set {:message-number message-number
+                                               :uid-validity (or uid-validity (:uid-validity existing))
                                                :message-id (or message-id (:message-id existing))
                                                :subject (or subject (:subject existing))
                                                :error error-text
@@ -845,7 +871,7 @@
                                                :last-seen now}
                                          :where [:= :id (:id existing)]}))
       (jdbc/execute! (ds) (honey/format {:insert-into :parse-failures
-                                         :values [{:connection-id connection-id :folder folder :uid uid
+                                         :values [{:connection-id connection-id :folder folder :uid uid :uid-validity uid-validity
                                                    :message-number message-number :message-id message-id
                                                    :subject subject :error error-text
                                                    :attempts 1 :first-seen now :last-seen now}]})))))

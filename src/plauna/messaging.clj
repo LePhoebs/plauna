@@ -49,5 +49,38 @@
   (close! target)
   (close! bucket))
 
+(defn barrier-event?
+  "True for a barrier event (see barrier!)."
+  [event]
+  (= ::barrier (:payload event)))
+
+(def ^:private barrier-entry-types
+  "Where e-mails enter the event bus: the mbox import (:received-email, then parser and enrichment),
+   the language re-detection (:language-detection-request, then enrichment) and the parsed-only path
+   (:parsed-email). Every stage forwards a barrier in order (core.async pipelines keep the input
+   order), and the database loop answers it once it has saved everything that came before."
+  [:received-email :language-detection-request :parsed-email])
+
+(defn barrier!
+  "Send a barrier through every path of the event bus and wait until the database loop answered each
+   one: then every e-mail put on the bus before has been parsed, enriched and saved - or dropped on the
+   way, or failed to save. Returns {:ok true} when everything was saved, {:ok false :failed [ids]} with
+   the Message-IDs the database loop could not save since its last barrier, or {:ok false :timeout true}
+   when not every answer came within timeout-millis (a stalled bus, a write that does not end)."
+  [timeout-millis]
+  (let [deadline (+ (System/currentTimeMillis) (long timeout-millis))
+        remaining #(max 1 (- deadline (System/currentTimeMillis)))
+        confirmations (vec (for [entry-type barrier-entry-types]
+                             (let [confirmed (promise)
+                                   sent (async/alt!! [[@main-chan {:type entry-type :payload ::barrier :options {:barrier confirmed}}]] true
+                                                     (async/timeout (remaining)) false)]
+                               (when sent confirmed))))]
+    (let [answers (when (every? some? confirmations)
+                    (mapv #(deref % (remaining) nil) confirmations))]
+      (cond
+        (or (nil? answers) (some nil? answers)) {:ok false :timeout true}
+        :else (let [failed (vec (distinct (mapcat :failed answers)))]
+                (if (seq failed) {:ok false :failed failed} {:ok true}))))))
+
 (comment
   (restart-main-chan))

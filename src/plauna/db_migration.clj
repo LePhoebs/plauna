@@ -145,9 +145,12 @@
       {:total n :inserted inserted :skipped skipped})))
 
 (defn migrate!
-  "Run the full SQLite → MariaDB migration.
+  "Run the full SQLite → MariaDB migration. pause! (optional) is called once the target is known to be
+   empty, right before copying: it stops everything that writes to SQLite, so the copy is a consistent
+   snapshot and nothing written later is lost (see plauna.server's maintenance mode).
    Returns {:ok true :counts {table n ...}} or {:ok false :error message}."
-  []
+  ([] (migrate! (fn [] nil)))
+  ([pause!]
   (let [cfg (db-cfg/load-config)]
     (if (not= :mariadb (:type cfg))
       {:ok false :error "No MariaDB configuration found. Save a MariaDB config first."}
@@ -162,14 +165,15 @@
             (if (pos? (table-count dst "headers"))
               (do (t/log! :warn "Refused the SQLite → MariaDB migration: MariaDB already contains e-mails.")
                   {:ok false :error "MariaDB already contains e-mails. Copying the SQLite file again would bring back everything deleted since the switch; the copy only runs into an empty database."})
-            (let [counts       (into {} (for [t migration-order]
+            (let [_            (pause!)
+                  counts       (into {} (for [t migration-order]
                                           [t (migrate-table! src dst t)]))
                   total-skip   (reduce + (map #(:skipped (val %)) counts))]
               (t/log! :info ["Migration complete. Total skipped rows:" total-skip "Counts:" counts])
               {:ok true :counts counts :skipped-total total-skip})))
           (catch Exception e
             (t/log! :error ["Migration failed:" (.getMessage e)])
-            {:ok false :error (.getMessage e)}))))))
+            {:ok false :error (.getMessage e)})))))))
 
 (defn test-connection!
   "Try to open one connection to the configured MariaDB. Returns {:ok true} or {:ok false :error message}."

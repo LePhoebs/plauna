@@ -502,6 +502,7 @@
                                 {:connection-id connection-id
                                  :folder folder-name
                                  :uid (attempt #(.getUID folder message))
+                                 :uid-validity (attempt #(.getUIDValidity folder))
                                  :message-number (attempt #(.getMessageNumber message))
                                  :message-id (attempt #(message-id-of message))
                                  :subject (attempt #(try (.getSubject message)
@@ -549,6 +550,26 @@
     (when (not (.isOpen folder))
       (.open folder Folder/READ_WRITE))
     folder))
+
+(defn same-message-id?
+  "True when a message's Message-ID header is exactly message-id (as Plauna stores it, see
+   core-email/storable-message-id): character for character, only surrounding spaces ignored."
+  [message-id ^Message message]
+  ;; From the ENVELOPE, or - for a message whose ENVELOPE the library cannot parse, stored through the
+  ;; raw-header fallback - from the raw header block, like message-id-of.
+  (let [header (or (try (.getMessageID ^MimeMessage message) (catch Exception _ nil))
+                   (try (raw-header message "Message-ID") (catch Exception _ nil)))]
+    (and (some? header)
+         (= (s/trim (str (core-email/storable-message-id (s/trim header)))) (s/trim (str message-id))))))
+
+(defn find-by-message-id
+  "The messages of an open folder whose Message-ID is exactly message-id. The IMAP SEARCH behind
+   MessageIDTerm only pre-selects: servers compare case-insensitively and match substrings, so
+   <abc@x> also finds <ABC@x> and <xabc@x> - acting on every hit would move, flag or trash other
+   e-mails. Every hit is therefore checked against its header."
+  [^Folder folder message-id]
+  (filterv (partial same-message-id? message-id)
+           (.search folder (MessageIDTerm. (core-email/imap-message-id message-id)))))
 
 (defn copy-message
   "Copy a message to the target folder and delete it from the source. Returns true once the copy is in
@@ -669,7 +690,7 @@
    search as well - is only logged."
   [^IMAPFolder folder message-id flag]
   (when (some? flag)
-    (try (when-let [found (seq (.search folder (MessageIDTerm. (core-email/imap-message-id message-id))))]
+    (try (when-let [found (seq (find-by-message-id folder message-id))]
            (set-category-flag! folder found flag))
          (catch Exception e
            (t/log! {:level :warn :error e} ["Could not flag" message-id "in" (.getFullName folder)])))))
@@ -797,7 +818,7 @@
    move, in the target folder: a failed move leaves the e-mail, its category and its flag unchanged.
    Returns true, :not-found, or false when the move did not complete."
   [connection-id ^IMAPFolder source-folder ^IMAPFolder target-folder ^String source-folder-name ^String target-folder-name message-id flag]
-  (let [found-messages (.search source-folder (MessageIDTerm. (core-email/imap-message-id message-id)))]
+  (let [found-messages (find-by-message-id source-folder message-id)]
     (t/log! :debug ["Found" (count found-messages) "messages when searched for the message-id:" message-id])
     (if (some? (seq found-messages))
       (do
@@ -861,7 +882,7 @@
           (cond
             ;; Look for the e-mail first: a recategorization tries every account in turn, and one that
             ;; does not hold the e-mail must not get the category's folder created.
-            (empty? (.search source-folder (MessageIDTerm. (core-email/imap-message-id message-id))))
+            (empty? (find-by-message-id source-folder message-id))
             (do (t/log! :info ["No messages found in" source-folder-name "for" message-id])
                 :not-found)
 
@@ -1011,8 +1032,9 @@
   "Move the stored e-mail message-id from its recorded folder to the trash. Returns :trashed, :missing
    when it is not in that folder any more (the user moved or deleted it), :elsewhere when its folder
    is not the one Plauna files the category into (an archive or the sent folder that was only read),
-   or :protected when protect? and the user has taken the flag away. category-folder-of returns the
-   folder of a category name."
+   or :protected when protect? and the user has taken the flag away (of a copy: the flagged copies go,
+   the unflagged one stays and the e-mail counts as protected). category-folder-of returns the folder
+   of a category name."
   [folder-named category-folder-of ^String trash-name {:keys [message-id folder protect? category]}]
   (cond
     (same-folder-name? folder trash-name)
@@ -1023,13 +1045,18 @@
 
     :else
     (let [^IMAPFolder source (folder-named folder)
-          found (seq (.search source (MessageIDTerm. (core-email/imap-message-id message-id))))]
+          found (seq (find-by-message-id source message-id))
+          ;; The protection is decided per copy: a folder can hold the same e-mail twice, and the copy
+          ;; the user unflagged to keep it must stay even when the other copy is still flagged.
+          to-trash (if protect? (filterv flagged? found) found)
+          kept? (< (count to-trash) (count found))]
       (cond
         (nil? found) :missing
-        (and protect? (not-any? flagged? found)) :protected
-        (move-found-messages! source (folder-named trash-name) found)
-        (do (db/mark-email-expired! message-id trash-name) :trashed)
-        :else :failed))))
+        (empty? to-trash) :protected
+        (not (move-found-messages! source (folder-named trash-name) to-trash)) :failed
+        ;; A kept copy is still in the category folder: the record keeps pointing there.
+        kept? :protected
+        :else (do (db/mark-email-expired! message-id trash-name) :trashed)))))
 
 (defn- on-connection!
   "Call (f store folder-named release!) on a dedicated Store of connection id for a non-empty list of its
@@ -1104,7 +1131,7 @@
       (try
         (with-dedicated-store (:config connection-data)
           (fn [_ folder-named _]
-            (boolean (seq (.search ^IMAPFolder (folder-named folder-name) (MessageIDTerm. (core-email/imap-message-id message-id)))))))
+            (boolean (seq (find-by-message-id (folder-named folder-name) message-id)))))
         (catch FolderNotFoundException _ false)
         (catch Exception e
           (t/log! {:level :warn :error e} ["Could not look for" message-id "in" folder-name])
@@ -1124,7 +1151,7 @@
                                (if (and (some? category) (not (same-folder-name? folder (category-folder-of category))))
                                  :elsewhere
                                  (let [^IMAPFolder source (folder-named folder)]
-                                   (if-let [found (seq (.search source (MessageIDTerm. (core-email/imap-message-id message-id))))]
+                                   (if-let [found (seq (find-by-message-id source message-id))]
                                      (do (set-category-flag! source found flag) :flagged)
                                      :missing)))))))))
 
@@ -1461,6 +1488,11 @@
 
 (defonce ^:private category-folder-scans-running (atom #{}))
 
+(defn category-folder-scan-running?
+  "True while a category folder scan of any connection is running."
+  []
+  (boolean (seq @category-folder-scans-running)))
+
 (defn- run-category-folder-scan!
   "Scan the category folders of the connection registered under id on its own thread, unless a scan
    of it is still running. Does nothing while the connection is down: the scan picks up the moves
@@ -1712,7 +1744,7 @@
                                         nil))]
                         (when bulk
                           (try
-                            (when-let [^IMAPMessage msg (first (.search ^IMAPFolder (:folder bulk) (MessageIDTerm. (core-email/imap-message-id message-id))))]
+                            (when-let [^IMAPMessage msg (first (find-by-message-id (:folder bulk) message-id))]
                               (set-message-as-peek msg)
                               (message->email msg))
                             (finally (close-folder-for-bulk-read bulk))))))
@@ -1796,6 +1828,7 @@
           attempt (fn [f] (try (f) (catch Exception _ nil)))]
       (set-message-as-peek message)
       {:uid (attempt #(.getUID ^IMAPFolder folder message))
+       :uid-validity (attempt #(.getUIDValidity ^IMAPFolder folder))
        :message-id (attempt #(message-id-of message))
        :subject (attempt #(try (.getSubject message)
                                (catch MessagingException _ (decode-header-text (raw-header message "Subject")))))}))
@@ -1804,4 +1837,5 @@
       (set-message-as-peek message)
       (t/log! :debug ["Reading message with UID" uid "from" (.getName ^IMAPFolder folder)])
       {:email (message->email message)
-       :message message})))
+       :message message
+       :uid-validity (try (.getUIDValidity ^IMAPFolder folder) (catch Exception _ nil))})))

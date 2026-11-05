@@ -289,20 +289,40 @@
 
   <script>
     // Background activity (parse, retry, batch move): poll a tiny status endpoint and reload the page
-    // when the work finishes - or every 10 s while it runs, but never while a form field is focused,
-    // so typing into the connection settings is not thrown away.
+    // every 10 s while it runs and once when it finishes - but never once a form on the page has been
+    // changed and not submitted, or while a field is focused: a reload would throw the input away. Then
+    // the page only says that newer results are available.
     (function () {
       var running = {% if parse-running? %}true{% else %}false{% endif %};
       if (!running) return;
+      var dirty = false;
+      document.addEventListener('input', function () { dirty = true; }, true);
+      document.addEventListener('change', function () { dirty = true; }, true);
       function editing() {
         var el = document.activeElement;
         return el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA');
+      }
+      function showReloadNotice(finished) {
+        var notice = document.getElementById('background-activity-notice');
+        if (!notice) {
+          notice = document.createElement('div');
+          notice.id = 'background-activity-notice';
+          notice.className = 'alert alert-info my-2';
+          document.body.insertBefore(notice, document.body.firstChild);
+        }
+        notice.textContent = (finished ? 'The background job has finished.' : 'The background job is still running.')
+          + ' Reload the page to see the results - unsaved changes on this page would be lost.';
       }
       function poll() {
         fetch('/admin/connections/{{id}}/activity', {cache: 'no-store'})
           .then(function (r) { return r.json(); })
           .then(function (state) {
-            if (!state.running || !editing()) { window.location.reload(); } else { setTimeout(poll, 10000); }
+            if (dirty || editing()) {
+              showReloadNotice(!state.running);
+              if (state.running) { setTimeout(poll, 10000); }
+            } else {
+              window.location.reload();
+            }
           })
           .catch(function () { setTimeout(poll, 10000); });
       }

@@ -330,14 +330,14 @@
                            (mapv :language (db/get-languages)))]
     (if (empty? languages)
       []
-      (normalize-prefs
-       (if (< (count preferences) (count languages))
-         (let [existing-languages-in-pref (mapv :language preferences)
-               diff (cd/diff (set existing-languages-in-pref) (set languages))]
-           (db/add-language-preferences
-            (mapv vector (second diff) (repeat (count (second diff)) false)))
-           (db/get-language-preferences))
-         preferences)))))
+      ;; Always the difference, not a comparison of counts: preferences of languages no e-mail has any
+      ;; more stay stored, so equal counts can still hide a new language.
+      (let [missing (vec (distinct (remove (set (map :language preferences)) languages)))]
+        (normalize-prefs
+         (if (seq missing)
+           (do (db/add-language-preferences (mapv vector missing (repeat (count missing) false)))
+               (db/get-language-preferences))
+           preferences))))))
 
 (defn languages-to-use-in-training []
   (map :language (db/get-activated-language-preferences)))
@@ -409,7 +409,8 @@
 (defn- category-label-name
   "Human-readable name for a training label (a category id; legacy files may hold names)."
   [label]
-  (or (:name (analysis/label->category label)) label))
+  ;; Written by this run, so always a category id.
+  (or (:name (analysis/label->category label :ids)) label))
 
 (defn- single-outcome-note [{:keys [language samples labels]}]
   (str language ": all " samples " categorized e-mail(s) belong to one category (" (category-label-name (first labels))
@@ -721,15 +722,20 @@
    passed and no successful run was recorded for it, return zero so a restart catches it up."
   [^ZonedDateTime now ^LocalTime training-time last-success]
   (let [zone (.getZone now)
-        today (.atZone (.atTime (.toLocalDate now) training-time) zone)
+        date (.toLocalDate now)
+        ;; The training time is joined with each calendar day on its own: shifting today's moment by a
+        ;; day would carry a DST adjustment over (02:00 does not exist on the day clocks go forward and
+        ;; becomes 03:00 - the next day must be 02:00 again).
+        at-day (fn [^java.time.LocalDate d] (.atZone (.atTime d training-time) zone))
+        ^ZonedDateTime today (at-day date)
         before-today? (.isBefore now today)
-        latest-due (if before-today? (.minusDays today 1) today)
+        ^ZonedDateTime latest-due (if before-today? (at-day (.minusDays date 1)) today)
         missed? (if last-success
                   (.isBefore ^Instant last-success (.toInstant latest-due))
                   (not before-today?))
-        next-time (if missed?
+        ^ZonedDateTime next-time (if missed?
                     now
-                    (if before-today? today (.plusDays today 1)))]
+                    (if before-today? today (at-day (.plusDays date 1))))]
     (max 0 (.toMillis (Duration/between (.toInstant now) (.toInstant next-time))))))
 
 (declare schedule-next-daily-training!)
@@ -1620,6 +1626,99 @@
        (~@markup-call messages#)
        ~markup-call)))
 
+(defonce ^:private maintenance?
+  ;; Set right before the SQLite → MariaDB copy: from then on nothing may be written to SQLite until the
+  ;; restart that switches databases, or it would be missing on MariaDB.
+  (atom false))
+
+(defn in-maintenance?
+  "True once Plauna paused for the SQLite → MariaDB copy (see enter-maintenance!)."
+  []
+  @maintenance?)
+
+(defn running-writers
+  "What is writing to the database right now, as short descriptions: incoming e-mails being saved,
+   folder parses and retries, moves to category folders, a clean-up, a training run, a category folder
+   scan. Empty when nothing is."
+  []
+  (cond-> []
+    (pos? (long (app/messages-in-progress))) (conj "incoming e-mails being saved")
+    (pos? (long (db/running-parse-batch-count))) (conj "a folder parse or retry")
+    (some #(= "running" (:status %)) (vals @batch-moves)) (conj "a move to category folders")
+    @retention-running (conj "a clean-up")
+    (= :running (:status @training-progress)) (conj "a training run")
+    (client/category-folder-scan-running?) (conj "a category folder scan")))
+
+(def maintenance-wait-millis
+  "How long the pause before the copy waits for running work to finish."
+  (* 120 1000))
+
+(defn await-no-writers!
+  "Wait until running-writers is empty, checking every poll-millis for at most wait-millis. Throws when
+   something is still writing then: the copy must not start while SQLite still changes."
+  ([] (await-no-writers! maintenance-wait-millis 500))
+  ([wait-millis poll-millis]
+   (let [deadline (+ (System/currentTimeMillis) (long wait-millis))]
+     (loop []
+       (let [busy (running-writers)]
+         (cond
+           (empty? busy) true
+           (> (System/currentTimeMillis) deadline)
+           (throw (ex-info (str "Plauna could not pause: still running after " (quot (long wait-millis) 1000) " s: " (st/join ", " busy) ". Nothing was copied.")
+                           {:busy busy}))
+           :else (do (Thread/sleep (long poll-millis)) (recur))))))))
+
+(defn- enter-maintenance!
+  "Pause everything that writes to SQLite, then confirm that nothing does any more:
+   - no new work: state-changing requests and the OAuth callback are refused (wrap-maintenance), the
+     connection retries skip (plauna.entry checks in-maintenance?), training and clean-up are no longer
+     scheduled, the IMAP monitors and their health checks are stopped;
+   - running work ends: folder parses, retries and moves stop at their next e-mail (app/stop-bulk-work!),
+     and everything listed by running-writers is awaited (await-no-writers!);
+   - a barrier is sent through the event bus (messaging/barrier!): it is confirmed only after every
+     e-mail queued before it - by an mbox import or a language re-detection that ended just before -
+     has been parsed, enriched and saved, its transaction committed. The bus job is held by the
+     migration, so nothing new is queued after it.
+   Throws when the work does not end in time: the copy is not started, and Plauna stays paused."
+  []
+  (reset! maintenance? true)
+  (t/log! :warn "Entering maintenance for the SQLite → MariaDB copy: Plauna stays paused until it is restarted.")
+  (app/stop-bulk-work!)
+  (doseq [[label stop!] [["automatic training" stop-training-scheduler!]
+                         ["retention" stop-retention-scheduler!]
+                         ["IMAP connections" client/disconnect-all]
+                         ["IMAP health checks" client/stop-health-checks!]]]
+    (try (stop!) (catch Throwable e (t/log! {:level :warn :error e} ["Could not stop" label]))))
+  (await-no-writers!)
+  (let [{:keys [ok timeout failed]} (messaging/barrier! maintenance-wait-millis)]
+    (cond
+      ok nil
+      timeout (throw (ex-info "Plauna could not pause: e-mails on the event bus were not saved in time. Nothing was copied." {}))
+      :else (throw (ex-info (str (count failed) " e-mail(s) could not be saved before the copy, so they are not in SQLite and would not be on MariaDB either: "
+                                 (st/join ", " (take 10 failed)) (when (> (count failed) 10) ", ...")
+                                 ". The reason is in the log. Nothing was copied. Start the migration again to copy without them, and import them again on MariaDB afterwards.")
+                            {:failed failed}))))
+  (await-no-writers! 1000 200)
+  (t/log! :info "Nothing writes to SQLite any more; copying."))
+
+(declare public-path?)
+
+(defn wrap-maintenance
+  "While maintenance? is set, only the database page, the login and logout and the static files answer;
+   every other request gets 503. An allowlist and not a list of writing routes: some pages write while
+   they are shown (the language page records new languages, the OAuth callback stores tokens), and any
+   such write would be missing on MariaDB."
+  [handler]
+  (fn [request]
+    (let [uri (str (:uri request))]
+      (if (and @maintenance?
+               (not (st/starts-with? uri "/admin/database"))
+               (not= "/logout" uri)
+               (or (= "/oauth2/callback" uri) (not (public-path? uri))))
+        {:status 503 :headers html-headers
+         :body "<p>Plauna is paused for the switch to MariaDB. Save the database configuration and restart Plauna to continue.</p><p><a href=\"/admin/database\">Database settings</a></p>"}
+        (handler request)))))
+
 (defn make-routes [context]
   (comp/routes
 
@@ -1712,15 +1811,33 @@
                                          {:type "error"   :text (str "Connection failed: " (:error result))})})))
 
    (comp/POST "/admin/database/migrate" {}
-     (let [result (db-mig/migrate!)]
+     (let [busy (running-writers)
+           result (cond
+                    ;; Refused before anything is paused: a refused attempt changes nothing.
+                    (seq busy)
+                    {:ok false :error (str "Please wait until this has finished: " (st/join ", " busy) ".")}
+
+                    ;; A pause that already began (an attempt that stopped before copying) keeps the bus
+                    ;; job; the next attempt may go on with it.
+                    (not (or (claim-event-bus-job! :migration)
+                             (and @maintenance? (= :migration @event-bus-job))))
+                    {:ok false :error (:content event-bus-busy-message)}
+
+                    :else
+                    (try (db-mig/migrate! enter-maintenance!)
+                         ;; Only a pause that really began keeps the bus job (no import or re-detection
+                         ;; before the restart); a refusal before it - MariaDB not empty or unreachable -
+                         ;; gives it back.
+                         (finally (when-not @maintenance? (release-event-bus-job!)))))]
        (render-database-page {:saved-config (dissoc (db-cfg/load-config) :password)
                               :message (cond
                                          (not (:ok result))
-                                         {:type "error" :text (str "Migration failed: " (:error result))}
+                                         {:type "error" :text (str "Migration failed: " (:error result)
+                                                                   (when @maintenance? " Plauna is paused until it is restarted."))}
                                          (pos? (:skipped-total result 0))
                                          {:type "error" :text (str "Migration finished with " (:skipped-total result) " skipped row(s) — check the logs for details. Do not restart until the issue is resolved.")}
                                          :else
-                                         {:type "success" :text "Migration complete with no losses. Save the configuration above and restart Plauna to switch to MariaDB."})
+                                         {:type "success" :text "Migration complete with no losses. Plauna is paused so nothing is written to SQLite any more: save the configuration above and restart Plauna to switch to MariaDB."})
                               :migration-counts (when (:ok result)
                                                   (map (fn [[t v]] {:table t :inserted (:inserted v) :skipped (:skipped v) :total (:total v)}) (:counts result)))})))
 
@@ -1968,11 +2085,17 @@
      ;; and avoid leaving an empty string that confuses enriched-only filters.
      (let [{:keys [message-id language]} (:params request)
            lang (when (seq language) language)]
-       (if (and (seq message-id) (db/email-exists? message-id))
+       (cond
+         ;; The language becomes part of training and model file names.
+         (and (some? lang) (not= "n/a" lang) (not (files/valid-language-code? lang)))
+         {:status 400 :headers {"Content-Type" "text/plain; charset=UTF-8"} :body "invalid-language"}
+
+         (and (seq message-id) (db/email-exists? message-id))
          (do (db/update-metadata-language message-id lang 1.0)
              {:status 204})
          ;; metadata.message_id references headers: without the e-mail the insert would fail with a
          ;; constraint violation and a 500.
+         :else
          {:status 404 :headers {"Content-Type" "text/plain; charset=UTF-8"} :body "email-not-found"})))
 
    (comp/POST "/metadata" request
@@ -2309,6 +2432,28 @@
                                      (some-> (request-host request) st/lower-case)))
             :else false)))))
 
+(def ^:private max-anonymous-body-bytes
+  "The largest request body an anonymous request may send: the login form is a few hundred bytes."
+  (* 64 1024))
+
+(defn anonymous-body-refusal
+  "A response refusing the body of a request that is not authenticated, or nil when it may pass. Public
+   paths (the login page, static files, the OAuth callback) are reached without a login, and the
+   parameter middleware behind authentication reads whatever body they carry - a multipart upload is
+   even spooled to disk. So an anonymous request may not send a multipart body at all, nor a body
+   larger than max-anonymous-body-bytes (or one of unknown length)."
+  [request]
+  (let [headers (:headers request)
+        content-type (some-> (get headers "content-type") st/lower-case)
+        length (some-> (get headers "content-length") st/trim parse-long)
+        chunked? (some-> (get headers "transfer-encoding") st/lower-case (st/includes? "chunked"))]
+    (cond
+      (and content-type (st/starts-with? content-type "multipart/"))
+      {:status 415 :headers html-headers :body "Uploads need a login."}
+
+      (or (and length (> (long length) max-anonymous-body-bytes)) chunked?)
+      {:status 413 :headers html-headers :body "Request body too large."})))
+
 (defn wrap-authentication
   "Require a logged-in session or an allowlisted mTLS client certificate for every non-public
    request. A successful certificate authentication is promoted to the normal signed browser
@@ -2333,6 +2478,9 @@
         (cross-site-request? request)
         (do (t/log! :warn ["Refused a cross-site" (name (:request-method request)) "to" (:uri request)])
             {:status 403 :headers html-headers :body "Cross-site request refused."})
+
+        (and (not already-authenticated?) (not certificate-authenticated?) (anonymous-body-refusal request))
+        (anonymous-body-refusal request)
 
         (or (public-path? (:uri request))
             already-authenticated?
@@ -2417,6 +2565,7 @@
                         ;; Authentication runs BEFORE the body is parsed: an anonymous request must not be
                         ;; able to make the server read (and spool to disk) an arbitrarily large multipart
                         ;; upload. Authentication only needs the session and the headers.
+                        wrap-maintenance
                         wrap-authentication
                         wrap-exception-handling
                         wrap-static-asset-revalidation

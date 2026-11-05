@@ -158,7 +158,9 @@
                         (doto (Thread. ^Runnable runnable "plauna-connection-retry") (.setDaemon true)))))]
       (.scheduleWithFixedDelay executor
                                ^Runnable (fn []
-                                           (try (retry-unconnected-connections! context)
+                                           ;; Paused for the switch to MariaDB: the accounts stay disconnected.
+                                           (try (when-not (server/in-maintenance?)
+                                                  (retry-unconnected-connections! context))
                                                 (catch Throwable e
                                                   (t/log! {:level :error :error e} "Retrying unconnected connections failed."))))
                                (long connection-retry-interval-seconds)
@@ -201,7 +203,12 @@
   (setup-logging)
   (register-shutdown-hook!)
   (let [application-config (files/parse-config-from-cli-arguments args)
-        db-config (db-cfg/load-config)]
+        db-config (try (db-cfg/load-config)
+                       (catch clojure.lang.ExceptionInfo e
+                         ;; An unreadable db-config.edn or an unknown PLAUNA_DB_TYPE: stop with the reason
+                         ;; rather than start on a database nobody asked for.
+                         (t/log! :error (.getMessage e))
+                         (System/exit 1)))]
     (try (db/setup-db! db-config)
          (catch Exception e
            ;; Only reached with PLAUNA_DB_STARTUP_TIMEOUT set; exit so a restart policy can try again.

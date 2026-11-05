@@ -696,6 +696,23 @@
 
 (defonce ^:private messages-in-flight (atom #{}))
 
+(defn messages-in-progress
+  "How many incoming e-mails are being saved right now (see incoming-email-workflow)."
+  []
+  (count @messages-in-flight))
+
+(defonce ^:private bulk-work-stopped
+  ;; Set for the switch to MariaDB (see plauna.server/enter-maintenance!): folder parses and moves to
+  ;; category folders end at their next e-mail instead of writing on.
+  (atom false))
+
+(defn stop-bulk-work!
+  "Make running folder parses and moves stop at the next e-mail; new ones end at once."
+  []
+  (reset! bulk-work-stopped true))
+
+(defn bulk-work-stopped? [] @bulk-work-stopped)
+
 (defn- claim-message!
   "True when message-id was not being processed yet and is now claimed by the caller."
   [message-id]
@@ -935,10 +952,25 @@
     :errors
     (try
       (if-let [email-message (int/email-by-uid-from-folder client uid folder)]
-        (let [message-id (-> email-message :email :header :message-id)]
-          (if (and (some? message-id) (int/email-exists? db message-id))
+        (let [message-id (-> email-message :email :header :message-id)
+              ;; The UID may name another message now: the folder was recreated (another UIDVALIDITY),
+              ;; or the recorded Message-ID differs. Then the failed message is not there any more - it
+              ;; would be found again under its new UID by the next parse - and this one is left alone.
+              other-message? (or (and (some? (:uid-validity failure)) (some? (:uid-validity email-message))
+                                      (not= (long (:uid-validity failure)) (long (:uid-validity email-message))))
+                                 (and (not (str/blank? (str (:message-id failure)))) (some? message-id)
+                                      (not= (:message-id failure) message-id)))]
+          (cond
+            other-message?
+            (do (t/log! :info ["UID" uid "in" folder-name "belongs to another message now - dropping the failure entry without touching it."])
+                (resolve-parse-failures-safely! db connection-id folder-name uid nil (:known-failures options))
+                :gone)
+
+            (and (some? message-id) (int/email-exists? db message-id))
             (do (resolve-parse-failures-safely! db connection-id folder-name uid message-id (:known-failures options))
                 :skipped)
+
+            :else
             (let [{:keys [status]} (incoming-email-workflow email-message connection-id folder options context)]
               (finish-processed-email! db email-message status connection-id folder-name uid options)
               (if (= :processed status) :processed :skipped))))
@@ -982,8 +1014,10 @@
                      (fn []
                        (let [result (try
                                       (reduce (fn [summary failure]
-                                                (let [outcome (retry-one-failure! client db folder folder-name connection-id options failure context)]
-                                                  (-> summary (update outcome inc) (update :examined inc))))
+                                                (if @bulk-work-stopped
+                                                  (reduced (assoc summary :aborted "stopped because Plauna is pausing for the switch to MariaDB"))
+                                                  (let [outcome (retry-one-failure! client db folder folder-name connection-id options failure context)]
+                                                    (-> summary (update outcome inc) (update :examined inc)))))
                                               base
                                               failures)
                                       (finally (int/close-folder-for-bulk-read client bulk)))]
@@ -1006,6 +1040,7 @@
   (let [chunks (partition-all batch-move-chunk-size message-ids)
         summary (atom (merge {:total 0 :uncategorized 0 :moved 0 :in-place 0 :not-found 0 :failed 0} base-summary))]
     (doseq [chunk chunks
+            :while (not @bulk-work-stopped)
             :let [emails (int/fetch-emails db {:entity :enriched-email :strict true :with-bodies false}
                                            {:where [:in :headers.message-id (vec chunk)]})
                   categorized (filter #(some? (-> % :metadata :category)) emails)
@@ -1086,6 +1121,9 @@
       (cond
         (empty? remaining-numbers)
         (assoc summary :remaining 0)
+
+        @bulk-work-stopped
+        (assoc summary :remaining (count remaining-numbers) :aborted "stopped because Plauna is pausing for the switch to MariaDB")
 
         (and (some? batch-size) (>= (:processed summary) batch-size))
         (assoc summary :remaining (count remaining-numbers))

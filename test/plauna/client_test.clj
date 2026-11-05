@@ -453,7 +453,9 @@
         marked (atom [])
         moved (atom [])]
     (with-redefs [db/mark-email-expired! (fn [message-id folder] (swap! marked conj [message-id folder]))
-                  client/move-found-messages! (fn [_ _ found] (swap! moved conj (count found)) true)]
+                  client/move-found-messages! (fn [_ _ found] (swap! moved conj (count found)) true)
+                  ;; The mocked messages have no headers; the exact Message-ID check has its own test.
+                  client/same-message-id? (constantly true)]
       (let [folders {"INBOX-flagged" (folder-finding [(message-flagged true)])
                      "INBOX-unflagged" (folder-finding [(message-flagged false)])
                      "INBOX-empty" (folder-finding [])
@@ -500,7 +502,8 @@
         flagged (atom [])
         source (folder-finding [(message-flagged true)])
         target (folder-finding [(message-flagged true)])]
-    (with-redefs [client/set-category-flag! (fn [folder _ color] (swap! flagged conj [(if (identical? folder target) :target :source) color]))
+    (with-redefs [client/same-message-id? (constantly true)
+                  client/set-category-flag! (fn [folder _ color] (swap! flagged conj [(if (identical? folder target) :target :source) color]))
                   db/update-email-folder (fn [& _] [{:next.jdbc/update-count 1}])
                   db/update-email-connection (fn [& _] nil)]
       (with-redefs [client/move-found-messages! (fn [& _] false)]

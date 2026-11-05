@@ -79,6 +79,13 @@
   (locking settings-lock
     (save-settings! (merge (load-settings) updates))))
 
+(defn swap-settings!
+  "Atomically replace settings.json with (f settings): read, change and write under one lock, so two
+   changes at the same time cannot both start from the same old value."
+  [f]
+  (locking settings-lock
+    (save-settings! (f (load-settings)))))
+
 (defn- random-session-key
   "A 16-character (16-byte) random string, suitable as an AES-128 key for the session cookie store."
   []
