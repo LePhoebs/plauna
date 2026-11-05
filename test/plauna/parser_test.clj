@@ -106,3 +106,14 @@ Tester\r
       (is (= :no-message-id (get-in event [:payload :reason])))
       (is (true? (get-in event [:options :enrich])) "The original options travel with the answer")))
   "The mbox limiter can account for fragments that never become e-mails")
+
+(deftest mbox-e-mails-store-sender-and-from-like-imap
+  (let [raw (str "Message-ID: <list-1@x>\r\n"
+                 "From: News <news@shop.de>\r\n"
+                 "Sender: bounce@mcsv.net\r\n"
+                 "To: me@example.com\r\n"
+                 "Subject: Angebote\r\n"
+                 "Content-Type: text/plain\r\n\r\nHallo\r\n")
+        email (parser/parse-email (java.io.ByteArrayInputStream. (.getBytes raw "UTF-8")))]
+    (is (= [[:sender "bounce@mcsv.net"] [:from "news@shop.de"] [:receiver "me@example.com"]]
+           (mapv (juxt :type :address) (:participants email))))))

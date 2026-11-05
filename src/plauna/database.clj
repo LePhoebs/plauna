@@ -207,6 +207,9 @@
   (conj (rest insert-query)
         (str (first insert-query)
              " ON CONFLICT(message_id) DO UPDATE SET"
+             ;; The right-hand sides see the old row: a re-save with the same category keeps its time.
+             " categorized_at = CASE WHEN metadata.category IS excluded.category THEN metadata.categorized_at ELSE excluded.categorized_at END,"
+             " expired_at = CASE WHEN metadata.category IS excluded.category THEN metadata.expired_at ELSE NULL END,"
              " language = excluded.language,"
              " language_confidence = excluded.language_confidence,"
              " category = excluded.category,"
@@ -232,30 +235,60 @@
                    (insert->insert-ignore))
                   {:batch true})))
 
-(defn- clip [^String value max-length]
-  (if (and (string? value) (> (count value) max-length)) (subs value 0 max-length) value))
+(defn- clip
+  "value cut to max-length characters - one less when the cut would split a surrogate pair (an emoji),
+   which would leave half a character that the database stores as ?."
+  [^String value max-length]
+  (if (and (string? value) (> (count value) max-length))
+    (subs value 0 (if (Character/isHighSurrogate (.charAt value (dec (long max-length)))) (dec (long max-length)) max-length))
+    value))
+
+(def max-body-content-chars
+  "Text kept per body part. One row larger than MariaDB's max_allowed_packet (16 MB by default) is
+   rejected - and with it the whole e-mail; 3 M characters stay below that even at four bytes each.
+   Only huge text attachments (CSV exports, calendars) reach it; categorization reads far less."
+  (* 3 1024 1024))
 
 (defn fit-body-row
-  "Make the header-derived columns of a body part fit MariaDB's columns (mime_type ASCII up to 100,
-   charset and transfer_encoding up to 50 characters), where SQLite would take anything. A malformed
-   Content-Type must not cost the whole e-mail: MariaDB rejects the row, and with it the e-mail's batch."
+  "Make a body part fit MariaDB's columns (mime_type ASCII up to 100, charset and transfer_encoding up
+   to 50 characters, the content up to max-body-content-chars), where SQLite would take anything. A
+   malformed Content-Type or a huge text attachment must not cost the whole e-mail: MariaDB rejects the
+   row, and with it the e-mail's batch."
   [body]
   (-> body
+      (update :content clip max-body-content-chars)
       (update :mime-type #(some-> % (string/replace #"[^\x20-\x7e]" "") (clip 100)))
       (update :charset clip 50)
       (update :transfer-encoding clip 50)))
 
+(declare chunk-bodies)
+
 (defn save-bodies
+  "Insert body rows (fitted to the columns, see fit-body-row) in as many statements as needed to stay
+   below MariaDB's packet size (see chunk-bodies) - every caller, the single e-mail save and the
+   re-fetch as well as the batch save."
   ([bodies] (save-bodies (ds) bodies))
   ([conn bodies]
-   (jdbc/execute! conn
-                  (->>
-                   (builder/for-insert-multi
-                    :bodies
-                    [:content :mime_type :charset :transfer_encoding :message_id :filename :content_disposition]
-                    (mapv (comp (juxt :content :mime-type :charset :transfer-encoding :message-id :filename :content-disposition) fit-body-row) bodies) {})
-                   (insert->insert-ignore))
-                  {:batch true})))
+   (doseq [chunk (chunk-bodies (map fit-body-row bodies))]
+     (jdbc/execute! conn
+                    (->>
+                     (builder/for-insert-multi
+                      :bodies
+                      [:content :mime_type :charset :transfer_encoding :message_id :filename :content_disposition]
+                      (mapv (juxt :content :mime-type :charset :transfer-encoding :message-id :filename :content-disposition) chunk) {})
+                     (insert->insert-ignore))
+                    {:batch true}))))
+
+(defn replace-bodies!
+  "Delete the body rows with the given ids and save bodies, in one transaction: a failure in between
+   must not leave an e-mail without its text."
+  [ids bodies]
+  (when (or (seq ids) (seq bodies))
+    (jdbc/with-transaction [tx (ds)]
+      (when (seq ids)
+        (jdbc/execute! tx (into [(str "DELETE FROM bodies WHERE id IN (" (string/join ", " (repeat (count ids) "?")) ")")] ids)))
+      (when (seq bodies)
+        (save-bodies tx bodies)))))
 
 (defn delete-bodies-by-ids
   "Delete the body rows with the given primary-key ids. Used by refetch to drop a specific stale (empty)
@@ -290,25 +323,40 @@
                        (insert->insert-ignore))
                   {:batch true})))
 
+(declare epoch-seconds)
+
+(defn- metadata-row
+  "The batch columns of one metadata entry. categorized_at is the moment it is saved with a category, so
+   a category's retention counts from when the e-mail got it - also for an old e-mail that is saved
+   for the first time only now (a folder scan, a parse of an old folder), not from its date."
+  [now {:keys [message-id language language-confidence category-id category-confidence connection-id]}]
+  [message-id language language-confidence category-id category-confidence connection-id (when (some? category-id) now)])
+
 (defn update-metadata-batch
   ([metadata] (update-metadata-batch (ds) metadata))
   ([conn metadata]
    (when (seq metadata)
-     (if (mariadb?)
-       ;; One multi-row upsert per 200 e-mails instead of one round trip per e-mail.
-       (doseq [chunk (partition-all 200 metadata)]
+     (let [now (epoch-seconds)]
+       (if (mariadb?)
+         ;; One multi-row upsert per 200 e-mails instead of one round trip per e-mail. MariaDB applies the
+         ;; assignments left to right: categorized_at and expired_at must compare with the OLD category,
+         ;; so they come before category is overwritten.
+         (doseq [chunk (partition-all 200 metadata)]
+           (jdbc/execute! conn
+             (into [(str "INSERT INTO metadata (message_id, language, language_confidence, category, category_confidence, connection_id, categorized_at) VALUES "
+                         (string/join ", " (repeat (count chunk) "(?, ?, ?, ?, ?, ?, ?)"))
+                         " ON DUPLICATE KEY UPDATE"
+                         " categorized_at = IF(category <=> VALUES(category), categorized_at, VALUES(categorized_at)),"
+                         " expired_at = IF(category <=> VALUES(category), expired_at, NULL),"
+                         " language = VALUES(language), language_confidence = VALUES(language_confidence), category = VALUES(category), category_confidence = VALUES(category_confidence), connection_id = COALESCE(VALUES(connection_id), connection_id)")]
+                   (mapcat (partial metadata-row now) chunk))))
          (jdbc/execute! conn
-           (into [(str "INSERT INTO metadata (message_id, language, language_confidence, category, category_confidence, connection_id) VALUES "
-                       (string/join ", " (repeat (count chunk) "(?, ?, ?, ?, ?, ?)"))
-                       " ON DUPLICATE KEY UPDATE language = VALUES(language), language_confidence = VALUES(language_confidence), category = VALUES(category), category_confidence = VALUES(category_confidence), connection_id = COALESCE(VALUES(connection_id), connection_id)")]
-                 (mapcat (juxt :message-id :language :language-confidence :category-id :category-confidence :connection-id) chunk))))
-       (jdbc/execute! conn
-                      (->> (builder/for-insert-multi
-                            :metadata
-                            [:message_id :language :language_confidence :category :category_confidence :connection_id]
-                            (mapv (juxt :message-id :language :language-confidence :category-id :category-confidence :connection-id) metadata) {})
-                           (insert->metadata-upsert))
-                      {:batch true})))))
+                        (->> (builder/for-insert-multi
+                              :metadata
+                              [:message_id :language :language_confidence :category :category_confidence :connection_id :categorized_at]
+                              (mapv (partial metadata-row now) metadata) {})
+                             (insert->metadata-upsert))
+                        {:batch true}))))))
 
 (defn update-metadata-language-batch
   "Write only the detected language of stored e-mails ([{:message-id :language :language-confidence}]).
@@ -335,6 +383,8 @@
   [buffer]
   (or (:count buffer) (count (:headers buffer))))
 
+(declare add-to-buffer*)
+
 (defn add-to-buffer
   "Queue one e-mail for the next batch save. With metadata-only? (the re-enrichment of an e-mail that
    is already stored, see the :metadata-only event option) only its metadata is queued: the header is
@@ -342,8 +392,17 @@
    UNIQUE constraint on bodies does not cover their NULL content."
   ([e-mail buffer] (add-to-buffer e-mail buffer false))
   ([e-mail buffer metadata-only?]
-   ;; A re-enrichment only contributes its language (see update-metadata-language-batch).
-   (let [with-metadata (fn [b] (if (some? (:metadata e-mail))
+   (if (and (not metadata-only?)
+            (some #(= (get-in e-mail [:header :message-id]) (:message-id %)) (:headers buffer)))
+     ;; The same e-mail twice in one batch (an mbox holding a message twice): the already-stored check
+     ;; only sees saved rows, and the second copy would add its attachment rows again.
+     buffer
+     (add-to-buffer* e-mail buffer metadata-only?))))
+
+(defn- add-to-buffer*
+  [e-mail buffer metadata-only?]
+  ;; A re-enrichment only contributes its language (see update-metadata-language-batch).
+  (let [with-metadata (fn [b] (if (some? (:metadata e-mail))
                                  (update b (if metadata-only? :languages :metadata) (fnil conj []) (:metadata e-mail))
                                  b))]
      (-> (if metadata-only?
@@ -353,7 +412,7 @@
                (update :bodies into (:body e-mail))
                (update :participants into (:participants e-mail))))
          with-metadata
-         (update :count (fnil inc 0))))))
+         (update :count (fnil inc 0)))))
 
 (defn- bodyless-message-ids [headers bodies]
   (let [covered (set (map :message-id bodies))]
@@ -523,8 +582,6 @@
                                                        :language_confidence)))
                             (honey/format)))))
 
-(declare epoch-seconds)
-
 (defn category-changed!
   "Record that an e-mail just got a different category: from now on it is an e-mail of the new
    category. Its retention counts from now (categorized_at), and a retention mark from the previous
@@ -534,23 +591,21 @@
                                      :set    {:expired-at nil :categorized-at (epoch-seconds)}
                                      :where  [:= :message-id message-id]})))
 
-(defn- update-metadata-category!
+(defn update-metadata-category
+  "Set the category of a stored e-mail. Every caller changes the category, so in the same statement
+   the e-mail's retention starts anew (categorized_at) and a retention mark from the previous category
+   is cleared (see category-changed!)."
   [message_id category confidence]
   (if (mariadb?)
     (jdbc/execute! (ds)
-      ["INSERT INTO metadata (message_id, category, category_modified, category_confidence) VALUES (?, ?, UNIX_TIMESTAMP(), ?) ON DUPLICATE KEY UPDATE category = VALUES(category), category_modified = VALUES(category_modified), category_confidence = VALUES(category_confidence)"
+      ["INSERT INTO metadata (message_id, category, category_modified, category_confidence, categorized_at, expired_at) VALUES (?, ?, UNIX_TIMESTAMP(), ?, UNIX_TIMESTAMP(), NULL) ON DUPLICATE KEY UPDATE category = VALUES(category), category_modified = VALUES(category_modified), category_confidence = VALUES(category_confidence), categorized_at = VALUES(categorized_at), expired_at = NULL"
        message_id category confidence])
     (jdbc/execute! (ds) (-> (insert-into :metadata)
-                            (values [{:message_id message_id :category category :category_modified (sql-now) :category_confidence confidence}])
+                            (values [{:message_id message_id :category category :category_modified (sql-now) :category_confidence confidence
+                                      :categorized_at (epoch-seconds) :expired_at nil}])
                             (upsert (-> (on-conflict :message_id)
-                                        (do-update-set :category :category_modified :category_confidence)))
+                                        (do-update-set :category :category_modified :category_confidence :categorized_at :expired_at)))
                             (honey/format)))))
-
-(defn update-metadata-category
-  "Set the category of a stored e-mail. Every caller changes the category (see category-changed!)."
-  [message-id category confidence]
-  (update-metadata-category! message-id category confidence)
-  (category-changed! message-id))
 
 (defn update-metadata-language [message_id language confidence]
   (if (mariadb?)
@@ -896,8 +951,8 @@
                                      :from :metadata
                                      :join [:headers [:= :headers.message-id :metadata.message-id]]
                                      :where [:and [:= :metadata.category category-id]
-                                             ;; From when it got the category; before that column existed, and for
-                                             ;; an e-mail categorized on arrival, from its date.
+                                             ;; From when it got the category; for rows saved before that column
+                                             ;; existed, from the e-mail's date.
                                              [:< [:coalesce :metadata.categorized-at :headers.date] cutoff]
                                              [:= :metadata.expired-at nil]
                                              [:<> :metadata.folder nil]
@@ -982,8 +1037,8 @@
      result)))
 
 (defn distinct-senders
-  ([] (distinct-contacts-by-type ["sender" ":sender"]))
-  ([other-filters-where] (distinct-contacts-by-type ["sender" ":sender"] other-filters-where)))
+  ([] (distinct-contacts-by-type ["sender" ":sender" "from"]))
+  ([other-filters-where] (distinct-contacts-by-type ["sender" ":sender" "from"] other-filters-where)))
 
 (defn distinct-recipients
   ([] (distinct-contacts-by-type ["receiver" ":receiver"]))

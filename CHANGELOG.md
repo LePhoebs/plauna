@@ -40,8 +40,10 @@ All notable changes to this project will be documented in this file.
   imports. They are now read as UTF-8 when valid, else as Windows-1252; sloppy declarations such as
   `charset="\UTF-8"` are understood too.
 - E-mails read over IMAP stored the envelope's `Sender` as sender - often a mailing service's bounce
-  address - while the mbox import stored `From`. Both now store `From`, so the model and the From
-  filter see the same value however an e-mail came in.
+  address - while the mbox import stored `From`. Both paths now store the sender as before (`Sender`,
+  else `From`) and additionally every `From` address (participant type `from`). The model gets
+  `from-address:`/`from-domain:` features on top of the sender features, so e-mails stored earlier
+  keep matching what the model learned and only lack the new features.
 - A deleted category's label could win a prediction and leave the e-mail uncategorized while an
   existing category was above the threshold too. Only existing categories compete now.
 - When the server lacks MOVE, a copy that succeeded was reported as failed if removing the original
@@ -63,6 +65,53 @@ All notable changes to this project will be documented in this file.
 - Body search: on MariaDB a short word or phrase with punctuation (`"Nr. 5"`, `e-mail`) was searched
   without its punctuation and found nothing; on SQLite a quoted search looked for the quote characters.
 - An internal event option was lost when the triggering event had no options (`conj` onto `nil`).
+- Retention counted from the `Date` header for every e-mail that got its category when it was first
+  saved - so an old e-mail dragged into a category folder (or found by parsing an old folder) went to
+  the trash on the next run. `categorized_at` is now set on the first save with a category, and a
+  re-save with the same category keeps it.
+- Training split words only at ASCII spaces while OpenNLP splits the training file at every Unicode
+  space, so a no-break space gave training and prediction different features. Both split alike now;
+  the cached training features are recomputed once (version 2).
+- Re-fetching an e-mail added its correctly decoded text as a second part instead of replacing the
+  wrongly decoded one, which kept being read first. Stale text parts are now replaced, in one
+  transaction.
+- A crafted `?batch=` value (`../../admin/...`) turned the "Move batch" button into a same-origin POST
+  to any route. The button only appears for an existing batch, and the id is URL-encoded.
+- E-mail links used standard Base64, whose `/` broke the `/emails/:id` route for some Message-IDs
+  (every one with `?` at certain positions, many encoded non-ASCII ids). Links are URL-safe now; old
+  links still work.
+- A batch move resolved folder names on the IDLE monitor's connection, two server requests per e-mail;
+  it uses its own connection and resolves each category once. E-mails already in their category folder
+  are reported as such instead of as moved, and a deleted source folder counts as not found.
+- A stored e-mail that the user moves back into the monitored folder gets its new location recorded,
+  so a later recategorization finds it - only when the recorded folder no longer holds it, so a second
+  copy (a list mail also received in Cc, the same mail on two accounts) never takes over the record.
+- A category folder scan that failed after its first chunk never set the flags of the e-mails it had
+  already learned (they then stayed protected from the trash for good).
+- A recategorization no longer creates the category folder on accounts that do not hold the e-mail.
+- Deleting or disconnecting a connection while it was still logging in left an invisible monitor
+  running; both now wait for the connect.
+- Saves made through page scripts ignored error responses and looked successful; they now show the
+  server's message. The OAuth provider's "Update" on the new-connection page led to a 404.
+- Changing the category of an e-mail deleted from Plauna meanwhile answered with a 500.
+- "Stop REPL" without a running REPL answered with a 500; the REPL form's closing tag was misplaced.
+- Shutdown waited up to 30 s for a clean-up run, longer than `docker stop` allows, so the rest of the
+  teardown never ran; it waits 5 s now. A broken training time in `settings.json` no longer keeps the
+  clean-up scheduler from starting.
+- The same e-mail twice in one mbox batch added its attachment rows twice.
+- The list, the details page and the From filter show the From address where it is stored (else the
+  sender); the details page adds "Sent by" when the Sender header differs.
+- The connection page counts e-mails that were in their category folder already; the badge no longer
+  reads "moved 0 / 5" for a batch that was moved before. A failure to set the flags of a category folder
+  scan is reported as a failed scan. A deleted source folder is tried once per batch move.
+- Body rows are inserted in packet-sized statements on every path (single save, re-fetch, batch); a cut
+  part no longer splits an emoji, and re-fetching a cut part does not rewrite it every time.
+- Address features drop every kind of space, so training and prediction agree for odd addresses too.
+- A text part larger than MariaDB's `max_allowed_packet` cost the whole e-mail; text is kept up to
+  3 M characters per part, and body rows are inserted in packet-sized statements.
+- Setting a category and its retention start are one statement now.
+- Cancelling a training run (by saving new training times) left its per-language trainers reporting
+  into the next run's progress.
 - On MariaDB, an e-mail whose Message-ID contains non-ASCII characters could not be saved: the id
   columns are ASCII. Such ids are now stored as `=?UTF-8?B?…?=` and decoded again for IMAP searches and
   the details page; copying a SQLite database to MariaDB converts them as well. ASCII ids are unchanged.
@@ -162,6 +211,24 @@ All notable changes to this project will be documented in this file.
 - A page script whose session expired gets `401` and opens the login page, instead of receiving the
   login page as its answer.
 - New category names must not contain a dot, which Maildir++ servers use as folder separator.
+- A new `PLAUNA_PASSWORD` ends existing sessions at the next start, and removing a certificate from the
+  mTLS allowlist ends the sessions it opened.
+- The forms that check the current password (password, login name, mTLS) use the login brake.
+- A form that keeps a stored secret when its field is blank (IMAP, MariaDB, OAuth client) refuses a
+  changed server, port, user, encryption setting or token URL until the secret is entered again, so a
+  stolen session cannot send it elsewhere; without a stored secret nothing is asked. Changing where an
+  OAuth connection's tokens would go (its server, user, encryption or provider, or the provider's
+  token/authorization URL or client ID) deletes the stored tokens instead, so they never reach the new
+  target; the next connect asks for a new OAuth login.
+- Removing a certificate from `PLAUNA_MTLS_TRUSTED_CERT_SHA256` or `settings.json` ends its sessions at
+  the next start (Plauna remembers the last active allowlist).
+- The mTLS form checks the password before anything else, so another mistake in the form no longer
+  counts as a wrong password.
+- Page scripts mark their requests (`X-Plauna-Fetch`), so an expired session answers them with 401 over
+  plain HTTP too.
+- The SQLite → MariaDB copy only runs into a MariaDB database without e-mails; a second run would have
+  brought back everything deleted since the switch.
+- New index on `metadata(connection_id, folder)` (V24) for the connection page and the folder scans.
 - On MariaDB, Plauna warns at startup when the text columns do not use `utf8mb4`.
 - Removed the unreachable `/training/new` route and its unused page.
 

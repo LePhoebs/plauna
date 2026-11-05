@@ -51,7 +51,7 @@
               <script>
                 document.getElementById('delete-button-{{category.id}}').addEventListener('click', (e) => {
                     fetch('/admin/categories/{{category.id}}', {method: 'DELETE'})
-                        .then(() => window.location.href = '/admin/categories')});
+                        .then(plaunaThen(() => window.location.href = '/admin/categories'))});
               </script>
 	        </div>
           </div>

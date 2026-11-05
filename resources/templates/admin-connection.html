@@ -207,7 +207,7 @@
             {% if entry.move.status = "running" %}
             <span class="badge badge-warning">moving {{entry.move.moved}} / {{entry.move.total}}</span>
             {% else %}
-            {% if entry.move.status = "finished" %}<span class="badge badge-ghost mr-2" title="{{entry.move.not-found}} not found, {{entry.move.failed}} failed">moved {{entry.move.moved}} / {{entry.move.total}}</span>{% endif %}
+            {% if entry.move.status = "finished" %}<span class="badge badge-ghost mr-2" title="{{entry.move.in-place|default:0}} already in place, {{entry.move.not-found}} not found, {{entry.move.failed}} failed">moved {{entry.move.moved}}{% if entry.move.in-place > 0 %} (+{{entry.move.in-place}} in place){% endif %} / {{entry.move.total}}</span>{% endif %}
             {% if entry.categorized > 0 %}
             <form action="{{entry.move-url}}" method="post" class="inline" onsubmit="return confirm('Move every categorized e-mail recorded in this folder into its category folder on the IMAP server?')">
               <input type="hidden" name="folder" value="{{entry.folder}}" />
@@ -262,7 +262,7 @@
             {% if batch.move.status = "running" %}
             <span class="badge badge-warning ml-2">moving {{batch.move.moved}} / {{batch.move.total}}</span>
             {% else %}
-            {% if batch.move.status = "finished" %}<span class="badge badge-ghost ml-2" title="{{batch.move.not-found}} not found, {{batch.move.failed}} failed">moved {{batch.move.moved}} / {{batch.move.total}}</span>{% endif %}
+            {% if batch.move.status = "finished" %}<span class="badge badge-ghost ml-2" title="{{batch.move.in-place|default:0}} already in place, {{batch.move.not-found}} not found, {{batch.move.failed}} failed">moved {{batch.move.moved}}{% if batch.move.in-place > 0 %} (+{{batch.move.in-place}} in place){% endif %} / {{batch.move.total}}</span>{% endif %}
             {% ifunequal batch.status "running" %}
             <form action="{{batch.move-url}}" method="post" class="inline ml-2" onsubmit="return confirm('Move every categorized e-mail of this batch into its category folder on the IMAP server?')">
               <input type="hidden" name="redirect-url" value="/admin/connections/{{id}}" />
@@ -328,7 +328,7 @@
             }
           }
           fetch('/admin/connections/{{id}}', {method: 'PUT', body: body})
-            .then(() => window.location.href = '/admin/connections/{{id}}')});
+            .then(plaunaThen(() => window.location.href = '/admin/connections/{{id}}'))});
 
         
      });

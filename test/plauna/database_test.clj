@@ -1,6 +1,7 @@
 (ns plauna.database-test
   (:require [clojure.test :refer :all]
             [clojure.core.async :as async]
+            [next.jdbc]
             [plauna.database :as db]
             [taoensso.telemere :as t]
             [plauna.files :as files]))
@@ -405,6 +406,8 @@
     (db/update-email-folder "ret-old" "INBOX")
     (db/update-email-folder "ret-new" "INBOX")
     (db/update-email-folder "ret-other" "INBOX")
+    ;; Rows saved before categorized_at existed: their retention counts from the e-mail's date.
+    (next.jdbc/execute! (db/ds) ["UPDATE metadata SET categorized_at = NULL"])
     (is (= [{:message-id "ret-old" :folder "INBOX" :connection-id "conn-ret"}] (db/expired-emails cat 500))
         "Only e-mails of the category, older than the cutoff and with a known folder")
     (is (= #{"ret-old" "ret-new"} (set (map :message-id (db/categorized-email-locations cat)))))
@@ -470,3 +473,24 @@
   (is (= ["headers.subject (latin1)"]
          (db/text-charset-problems [{:table_name "headers" :column_name "subject" :character_set_name "latin1"}
                                     {:table_name "bodies" :column_name "content" :character_set_name "UTF8MB4"}]))))
+
+(deftest an-old-e-mail-saved-with-a-category-counts-from-its-saving
+  (let [cat (ensure-category "retention-first-save")]
+    (db/save-headers [{:mime-type "text/plain" :subject "2019" :message-id "ret-first" :date 100 :in-reply-to nil}])
+    (db/update-metadata-batch [{:message-id "ret-first" :language "eng" :language-confidence 0.9 :category-id cat :category-confidence 1 :connection-id "conn-ret"}])
+    (db/update-email-folder "ret-first" "Categories/X")
+    (is (= [] (db/expired-emails cat 500)) "A folder scan or an old folder's parse does not trash it at once")
+    (let [stamp (:categorized-at (next.jdbc/execute-one! (db/ds) ["SELECT categorized_at FROM metadata WHERE message_id = 'ret-first'"] db/builder-function-kebab))]
+      (db/update-metadata-batch [{:message-id "ret-first" :language "deu" :language-confidence 0.9 :category-id cat :category-confidence 1}])
+      (is (= stamp (:categorized-at (next.jdbc/execute-one! (db/ds) ["SELECT categorized_at FROM metadata WHERE message_id = 'ret-first'"] db/builder-function-kebab)))
+          "Saving it again with the same category keeps the time"))))
+
+(deftest one-batch-stores-an-e-mail-only-once
+  (let [mail {:header {:message-id "dup-1"} :body [{:message-id "dup-1" :mime-type "application/pdf"}] :participants []}
+        buffer (->> (db/empty-buffer) (db/add-to-buffer mail) (db/add-to-buffer mail))]
+    (is (= 1 (count (:headers buffer))))
+    (is (= 1 (count (:bodies buffer))))))
+
+(deftest huge-text-parts-are-cut-to-fit-mariadb
+  (is (= db/max-body-content-chars
+         (count (:content (db/fit-body-row {:content (apply str (repeat (inc db/max-body-content-chars) "x"))}))))))

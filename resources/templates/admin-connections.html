@@ -73,7 +73,7 @@
             <script>
               document.getElementById('delete-button-{{config.id}}').addEventListener('click', (e) => {
                   fetch('/admin/connections/{{config.id}}', {method: 'DELETE'})
-                      .then(() => window.location.href = '/admin/connections')});
+                      .then(plaunaThen(() => window.location.href = '/admin/connections'))});
             </script>
 	      </div>
         </div>

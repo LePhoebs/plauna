@@ -2,7 +2,9 @@
   "One-shot data migration from a SQLite file to a configured MariaDB database.
    Reads from SQLite directly (regardless of the current active datasource), runs
    Flyway on the target MariaDB to create the schema, then copies every table in
-   FK-safe order using ON DUPLICATE KEY UPDATE col = col so partial re-runs are idempotent.
+   FK-safe order using ON DUPLICATE KEY UPDATE col = col, so a row that is there already is skipped.
+   It only runs into a MariaDB database without e-mails (see migrate!): an interrupted copy is not
+   resumed - empty the database and start again.
    Rows are streamed from SQLite and inserted in chunks: a whole table (the bodies of every
    e-mail!) is never held in memory, and one statement carries many rows instead of one."
   (:require [clojure.string :as string]
@@ -155,11 +157,16 @@
           (with-open [dst (mariadb-ds cfg)]
             (t/log! :info "Running Flyway on MariaDB target.")
             (run-flyway! dst)
+            ;; Only into an empty database: a second run after the switch would bring back every e-mail,
+            ;; category and connection deleted on MariaDB since.
+            (if (pos? (table-count dst "headers"))
+              (do (t/log! :warn "Refused the SQLite → MariaDB migration: MariaDB already contains e-mails.")
+                  {:ok false :error "MariaDB already contains e-mails. Copying the SQLite file again would bring back everything deleted since the switch; the copy only runs into an empty database."})
             (let [counts       (into {} (for [t migration-order]
                                           [t (migrate-table! src dst t)]))
                   total-skip   (reduce + (map #(:skipped (val %)) counts))]
               (t/log! :info ["Migration complete. Total skipped rows:" total-skip "Counts:" counts])
-              {:ok true :counts counts :skipped-total total-skip}))
+              {:ok true :counts counts :skipped-total total-skip})))
           (catch Exception e
             (t/log! :error ["Migration failed:" (.getMessage e)])
             {:ok false :error (.getMessage e)}))))))

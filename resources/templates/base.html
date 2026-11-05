@@ -13,11 +13,28 @@
       // fetch would silently follow): open the login page instead of showing it as an error.
       (function () {
         var originalFetch = window.fetch;
-        window.fetch = function () {
-          return originalFetch.apply(this, arguments).then(function (response) {
+        window.fetch = function (input, init) {
+          // Marks the request as a page script's, also over plain HTTP, where browsers send no
+          // Sec-Fetch-Mode header.
+          var options = Object.assign({}, init || {});
+          var headers = new Headers(options.headers || {});
+          headers.set('X-Plauna-Fetch', '1');
+          options.headers = headers;
+          return originalFetch.call(this, input, options).then(function (response) {
             if (response.status === 401) { window.location.href = '/login'; }
             return response;
           });
+        };
+        // .then(plaunaThen(next)): run next only for a successful response, otherwise show the server's
+        // message - a failed save must not look like a successful one.
+        window.plaunaThen = function (next) {
+          return function (response) {
+            if (response.ok) { return next(response); }
+            if (response.status === 401) { return; }
+            return response.text().then(function (text) {
+              alert((text || 'The request failed.') + ' (HTTP ' + response.status + ')');
+            });
+          };
         };
       })();
     </script>

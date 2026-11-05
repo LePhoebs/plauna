@@ -11,6 +11,7 @@
    secret authenticates NGINX to Plauna so clients cannot gain access by forging the headers."
   (:require [clojure.string :as str]
             [plauna.database :as db]
+            [plauna.preferences :as p]
             [plauna.settings :as settings]
             [taoensso.telemere :as t])
   (:import (javax.crypto SecretKeyFactory)
@@ -244,6 +245,23 @@
                    (count (:fingerprints config))
                    "certificate fingerprint(s)."])))
 
+(defn- remember-active-fingerprints!
+  "Store the fingerprints that may log in now, so the next start can tell whether one was removed."
+  [fingerprints]
+  (settings/update-settings! {:mtls-last-active-fingerprints (str/join "\n" (sort fingerprints))}))
+
+(defn- end-sessions-of-removed-certificates!
+  "At startup: when a certificate that could log in before is no longer allowed - removed from the
+   PLAUNA_MTLS_TRUSTED_CERT_SHA256 environment variable or settings.json - end every session, because
+   the sessions it opened would otherwise stay valid for up to 30 days."
+  [active]
+  (let [previous (set (remove str/blank? (str/split-lines (str (or (settings/fetch-setting :mtls-last-active-fingerprints) "")))))]
+    (when (seq (remove (set active) previous))
+      (p/bump-session-generation!)
+      (t/log! :info "A client certificate lost its access since the last start: every existing session was ended."))
+    (when (not= previous (set active))
+      (remember-active-fingerprints! active))))
+
 (defn initialize-mtls!
   "Load optional mTLS proxy authentication from the environment or settings.json. Environment
    configuration has priority. Invalid opt-in configuration fails closed: password authentication
@@ -254,7 +272,10 @@
     (catch Exception e
       (reset! mtls-auth-config nil)
       (t/log! {:level :error :error e}
-              "mTLS proxy authentication is disabled because its configuration is invalid."))))
+              "mTLS proxy authentication is disabled because its configuration is invalid.")))
+  (try (end-sessions-of-removed-certificates! (:fingerprints @mtls-auth-config))
+       (catch Exception e
+         (t/log! {:level :warn :error e} "Could not compare the client certificates with the last start."))))
 
 (defn mtls-admin-state
   "Return the non-secret mTLS state suitable for rendering in the administration UI."
@@ -284,7 +305,8 @@
   (when (mtls-environment-managed?)
     (throw (ex-info "mTLS authentication is managed by environment variables and cannot be changed here."
                     {})))
-  (let [existing-secret (settings/fetch-setting :mtls-proxy-secret)
+  (let [existing-certs  (set (remove str/blank? (str/split-lines (or (settings/fetch-setting :mtls-trusted-cert-sha256) ""))))
+        existing-secret (settings/fetch-setting :mtls-proxy-secret)
         clear-secret?   (or (true? clear-proxy-secret) (= "true" clear-proxy-secret))
         new-secret      (cond
                           clear-secret? ""
@@ -304,7 +326,11 @@
       (settings/update-settings! {:mtls-trusted-cert-sha256 canonical-certs
                                   :mtls-proxy-secret new-secret})
       (activate-mtls-config! config)
-      (mtls-admin-state))))
+      ;; The route ends the sessions now; the next start must not do it again.
+      (remember-active-fingerprints! (:fingerprints config))
+      ;; :revoked? - a certificate lost its access, so the sessions it opened must end (see the route).
+      (assoc (mtls-admin-state)
+             :revoked? (boolean (seq (remove (set (remove str/blank? (str/split-lines canonical-certs))) existing-certs)))))))
 
 (defn client-certificate-sha256
   "Decode an NGINX $ssl_client_escaped_cert header and return the certificate's canonical SHA-256
@@ -393,7 +419,12 @@
         stored (db/fetch-preference :web-password-hash)]
     (cond
       (not (str/blank? env-pw))
-      (do (set-password! env-pw)
+      (do (when (and (some? stored) (not (verify-password env-pw stored)))
+            ;; A new password in the environment must end the sessions of the old one, like a change in
+            ;; the UI does: the session key survives restarts, so a leaked cookie would stay valid.
+            (p/bump-session-generation!)
+            (t/log! :info "PLAUNA_PASSWORD changed: every existing session was ended."))
+          (set-password! env-pw)
           (t/log! :info "Web UI password set from the PLAUNA_PASSWORD environment variable."))
 
       (some? stored)

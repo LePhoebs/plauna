@@ -7,7 +7,8 @@
             [plauna.core.flags :as flags]
             [plauna.preferences :as preferences]
             [plauna.util.page :as page]
-            [plauna.util.sql :as sql]))
+            [plauna.util.sql :as sql])
+  (:import (jakarta.mail Folder)))
 
 (def ^:private like-contains
   "See plauna.util.sql/like-contains: the same escaping the database layer uses for its own LIKE scans."
@@ -176,7 +177,9 @@
     :else nil))
 
 (defn- sender-keys->where [selection correlated?]
-  (contact-keys->where ["sender" ":sender"] selection correlated?))
+  ;; "from" too: the From filter finds an e-mail by its From address and by its sender (the Sender
+  ;; header, the only one stored for e-mails saved before both were kept).
+  (contact-keys->where ["sender" ":sender" "from"] selection correlated?))
 
 (defn- recipient-keys->where [selection correlated?]
   (contact-keys->where ["receiver" ":receiver"] selection correlated?))
@@ -337,6 +340,12 @@
   [id]
   (or (get @connect-locks id)
       (get (swap! connect-locks (fn [locks] (if (contains? locks id) locks (assoc locks id (Object.))))) id)))
+
+(defn with-connection-lock
+  "Call f while no connect of connection id runs (see connect-to-client): deleting or disconnecting a
+   connection during a slow login would otherwise let that login register a monitor afterwards."
+  [id f]
+  (locking (connect-lock id) (f)))
 
 (defn connect-to-client
   "Returns {:result :ok}, {:result :redirect :provider provider} in case of oauth2, or
@@ -708,11 +717,34 @@
       (try (incoming-email-workflow* email-message connection-id folder options context)
            (finally (when (some? message-id) (swap! messages-in-flight disj message-id)))))))
 
+(defn- relocate-known-email!
+  "Record that a stored e-mail now sits in the monitored folder: the user moved it back there (out of a
+   category folder, say) in a mail client. Without this a later recategorization would search the old
+   folder and report the e-mail as missing. Only when the recorded folder no longer holds it: a second
+   copy with the same Message-ID (a list mail that also came in Cc, the same mail on two accounts) must
+   not take over the record of the copy Plauna filed, and neither must a stale view of the folder while
+   the other path has just moved the e-mail. Without a Message-ID nothing can be searched. Best effort."
+  [{:keys [db client]} message-id connection-id folder-name]
+  (try
+    (let [{:keys [folder] :as state} (int/fetch-email-category-state db message-id)
+          recorded-account (or (:connection-id state) connection-id)]
+      (when (and (some? state) (some? folder-name) (not= folder-name folder)
+                 (not (core-email/synthetic-message-id? message-id))
+                 (or (nil? folder)
+                     (false? (int/email-in-folder? client recorded-account folder message-id))))
+        (int/update-email-folder db message-id folder-name)
+        (when (some? connection-id) (int/update-email-connection db message-id connection-id))
+        (t/log! :info ["The stored e-mail" message-id "is in" folder-name "now; recorded its new location."])))
+    (catch Exception e
+      (t/log! {:level :warn :error e} ["Could not record the new location of" message-id]))))
+
 (defn- incoming-email-workflow*
-  [email-message connection-id folder {:keys [move? assigned-category assigned-category-id]} {:keys [analyzer db] :as context}]
+  [email-message connection-id folder {:keys [move? assigned-category assigned-category-id relocate?]} {:keys [analyzer db] :as context}]
   (let [message-id (-> email-message :email :header :message-id)]
     (if (int/email-exists? db message-id)
       (do (t/log! :info ["Email" message-id "already in database — skipping re-categorization"])
+          (when (and relocate? (instance? Folder folder))
+            (relocate-known-email! context message-id connection-id (.getFullName ^Folder folder)))
           {:status :skipped})
       (if (some? assigned-category)
         (let [language-result (int/detect-language analyzer (:email email-message))
@@ -855,6 +887,8 @@
                 ;; e-mail that was stored from another folder or account.
                 outcome (if (= folder-name (:folder location)) :skipped-here :skipped-elsewhere)]
             (t/log! :debug ["Email number" n "(" known-message-id ") already in database — skipping (" (name outcome) ")"])
+            (when (and (:relocate? options) (= :skipped-elsewhere outcome))
+              (relocate-known-email! context known-message-id connection-id folder-name))
             (resolve-parse-failures-safely! db connection-id folder-name nil known-message-id (:known-failures options))
             outcome)
           (let [email-message (int/nth-email-from-folder client n folder)
@@ -938,11 +972,11 @@
   "Move every listed stored e-mail that has a category into that category's IMAP folder on the given
    connection. E-mails without a category stay where they are. Works in chunks over ONE dedicated IMAP
    connection (see int/move-emails-by-id). progress-fn is called with the running summary after every
-   chunk; the final summary {:total :uncategorized :moved :not-found :failed} (merged into
+   chunk; the final summary {:total :uncategorized :moved :in-place :not-found :failed} (merged into
    base-summary) is returned."
   [{:keys [db client]} connection-id message-ids base-summary progress-fn]
   (let [chunks (partition-all batch-move-chunk-size message-ids)
-        summary (atom (merge {:total 0 :uncategorized 0 :moved 0 :not-found 0 :failed 0} base-summary))]
+        summary (atom (merge {:total 0 :uncategorized 0 :moved 0 :in-place 0 :not-found 0 :failed 0} base-summary))]
     (doseq [chunk chunks
             :let [emails (int/fetch-emails db {:entity :enriched-email :strict true :with-bodies false}
                                            {:where [:in :headers.message-id (vec chunk)]})
@@ -957,6 +991,7 @@
       (swap! summary (fn [current]
                        (reduce (fn [acc result]
                                  (update acc (cond (true? result) :moved
+                                                   (= :in-place result) :in-place
                                                    (= :not-found result) :not-found
                                                    :else :failed) inc))
                                (-> current

@@ -121,15 +121,24 @@
 (defn- normalized-words [text]
   (if (st/blank? text)
     []
+    ;; (?U): split on every Unicode space (no-break space, narrow no-break space ...) exactly like
+    ;; OpenNLP's WhitespaceTokenizer splits the training file. Splitting only on ASCII whitespace gave
+    ;; prediction the token "hallo\u00a0welt" where training saw "hallo" and "welt".
     (map st/lower-case
-         (remove st/blank? (st/split (normalize text) #"\s+")))))
+         (remove st/blank? (st/split (normalize text) #"(?U)\s+")))))
 
-(defn- sender-addresses [email]
+(defn- participant-addresses
+  "The distinct, lower-cased addresses of the e-mail's participants of one type (types: the keyword and
+   its stored string form)."
+  [email types]
   (->> (:participants email)
-       (filter #(contains? #{:sender "sender"} (:type %)))
+       (filter #(contains? types (:type %)))
        (keep :address)
        (map st/lower-case)
-       (map st/trim)
+       ;; Every kind of space removed, not only trimmed: a feature must stay ONE token, and OpenNLP
+       ;; splits the training file at any Unicode space ("x y@a.de" or a trailing no-break space would
+       ;; otherwise train different tokens than prediction sees).
+       (map #(st/replace % #"(?U)\s+" ""))
        (remove st/blank?)
        distinct))
 
@@ -152,12 +161,15 @@
    the same signal everywhere. cleaned-body, when given, is the result of body-text for this e-mail."
   ([email] (classification-feature-groups email (body-text email)))
   ([email cleaned-body]
-   (let [addresses (sender-addresses email)
+   (let [address-features (fn [prefix addresses]
+                            (concat (map #(str prefix "-address:" %) addresses)
+                                    (keep #(when-let [domain (sender-domain %)] (str prefix "-domain:" domain)) addresses)))
          subject (get-in email [:header :subject])]
-     {:sender (concat (map #(str "sender-address:" %) addresses)
-                      (keep #(when-let [domain (sender-domain %)]
-                               (str "sender-domain:" domain))
-                            addresses))
+     ;; sender: the envelope sender - the Sender header, else From - as Plauna has always stored it.
+     ;; from: the From address, stored since the sender was split in two. E-mails saved before that
+     ;; simply lack the from features; what the model learned from the sender features still applies.
+     {:sender (concat (address-features "sender" (participant-addresses email #{:sender "sender" ":sender"}))
+                      (address-features "from" (participant-addresses email #{:from "from" ":from"})))
       :subject (map #(str "subject:" %) (normalized-words subject))
       :body (map #(str "body:" %) (take max-body-features (normalized-words cleaned-body)))})))
 
@@ -191,7 +203,7 @@
 (def training-tokens-version
   "Bump whenever classification-feature-groups or the normalizers change: cached training_tokens rows
    of an older version are ignored and recomputed on the next training run."
-  1)
+  2)
 
 (defn training-tokens-text
   "The classification features of an e-mail as one space-separated line, the form cached in the
@@ -295,9 +307,11 @@
   ([training-files model] (train-data training-files model (fn [_] nil)))
   ([training-files model progress-fn]
    (let [threads (max 1 (quot (available-processors) (max 1 (count training-files))))
+         cancelled? (atom false)
          train-one (fn [tf]
                      (let [language (:language tf)
-                           report #(progress-fn (assoc % :language language))]
+                           ;; A cancelled run's trainers must not report into the progress of the next run.
+                           report #(when-not @cancelled? (progress-fn (assoc % :language language)))]
                        (report {:iteration 0 :iterations training-iterations})
                        (try
                          (let [result {:model (train-model language (:file tf) model report threads) :language language}]
@@ -308,9 +322,15 @@
                            (t/log! {:level :error :error e} ["Training the" language "model failed."])
                            (report {:done? true :failed? true})
                            {:language language :error e}))))]
-     (->> training-files
-          (mapv #(future (train-one %)))
-          (mapv deref)))))
+     (let [futures (mapv #(future (train-one %)) training-files)]
+       (try
+         (mapv deref futures)
+         (catch InterruptedException e
+           ;; The run was cancelled (the scheduler restarted): stop the trainers as far as they listen
+           ;; to interrupts and silence them, instead of leaving them to compete with the next run.
+           (reset! cancelled? true)
+           (run! future-cancel futures)
+           (throw e)))))))
 
 (defonce ^:private categorizer-cache
   ;; {absolute-path {:stamp [lastModified length] :categorizer DocumentCategorizerME}}. Deserializing a

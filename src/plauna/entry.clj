@@ -230,8 +230,13 @@
       (start-connection-retries! context)
       (events/start-event-loops event-register)
       (server/start-server context)
-      (server/start-training-scheduler!)
-      (server/start-retention-scheduler!))))
+      ;; Each scheduler on its own: a broken training time in settings.json must not keep the clean-up
+      ;; from ever running (or the other way round).
+      (doseq [[label start!] [["retention" server/start-retention-scheduler!]
+                              ["automatic training" server/start-training-scheduler!]]]
+        (try (start!)
+             (catch Throwable e
+               (t/log! {:level :error :error e} ["Could not start the" label "scheduler."])))))))
 
 (comment
   (server/start-server {:config {:server {:port 8080}}})

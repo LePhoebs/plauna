@@ -137,3 +137,55 @@
             (is (= {:flagged 1} (client/apply-flags! "conn-flags" [{:message-id stored-id :folder "INBOX" :flag "red"}]))
                 "The IMAP search finds the e-mail by its real Message-ID"))))
       (finally (.stop greenmail)))))
+
+(deftest a-recategorization-creates-no-folder-on-an-account-without-the-e-mail
+  (let [greenmail (doto (GreenMail. ServerSetupTest/IMAP) (.start))]
+    (try
+      (.setUser greenmail imap-user "secret")
+      (let [config (connection-config greenmail)]
+        (is (= :not-found (client/move-message-on-dedicated-store! config "INBOX" "Work/Clients" "<absent@x>" nil)))
+        (with-open [^Store store (client/login config)]
+          (is (false? (.exists (.getFolder store "Work/Clients"))))))
+      (finally (.stop greenmail)))))
+
+(deftest batch-moves-report-in-place-and-deleted-folders
+  (let [greenmail (doto (GreenMail. ServerSetupTest/IMAP) (.start))]
+    (try
+      (.setUser greenmail imap-user "secret")
+      (let [config (connection-config greenmail)]
+        (with-open [^Store store (client/login config)]
+          (.create (.getFolder store "Work") Folder/HOLDS_MESSAGES)
+          (.appendMessages (.getFolder store "Work") (into-array Message [(message "<placed@x>")])))
+        (with-redefs [client/connection-data-from-id (fn [_] {:config config :store nil})
+                      client/connected? (constantly true)
+                      client/category-flag-color (constantly nil)
+                      client/inbox-or-category-folder-name (fn [_ category _] (if (= "work" category) "Work" "Other"))
+                      client/inbox-or-default-category-folder-name (fn [_ category _] (if (= "work" category) "Work" "Other"))
+                      db/email-folder (fn [message-id] (if (= "<placed@x>" message-id) "Work" "Deleted"))
+                      db/update-email-folder (fn [& _] [{:next.jdbc/update-count 1}])
+                      db/update-email-connection (fn [& _] nil)]
+          (is (= [:in-place :not-found :not-found]
+                 (client/move-emails-by-id! "conn-flags" [{:message-id "<placed@x>" :category "work"}
+                                                          {:message-id "<gone-1@x>" :category "work"}
+                                                          {:message-id "<gone-2@x>" :category "work"}]))
+              "Already filed counts as in place; a deleted source folder as not found")))
+      (finally (.stop greenmail)))))
+
+(deftest imap-envelopes-give-sender-and-from
+  (let [greenmail (doto (GreenMail. ServerSetupTest/IMAP) (.start))]
+    (try
+      (.setUser greenmail imap-user "secret")
+      (let [config (connection-config greenmail)]
+        (with-open [^Store store (client/login config)]
+          (.appendMessages (.getFolder store "INBOX")
+                           (into-array Message [(doto (message "<list@x>")
+                                                  (.setSender (InternetAddress. "bounce@mcsv.net")))])))
+        (with-open [^Store store (client/login config)]
+          (let [folder (.getFolder store "INBOX")]
+            (.open folder Folder/READ_ONLY)
+            (try
+              (let [email (client/message->email (first (.getMessages folder)))]
+                (is (= #{[:sender "bounce@mcsv.net"] [:from "parcels@example.com"] [:receiver imap-user]}
+                       (set (map (juxt :type :address) (:participants email))))))
+              (finally (.close folder false))))))
+      (finally (.stop greenmail)))))

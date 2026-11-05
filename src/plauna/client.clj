@@ -343,10 +343,13 @@
 (defn create-participants
   "The participants of a message, tagged with message-id (the header's id, synthetic or not)."
   [^IMAPMessage message message-id]
-  ;; The sender is the From address, as the mbox import (plauna.parser) stores it and mail clients show
-  ;; it. The IMAP envelope's Sender is often a mailing service's bounce address, which would give the
-  ;; model and the From filter different values depending on how an e-mail came in.
-  (let [sender-participant (mapv (fn [address] (create-participant address :sender message-id)) (.getFrom message))
+  ;; Two sender entries: :sender is the envelope sender - the Sender header, which the server fills with
+  ;; From when there is none - as Plauna has always stored it, so stored e-mails and new ones share those
+  ;; features. :from is the From address (what mail clients show), an extra feature for the model.
+  ;; plauna.parser stores both the same way for an mbox import.
+  (let [sender (.getSender message)
+        sender-participant [(when sender (create-participant sender :sender message-id))
+                            (mapv (fn [address] (create-participant address :from message-id)) (.getFrom message))]
         recipient-participants (mapv (fn [address] (create-participant address :receiver message-id)) (.getRecipients message Message$RecipientType/TO))
         cc-participants (mapv (fn [address] (create-participant address :cc message-id)) (.getRecipients message Message$RecipientType/CC))
         bcc-participants (mapv (fn [address] (create-participant address :bcc message-id)) (.getRecipients message Message$RecipientType/BCC))]
@@ -405,8 +408,11 @@
                 date)))
 
 (defn participants-from-raw-headers [^MimeMessage message message-id]
-  (let [from (or (first (header-addresses message "From")) (first (header-addresses message "Sender")))
-        sender-participant (when from (create-participant from :sender message-id))
+  ;; Like create-participants: :sender is Sender, else From; :from the From addresses.
+  (let [from-addresses (header-addresses message "From")
+        sender (or (first (header-addresses message "Sender")) (first from-addresses))
+        sender-participant [(when sender (create-participant sender :sender message-id))
+                            (mapv #(create-participant % :from message-id) from-addresses)]
         recipients (mapv #(create-participant % :receiver message-id) (header-addresses message "To"))
         cc (mapv #(create-participant % :cc message-id) (header-addresses message "Cc"))
         bcc (mapv #(create-participant % :bcc message-id) (header-addresses message "Bcc"))]
@@ -515,7 +521,7 @@
             (.setPeek message true)
             (let [parsed-email (message->email message)
                   process (app/handle-incoming-imap-email parsed-email
-                                                          {:connection-id connection-id :origin-folder folder :message message :move? true}
+                                                          {:connection-id connection-id :origin-folder folder :message message :move? true :relocate? true}
                                                           context)]
               (if (= :error (:result process))
                 ;; handle-incoming-imap-email catches everything (a locked database, a failing
@@ -851,13 +857,22 @@
   (try
     (with-dedicated-store connection-config
       (fn [^Store store folder-named _]
-        ;; A custom destination may never have been created on this account (it was offline when the
-        ;; category was saved) or was deleted since; the incoming path creates it the same way.
-        (if-not (ensure-folder-exists! (.getFolder store ^String target-folder-name))
-          (do (t/log! :warn ["The target folder" target-folder-name "does not exist and could not be created."]) false)
-          (let [target-folder (folder-named target-folder-name)
-                source-folder (folder-named source-folder-name)]
-            (move-message-between-open-folders! (:id connection-config) source-folder target-folder source-folder-name target-folder-name message-id flag)))))
+        (let [^IMAPFolder source-folder (folder-named source-folder-name)]
+          (cond
+            ;; Look for the e-mail first: a recategorization tries every account in turn, and one that
+            ;; does not hold the e-mail must not get the category's folder created.
+            (empty? (.search source-folder (MessageIDTerm. (core-email/imap-message-id message-id))))
+            (do (t/log! :info ["No messages found in" source-folder-name "for" message-id])
+                :not-found)
+
+            ;; A custom destination may never have been created on this account (it was offline when the
+            ;; category was saved) or was deleted since; the incoming path creates it the same way.
+            (not (ensure-folder-exists! (.getFolder store ^String target-folder-name)))
+            (do (t/log! :warn ["The target folder" target-folder-name "does not exist and could not be created."]) false)
+
+            :else
+            (move-message-between-open-folders! (:id connection-config) source-folder (folder-named target-folder-name)
+                                                source-folder-name target-folder-name message-id flag)))))
     (catch FolderNotFoundException e
       (t/log! {:level :info :error e} ["The source folder" source-folder-name "of" message-id "does not exist any more."])
       :not-found)
@@ -869,14 +884,16 @@
   "[source-folder-name target-folder-name] for moving message-id into category target-name on the
    connection. The recorded folder is the source; without one the e-mail predates folder tracking and
    lives under the DEFAULT folder of source-name, never a (newer, possibly-changed) custom destination."
-  [^ConnectionData connection-data message-id ^String source-name ^String target-name]
-  (let [^Store monitored-store (:store connection-data)
-        connection-config (:config connection-data)
-        recorded-folder (db/email-folder message-id)]
-    [(if (s/blank? recorded-folder)
-       (inbox-or-default-category-folder-name monitored-store source-name (:folder connection-config))
-       recorded-folder)
-     (inbox-or-category-folder-name monitored-store target-name (:folder connection-config))]))
+  ([^ConnectionData connection-data message-id ^String source-name ^String target-name]
+   (let [^Store store (:store connection-data)
+         monitored (-> connection-data :config :folder)]
+     (resolve-move-folders message-id source-name target-name
+                           #(inbox-or-default-category-folder-name store % monitored)
+                           #(inbox-or-category-folder-name store % monitored))))
+  ([message-id ^String source-name ^String target-name default-folder-of category-folder-of]
+   (let [recorded-folder (db/email-folder message-id)]
+     [(if (s/blank? recorded-folder) (default-folder-of source-name) recorded-folder)
+      (category-folder-of target-name)])))
 
 (defn- record-in-place!
   "Nothing moves, but record the resolved location so a previously-unrecorded (legacy) e-mail gets a
@@ -917,8 +934,8 @@
 (defn move-emails-by-id!
   "Move many stored messages ([{:message-id :category}]) into their category folders over ONE dedicated
    Store, keeping every folder open for the whole run: one login (and one OAuth refresh) instead of one
-   per message. Returns the results in order: true, :not-found or false. A message whose move throws
-   counts as false and does not stop the others."
+   per message. Returns the results in order: true, :in-place (already in its category folder),
+   :not-found or false. A message whose move throws counts as false and does not stop the others."
   [^String id moves]
   (let [^ConnectionData connection-data (connection-data-from-id id)]
     (if-not (and (some? connection-data) (connected? connection-data))
@@ -928,16 +945,26 @@
             flag-color-of (memoize category-flag-color)]
         (with-dedicated-store (:config connection-data)
           (fn [^Store store folder-named _]
-            (let [target-exists? (memoize (fn [folder-name] (ensure-folder-exists! (.getFolder store ^String folder-name))))]
+            (let [target-exists? (memoize (fn [folder-name] (ensure-folder-exists! (.getFolder store ^String folder-name))))
+                  ;; A deleted source folder is tried once, not again for every e-mail recorded in it.
+                  missing-folders (volatile! #{})
+                  monitored (-> connection-data :config :folder)
+                  ;; Folder names are resolved on this dedicated Store, once per category: resolving them
+                  ;; costs a LIST per call, and the IDLE monitor's Store must not carry a batch's traffic.
+                  default-folder-of (memoize #(inbox-or-default-category-folder-name store % monitored))
+                  category-folder-of (memoize #(inbox-or-category-folder-name store % monitored))]
               (mapv (fn [{:keys [message-id category]}]
                       (try
-                        (let [[source-folder-name target-folder-name] (resolve-move-folders connection-data message-id category category)
+                        (let [[source-folder-name target-folder-name] (resolve-move-folders message-id category category default-folder-of category-folder-of)
                               flag (flag-color-of category)]
                           (cond
                             ;; Already where it belongs: neither moved nor flagged. Its flag is the
                             ;; user's business by now - they may have taken it away to keep the e-mail.
                             (same-folder-name? source-folder-name target-folder-name)
-                            (record-in-place! id message-id target-folder-name)
+                            (if (record-in-place! id message-id target-folder-name) :in-place false)
+
+                            (contains? @missing-folders source-folder-name)
+                            :not-found
 
                             (not (target-exists? target-folder-name))
                             false
@@ -945,6 +972,11 @@
                             :else
                             (move-message-between-open-folders! id (folder-named source-folder-name) (folder-named target-folder-name)
                                                                 source-folder-name target-folder-name message-id flag)))
+                        ;; The recorded source folder was deleted in the mail client meanwhile.
+                        (catch FolderNotFoundException e
+                          (when-let [^Folder missing (.getFolder e)]
+                            (vswap! missing-folders conj (.getFullName missing)))
+                          :not-found)
                         (catch Exception e
                           (t/log! {:level :error :error e} ["Moving" message-id "failed"])
                           false)))
@@ -1062,6 +1094,21 @@
                         (tally emails release! #(trash-one! folder-named category-folder-of trash-name %)))
                       (do (t/log! :warn ["Connection" id "has no trash folder; its expired e-mails are kept."])
                           {:no-trash (count emails)})))))
+
+(defn email-in-folder?
+  "Whether connection id holds message-id in folder-name, searched over a dedicated Store: true, false
+   (not there, or the folder does not exist any more), or nil when it cannot be told."
+  [^String id ^String folder-name message-id]
+  (let [^ConnectionData connection-data (connection-data-from-id id)]
+    (when (and (some? connection-data) (connected? connection-data))
+      (try
+        (with-dedicated-store (:config connection-data)
+          (fn [_ folder-named _]
+            (boolean (seq (.search ^IMAPFolder (folder-named folder-name) (MessageIDTerm. (core-email/imap-message-id message-id)))))))
+        (catch FolderNotFoundException _ false)
+        (catch Exception e
+          (t/log! {:level :warn :error e} ["Could not look for" message-id "in" folder-name])
+          nil)))))
 
 (defn apply-flags!
   "Set or clear the flags of stored e-mails of one connection ([{:message-id :folder :flag}], :flag a
@@ -1263,7 +1310,8 @@
     (try
       (t/log! :info ["Backfilling up to" backfill-message-limit "recent messages from" folder-name "to catch up on any mail missed while disconnected."])
       (app/read-emails-from-folder connection-data folder-name
-                                   {:move? true :limit backfill-message-limit}
+                                   ;; relocate?: a stored e-mail found in the monitored folder was moved back there.
+                                   {:move? true :limit backfill-message-limit :relocate? true}
                                    context)
       (catch Exception e
         (t/log! {:level :error :error e} ["Could not back-fill missed messages from" folder-name])))))
@@ -1354,7 +1402,20 @@
                   ;; folder, not one login per e-mail the user dragged in.
                   flag-jobs (atom [])
                   flag-job! #(swap! flag-jobs conj %)
-                  result (reduce (fn [summary chunk]
+                  scanned? (volatile! false)
+                  ;; In a finally: the watermark is saved per chunk, so when a later chunk fails, the
+                  ;; e-mails learned before it are never scanned again - their flags must be set now.
+                  ;; A failure of the flags themselves fails the scan when the scan itself went through
+                  ;; (it is reported like any failed folder); otherwise the scan's own error is kept.
+                  apply-collected-flags! (fn [] (when (seq @flag-jobs)
+                                                  (try (apply-flags! connection-id @flag-jobs)
+                                                       (catch Exception e
+                                                         (if @scanned?
+                                                           (throw e)
+                                                           (t/log! {:level :warn :error e} ["Could not set the flags of the e-mails learned in" folder-name]))))))
+                  result (try
+                          (let [scanned
+                          (reduce (fn [summary chunk]
                                  (let [chunk-array (into-array Message chunk)]
                                    (.fetch folder chunk-array profile)
                                    (let [result (reduce (fn [summary message]
@@ -1367,8 +1428,9 @@
                                      result)))
                                summary
                                (partition-all category-folder-scan-chunk-size (remove nil? messages)))]
-              (when (seq @flag-jobs)
-                (apply-flags! connection-id @flag-jobs))
+                            (vreset! scanned? true)
+                            scanned)
+                          (finally (apply-collected-flags!)))]
               result)))
         (finally (close-folder-without-expunge! folder))))))
 
@@ -1700,6 +1762,7 @@
   (move-email-to-category [_ connection-id message original-folder category] (move-message connection-id message original-folder category))
   (move-emails-by-id [_ connection-id moves] (move-emails-by-id! connection-id moves))
   (apply-flags [_ connection-id emails] (apply-flags! connection-id emails))
+  (email-in-folder? [_ connection-id folder-name message-id] (email-in-folder? connection-id folder-name message-id))
   (prefetch-message-identities [_ folder from to]
     ;; One FETCH for a whole range of envelopes, so the per-message identity lookups that follow are
     ;; answered from the cache. Best effort: a range the server cannot serve is simply read one by one.

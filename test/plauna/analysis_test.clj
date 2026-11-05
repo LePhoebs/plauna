@@ -232,3 +232,10 @@
     (is (nil? (analysis/handle-enrichment {:type :parsed-enrichable-email :payload {:header {:message-id "<stored@x>"}}}))
         "Re-importing must not overwrite the stored category with the model's guess")
     (is (= :enriched-email (:type (analysis/handle-enrichment {:type :parsed-enrichable-email :payload {:header {:message-id "<new@x>"}}}))))))
+
+(deftest sender-and-from-are-separate-features
+  (let [email {:header {:subject "Hallo\u00a0Welt"}
+               :participants [{:type :sender :address "bounce@mcsv.net"} {:type "from" :address "news@shop.de"}]}
+        tokens (set (analysis/classification-tokens email nil))]
+    (is (every? tokens ["sender-address:bounce@mcsv.net" "sender-domain:mcsv.net" "from-address:news@shop.de" "from-domain:shop.de"]))
+    (is (every? tokens ["subject:hallo" "subject:welt"]) "A no-break space separates words like in the training file")))

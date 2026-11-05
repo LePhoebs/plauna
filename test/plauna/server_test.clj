@@ -198,7 +198,8 @@
 (deftest mtls-admin-post-saves-and-activates-the-submitted-settings
   (let [submitted (atom nil)]
     (try
-      (with-redefs [auth/save-mtls-settings-from-request!
+      (with-redefs [auth/verify-web-password? (fn [password] (= "admin-password" password))
+                    auth/save-mtls-settings-from-request!
                     (fn [request] (reset! submitted request) {:enabled true})]
         (let [response ((server/make-routes {})
                         {:request-method :post
@@ -298,7 +299,8 @@
 
 (deftest recategorize-email-reports-a-missing-imap-message-without-saving
   (let [updates (atom [])]
-    (with-redefs [server/enriched-email-by-message-id (fn [_] {:header {:message-id "missing-1"}})
+    (with-redefs [db/email-exists? (constantly true)
+                  server/enriched-email-by-message-id (fn [_] {:header {:message-id "missing-1"}})
                   db/get-categories (fn [] [{:id 7 :name "Correct"}])
                   app/move-email-to-category (fn [_ _ _] {:result :not-found})
                   db/update-metadata-category (fn [& args] (swap! updates conj args))]
@@ -309,7 +311,8 @@
 
 (deftest recategorize-email-force-updates-only-plauna-metadata
   (let [updates (atom [])]
-    (with-redefs [app/move-email-to-category (fn [& _] (throw (ex-info "IMAP must not be called" {})))
+    (with-redefs [db/email-exists? (constantly true)
+                  app/move-email-to-category (fn [& _] (throw (ex-info "IMAP must not be called" {})))
                   db/update-metadata-category (fn [& args] (swap! updates conj args))]
       (let [response (server/recategorize-email-response {} {:message-id "missing-1" :category "7" :force "true"})]
         (is (= 204 (:status response)))
@@ -317,7 +320,8 @@
 
 (deftest recategorize-email-keeps-general-move-errors-non-overridable
   (let [updates (atom [])]
-    (with-redefs [server/enriched-email-by-message-id (fn [_] {:header {:message-id "error-1"}})
+    (with-redefs [db/email-exists? (constantly true)
+                  server/enriched-email-by-message-id (fn [_] {:header {:message-id "error-1"}})
                   db/get-categories (fn [] [{:id 7 :name "Correct"}])
                   app/move-email-to-category (fn [_ _ _] {:result :error})
                   db/update-metadata-category (fn [& args] (swap! updates conj args))]
@@ -759,7 +763,7 @@
 
 (deftest auth-provider-update-answers-204-and-writes-only-known-columns
   (let [updated (atom nil)]
-    (with-redefs [db/get-auth-provider (fn [_] {:id 7 :client-secret "keep-me"})
+    (with-redefs [db/get-auth-provider (fn [_] {:id 7 :client-secret "keep-me" :token-url "t" :auth-url "a" :client-id "cid"})
                   db/update-auth-provider (fn [provider] (reset! updated provider))]
       (let [response ((server/make-routes {})
                       {:request-method :put :uri "/admin/auth-providers/7"
@@ -1006,3 +1010,54 @@
       "Another service under the same domain is refused")
   (is (false? (server/cross-site-request? {:request-method :post :headers {"sec-fetch-site" "same-origin" "origin" "https://plauna.example" "host" "plauna:8080"}}))
       "A proxy that rewrites Host does not matter"))
+
+(deftest a-stored-secret-is-not-sent-to-a-new-server
+  (is (true? (server/secret-redirected? "" "stored" [["evil.example" "imap.example"]])))
+  (is (false? (server/secret-redirected? "new-secret" "stored" [["evil.example" "imap.example"]])) "Entering the secret again is fine")
+  (is (false? (server/secret-redirected? "" "stored" [["IMAP.example " "imap.example"] ["" nil]])) "Only a real change counts")
+  (is (false? (server/secret-redirected? "" nil [["evil.example" "imap.example"]])) "Without a stored secret (OAuth) nothing is asked")
+  (let [updated (atom nil)]
+    (with-redefs [db/get-connection (fn [_] {:id "c1" :host "imap.example" :user "me" :port 993 :secret "stored"})
+                  db/update-connection (fn [c] (reset! updated c))]
+      (let [response ((server/make-routes {})
+                      {:request-method :put :uri "/admin/connections/c1"
+                       :params {:id "c1" :host "evil.example" :user "me" :port "993" :secret ""}
+                       :session {:authenticated true}})]
+        (is (= 400 (:status response)))
+        (is (nil? @updated))))))
+
+(deftest e-mail-links-are-url-safe
+  (let [id "<a?b@x>"]
+    (is (= id (#'server/decode-message-id (.encodeToString (java.util.Base64/getUrlEncoder) (.getBytes id "UTF-8")))))
+    (is (= id (#'server/decode-message-id (.encodeToString (java.util.Base64/getEncoder) (.getBytes id "UTF-8"))))
+        "Links from before keep working")))
+
+(deftest the-batch-button-only-appears-for-a-real-batch
+  (is (= "/parse-batches/..%2F..%2Fadmin%2Fcategories%2F5%3Fx%3D1/move" (server/batch-move-url "../../admin/categories/5?x=1"))))
+
+(deftest page-scripts-are-recognised-over-plain-http
+  (let [handler (server/wrap-authentication (fn [_] {:status 200}))]
+    (is (= 401 (:status (handler {:request-method :post :uri "/metadata/category" :session {} :headers {"x-plauna-fetch" "1"}}))))))
+
+(deftest a-category-change-for-a-deleted-e-mail-is-refused
+  (with-redefs [db/email-exists? (constantly false)
+                db/update-metadata-category (fn [& _] (throw (ex-info "must not write" {})))]
+    (is (= 410 (:status (server/recategorize-email-response {} {:message-id "gone" :category "3" :force "true"}))))))
+
+(deftest a-changed-oauth-target-drops-the-stored-tokens
+  (let [deleted (atom [])]
+    (with-redefs [db/get-connection (fn [_] {:id "c1" :host "imap.example" :user "me" :port 993 :security "ssl" :check-ssl-certs true
+                                             :auth-type "oauth2" :auth-provider 3 :secret nil})
+                  db/update-connection (fn [_] nil)
+                  db/get-oauth-tokens (fn [_] {:refresh-token "r"})
+                  db/delete-access-token (fn [id] (swap! deleted conj id))]
+      (let [routes (server/make-routes {})
+            put (fn [params] (routes {:request-method :put :uri "/admin/connections/c1" :session {:authenticated true}
+                                      :params (merge {:id "c1" :host "imap.example" :user "me" :port "993" :security "ssl"
+                                                      :check-ssl-certs "true" :auth-type "oauth2" :auth-provider "3" :secret ""} params)}))]
+        (is (= 200 (:status (put {:folder "INBOX"}))))
+        (is (= [] @deleted) "Changing something else keeps the tokens")
+        (is (= 200 (:status (put {:host "evil.example"}))) "An OAuth connection needs no password to change its server")
+        (is (= ["c1"] @deleted) "but its tokens are not sent to the new server")
+        (put {:auth-provider "9"})
+        (is (= ["c1" "c1"] @deleted) "nor to another provider")))))

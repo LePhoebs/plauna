@@ -42,7 +42,8 @@
      source folder was searched successfully but contains no matching message, and false for other
      failures such as a disconnected store.")
   (move-email-to-category [this connection-id original-message original-folder category])
-  (move-emails-by-id [this connection-id moves] "Move several stored messages ([{:message-id :category}]) into their category folders over ONE dedicated connection. Returns the per-move results in order: true, :not-found or false.")
+  (move-emails-by-id [this connection-id moves] "Move several stored messages ([{:message-id :category}]) into their category folders over ONE dedicated connection. Returns the per-move results in order: true, :in-place (already in its category folder), :not-found or false.")
+  (email-in-folder? [this connection-id folder-name message-id] "Whether the account holds the message in the folder, searched over a dedicated connection: true, false (searched, not there, or the folder is gone), or nil when that cannot be told (disconnected, an error).")
   (apply-flags [this connection-id emails] "Set or clear the flags of stored messages ([{:message-id :folder :flag}], :flag a flag color id or :clear) over a dedicated connection. Returns the counts {:flagged :missing :failed :offline}.")
   (prefetch-message-identities [this folder from to] "Best-effort bulk fetch of the envelopes of messages from..to (sequence numbers) so the following per-message identity lookups need no round trip.")
   (message-numbers-since [this folder since] "The sequence numbers (ascending) of the messages of a folder opened for bulk reading that were RECEIVED on or after the calendar day since (a java.time.LocalDate). The server compares whole days and ignores the time of day. The received date (IMAP INTERNALDATE) is used rather than the Date header because moving a message between folders keeps it, while the Date header can be arbitrarily old or wrong.")

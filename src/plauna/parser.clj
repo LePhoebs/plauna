@@ -127,7 +127,11 @@
                           (.setMimeEntityConfig builder mime-config) builder)
         message (.parseMessage message-builder is)
         headers (parse-headers message)
-        senders (flatten (map (partial parse-participants (message-id message) :sender) (.getFrom message)))
+        ;; As for IMAP (see plauna.client/create-participants): :sender is the Sender header, else the
+        ;; first From address; :from every From address.
+        envelope-sender (or (.getSender message) (first (.getFrom message)))
+        senders (concat (when envelope-sender [(parse-participants (message-id message) :sender envelope-sender)])
+                        (flatten (map (partial parse-participants (message-id message) :from) (.getFrom message))))
         receivers (flatten (map (partial parse-participants (message-id message) :receiver) (.getTo message)))
         cc (flatten (map (partial parse-participants (message-id message) :cc) (.getCc message)))
         bcc (flatten (map (partial parse-participants (message-id message) :bcc) (.getBcc message)))

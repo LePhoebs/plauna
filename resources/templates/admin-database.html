@@ -73,8 +73,9 @@
       <p class="mb-3 text-sm opacity-80">
         Copies all data from the local SQLite file to the configured MariaDB database.
         The SQLite file is not deleted; once Plauna runs on MariaDB, this page offers to delete it.
-        Migration is idempotent — running it again skips
-        duplicate rows. After a successful migration, save the config above and restart Plauna.
+        It only runs into a MariaDB database without e-mails: copying again later would bring back
+        everything deleted since the switch. After a successful migration, save the config above and
+        restart Plauna.
       </p>
       {% if sqlite-exists %}
       <form action="/admin/database/migrate" method="post">

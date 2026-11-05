@@ -56,7 +56,7 @@
                   <script>
                     document.getElementById('delete-button-{{provider.id}}').addEventListener('click', (e) => {
                         fetch('/admin/auth-providers/{{provider.id}}', {method: 'DELETE', body: JSON.stringify({"conn-id": "{{id}}"})})
-                            .then(response => window.location.replace(response.url))});
+                            .then(plaunaThen(response => window.location.replace(response.url)))});
 
                     document.getElementById('update-button-{{provider.id}}').addEventListener('click', (e) => {
                         e.stopPropagation();
@@ -67,7 +67,7 @@
                               body.append(element.name, element.value);
                             }
                         };
-                        return fetch('/admin/auth-providers/{{provider.id}}', {method: 'PUT', body: body}).then(() => window.location.href = '/admin/connections/{{id}}');
+                        return fetch('/admin/auth-providers/{{provider.id}}', {method: 'PUT', body: body}).then(plaunaThen(() => window.location.reload()));
                     });
                   </script>
 	            </div>

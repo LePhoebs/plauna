@@ -307,7 +307,7 @@
     (is (= "Rechnung für März" (:subject header)) "Encoded words are decoded")
     (is (= "text/plain" (:mime-type header)))
     (is (= 1788336000 (:date header)) "The Date header (10:00 +02:00) is parsed to epoch seconds, 08:00 UTC")
-    (is (= [[:sender "shop@example.com" "Shop"] [:receiver "me@example.com" nil] [:receiver "other@example.com" "Other"]]
+    (is (= [[:sender "shop@example.com" "Shop"] [:from "shop@example.com" "Shop"] [:receiver "me@example.com" nil] [:receiver "other@example.com" "Other"]]
            (mapv (juxt :type :address :name) participants))
         "From and To are parsed leniently; the unparseable Cc header is dropped instead of failing")
     (is (every? #(= "<broken-envelope@example.com>" (:message-id %)) participants))))

@@ -199,9 +199,10 @@
 (defn bad-request-response [text] {:status 400 :headers html-headers :body (str "Invalid request: " text)})
 
 (defn- decode-message-id
-  "The Message-ID encoded in an /emails/:id URL, or nil when the id is not valid base64."
+  "The Message-ID encoded in an /emails/:id URL, or nil when the id is not valid base64. Links use the
+   URL-safe alphabet; standard Base64 from older bookmarks is accepted too."
   [id]
-  (try (String. ^bytes (base64-decode id) "UTF-8")
+  (try (String. ^bytes (base64-decode (-> (str id) (st/replace "-" "+") (st/replace "_" "/"))) "UTF-8")
        (catch Exception _ nil)))
 
 (def session-max-age-millis
@@ -848,7 +849,7 @@
 
 (defn run-retention!
   "Move every e-mail whose category's retention has run out to the trash of its account. The age is
-   counted from the e-mail's date. When the category also sets a flag color, an e-mail whose flag the
+   counted from when the e-mail got its category (see db/expired-emails). When the category also sets a flag color, an e-mail whose flag the
    user removed in the mail client is kept: taking the flag away is the way to keep one. Plauna keeps
    the e-mail in its own database as a training example. Returns the summed counts, or nil when a run
    is already in progress."
@@ -888,15 +889,18 @@
           (reset! retention-scheduler executor)))))
 
 (defn stop-retention-scheduler!
-  "Stop scheduling runs and wait up to 30 seconds for a running one: interrupting it between a move to
-   the trash and recording it would leave the database pointing at the old folder."
+  "Stop scheduling runs and wait up to 5 seconds for a running one: interrupting it between a move to
+   the trash and recording it would leave the database pointing at the old folder. Not longer: docker
+   stop kills the JVM after 10 seconds, and the rest of the shutdown (web server, IMAP, database pool)
+   must still get its turn. An e-mail interrupted that way is found in the trash folder on the next run's
+   search and counted as missing, nothing is lost."
   []
   (locking retention-scheduler
     (when-let [^ScheduledExecutorService executor @retention-scheduler]
       (reset! retention-scheduler nil)
       (.shutdown executor)
-      (when-not (.awaitTermination executor 30 TimeUnit/SECONDS)
-        (t/log! :warn "The retention run did not finish within 30 seconds; stopping it.")
+      (when-not (.awaitTermination executor 5 TimeUnit/SECONDS)
+        (t/log! :warn "The retention run did not finish within 5 seconds; stopping it.")
         (.shutdownNow executor)))))
 
 (defn start-manual-retention!
@@ -907,7 +911,7 @@
     false
     (do (async/thread
           (let [totals (run-retention!)]
-            (cond (nil? totals) (add-to-messages {:type :info :content "A scheduled clean-up was already running; its result is in the log."})
+            (cond (nil? totals) (add-to-messages {:type :info :content "Another clean-up was already running; its result is in the log."})
                   (:error totals) (add-to-messages {:type :alert :content "The clean-up failed. Please see the logs."})
                   :else (add-to-messages {:type :success :content (str "Clean-up finished: " (retention-summary-text totals) ".")}))))
         true)))
@@ -972,23 +976,25 @@
       ;; A body part's identity is (mime-type, filename, content-disposition) so that, e.g., the main
       ;; text/plain body and a text/plain "note.txt" attachment are treated as distinct rows.
       ;;  - Content-bearing parts (text): deduped by the DB's UNIQUE(mime_type, message_id, content) via
-      ;;    INSERT OR IGNORE. A part whose stored content was blank has different content, so we first
-      ;;    delete that one stale empty row (matched by identity + blank content, by id) so the repair
-      ;;    replaces it rather than leaving an empty duplicate.
+      ;;    INSERT OR IGNORE. A stored part of the same identity whose content differs - blank, or decoded
+      ;;    wrongly before (umlauts lost) - is deleted first, so the repair replaces it rather than leaving
+      ;;    a duplicate that would still be read first. Delete and insert run in one transaction.
       ;;  - Attachment parts (nil content): a UNIQUE constraint does not dedupe NULLs, so only add one when
       ;;    no row of the same identity exists yet.
       (let [blank?           (fn [p] (st/blank? (str (:content p))))
             part-key         (juxt :mime-type :filename :content-disposition)
             existing         (db/fetch-bodies-for [message-id])
             existing-keys    (set (map part-key existing))
-            content-parts    (remove blank? (:body refetched))
+            ;; Fitted like the stored rows (a huge part is kept cut), so an unchanged part compares equal.
+            content-parts    (map db/fit-body-row (remove blank? (:body refetched)))
             content-keys     (set (map part-key content-parts))
             attachment-parts (remove (comp existing-keys part-key) (filter blank? (:body refetched)))
+            fresh-contents   (group-by part-key content-parts)
             stale-ids        (->> existing
-                                  (filter (fn [r] (and (blank? r) (contains? content-keys (part-key r)))))
+                                  (filter (fn [r] (and (contains? content-keys (part-key r))
+                                                       (not (some #(= (:content r) (:content %)) (get fresh-contents (part-key r)))))))
                                   (keep :id))]
-        (when (seq stale-ids) (db/delete-bodies-by-ids stale-ids))
-        (when (seq content-parts) (db/save-bodies content-parts))
+        (db/replace-bodies! stale-ids content-parts)
         ;; Anything re-fetched may change the features (body text, sender), so the cached classification
         ;; tokens must be derived again.
         (db/delete-training-tokens! message-id)
@@ -1082,8 +1088,67 @@
 (defn- without-provider-secrets [providers]
   (mapv #(dissoc % :client-secret :client_secret) providers))
 
+(defn target-changed?
+  "True when one of the pairs [submitted-value stored-value] differs - where a stored credential would
+   be sent: a server, port, user, encryption setting, token URL ... Case, surrounding spaces and blank
+   versus missing do not count as a change."
+  [pairs]
+  (let [normalized #(some-> % str st/trim st/lower-case not-empty)]
+    (boolean (some (fn [[submitted stored]] (not= (normalized submitted) (normalized stored))) pairs))))
+
+(defn secret-redirected?
+  "True when a form keeps a STORED secret (its field is left blank and a secret is stored) while
+   changing where that secret is sent (see target-changed?). A stolen session could otherwise send the
+   stored IMAP, database or OAuth client secret to a server of its own; whoever changes the target must
+   enter the secret again. Without a stored secret there is nothing to protect."
+  [submitted-secret stored-secret pairs]
+  (and (st/blank? submitted-secret)
+       (not (st/blank? (str (or stored-secret ""))))
+       (target-changed? pairs)))
+
+(defn- forget-oauth-tokens!
+  "Delete the stored OAuth tokens of the connections: their target changed, and the tokens must not be
+   sent to the new one - the next connect asks for a new OAuth login."
+  [connection-ids]
+  (doseq [id connection-ids]
+    (when (some? (db/get-oauth-tokens id))
+      (db/delete-access-token id)
+      (t/log! :info ["The server, user or OAuth provider of connection" id "changed: its OAuth tokens were deleted, a new OAuth login is needed."]))))
+
+(def ^:private secret-redirected-response
+  {:status 400 :headers {"Content-Type" "text/plain; charset=UTF-8"}
+   :body "The server or user changed: please enter the password or secret again."})
+
+(declare mariadb-port)
+
+(defn- database-password-redirected?
+  "secret-redirected? for the MariaDB form: only a stored password needs protecting."
+  [{:keys [host port name user password]} existing]
+  (secret-redirected? password (:password existing) [[host (:host existing)]
+                                                     [(mariadb-port port) (:port existing)]
+                                                     [name (:name existing)]
+                                                     [user (:user existing)]]))
+
 (defn- keep-existing-when-blank [submitted existing]
   (if (st/blank? submitted) existing submitted))
+
+(defn- current-password-check
+  "Check the administrator's current password for a credential change under the same brake as the
+   login (see auth/claim-login-attempt!): a stolen session cookie must not allow unlimited guessing.
+   Returns :ok, :wrong or {:wait seconds}."
+  [password]
+  (let [wait (long (auth/claim-login-attempt!))]
+    (cond (pos? wait) {:wait (max 1 (long (Math/ceil (/ wait 1000.0))))}
+          (auth/verify-web-password? password) (do (auth/record-login-success!) :ok)
+          :else :wrong)))
+
+(defn- password-check-alert
+  "The message for a failed current-password-check."
+  [check]
+  {:type :alert
+   :content (if (map? check)
+              (str "Too many wrong passwords. Please wait " (:wait check) " second(s) and try again.")
+              "Current password is incorrect.")})
 
 (defn- mariadb-port
   "The port of the database form: MariaDB's default 3306 when the field is left blank."
@@ -1364,14 +1429,16 @@
                             (watched-folder id nil)
                             {:move? (some? (:move params)) :since-days since-days}))))
 
-(defn batch-move-url [batch-id] (str "/parse-batches/" batch-id "/move"))
+(defn batch-move-url [batch-id]
+  (str "/parse-batches/" (java.net.URLEncoder/encode (str batch-id) "UTF-8") "/move"))
 
 (defn move-summary-message
   "Toast for a finished 'move to category folders' job over a set of e-mails described by what-text
    (e.g. \"the Old batch\" or \"the folder Newsletter_Alt\")."
-  [what-text {:keys [moved total not-found failed uncategorized]}]
+  [what-text {:keys [moved total not-found failed uncategorized in-place]}]
   {:type (if (pos? (+ not-found failed)) :info :success)
    :content (str "Moved " moved " of " total " categorized e-mail(s) of " what-text " into their category folders."
+                 (when (pos? (or in-place 0)) (str " " in-place " were in their category folder already."))
                  (when (pos? not-found) (str " " not-found " were not found on the server."))
                  (when (pos? failed) (str " " failed " could not be moved (see the logs)."))
                  (when (pos? uncategorized) (str " " uncategorized " e-mail(s) without a category were left in place.")))})
@@ -1389,7 +1456,7 @@
                                (fn [moves]
                                  (if (= "running" (get-in moves [job-key :status]))
                                    moves
-                                   (assoc moves job-key {:status "running" :moved 0 :total 0 :not-found 0 :failed 0}))))]
+                                   (assoc moves job-key {:status "running" :moved 0 :in-place 0 :total 0 :not-found 0 :failed 0}))))]
     (if (= "running" (get-in before [job-key :status]))
       false
       (do (async/thread
@@ -1397,7 +1464,7 @@
                             (move-fn context (fn [progress] (swap! batch-moves update job-key merge progress)))
                             (catch Throwable e
                               (t/log! {:level :error :error e} ["Moving" what-text "failed"])
-                              {:total 0 :moved 0 :not-found 0 :failed 0 :uncategorized 0 :error true}))]
+                              {:total 0 :moved 0 :in-place 0 :not-found 0 :failed 0 :uncategorized 0 :error true}))]
               (swap! batch-moves update job-key merge summary {:status "finished"})
               (add-to-messages (if (:error summary)
                                  {:type :alert :content (str "Moving " what-text " failed. Please see the logs.")}
@@ -1509,6 +1576,11 @@
         force? (contains? #{true "true"} (:force params))
         new-category-id (when (seq category) (Integer/parseInt category))]
     (cond
+      ;; Deleted from Plauna while the list was open: there is nothing to update (and writing metadata
+      ;; for it would violate its foreign key). 410, not 404 - 404 asks about a missing IMAP message.
+      (not (db/email-exists? message-id))
+      {:status 410 :headers {"Content-Type" "text/plain; charset=UTF-8"} :body "email-not-stored"}
+
       ;; Clearing the category never needs an IMAP move, but Plauna's flag goes with the category.
       (nil? new-category-id)
       (let [old-category-id (:category-id (db/email-category-state message-id))]
@@ -1610,8 +1682,12 @@
                        :name     name
                        :user     user
                        :password (if (st/blank? password) (:password existing "") password)})]
-       (db-cfg/save-config! cfg)
-       (redirect "/admin/database?saved=1")))
+       (if (database-password-redirected? (:params request) existing)
+         ;; Show what was entered (without the password), so only the password has to be added.
+         (render-database-page {:saved-config (merge (dissoc existing :password) (select-keys (:params request) [:host :port :name :user]))
+                                :message {:type "error" :text (:body secret-redirected-response)}})
+         (do (db-cfg/save-config! cfg)
+             (redirect "/admin/database?saved=1")))))
 
    (comp/POST "/admin/database/test" request
      (let [{:keys [host port name user password]} (:params request)
@@ -1622,7 +1698,9 @@
                 :user     user
                 :password (if (st/blank? password) (:password existing "") password)
                 :ssl-mode (:ssl-mode existing)}
-           result (db-mig/test-connection! cfg)]
+           result (if (database-password-redirected? (:params request) existing)
+                    {:ok false :error (:body secret-redirected-response)}
+                    (db-mig/test-connection! cfg))]
        (render-database-page {:saved-config (dissoc existing :password)
                               :message (if (:ok result)
                                          {:type "success" :text "Connection successful!"}
@@ -1650,9 +1728,10 @@
                              :login-name  (auth/web-login-name)})))
 
    (comp/POST "/admin/login-name" request
-     (let [{:keys [current-password login-name]} (:params request)]
-       (if-not (auth/verify-web-password? current-password)
-         (redirect-request request {:type :alert :content "Current password is incorrect."})
+     (let [{:keys [current-password login-name]} (:params request)
+           check (current-password-check current-password)]
+       (if-not (= :ok check)
+         (redirect-request request (password-check-alert check))
          (try
            (auth/set-login-name! login-name)
            ;; Every other session was established with the old credentials: end them all, and renew
@@ -1664,10 +1743,11 @@
              (redirect-request request {:type :alert :content (.getMessage e)}))))))
 
    (comp/POST "/admin/password" request
-     (let [{:keys [current-password new-password confirm-password]} (:params request)]
+     (let [{:keys [current-password new-password confirm-password]} (:params request)
+           check (current-password-check current-password)]
        (cond
-         (not (auth/verify-web-password? current-password))
-         (redirect-request request {:type :alert :content "Current password is incorrect."})
+         (not= :ok check)
+         (redirect-request request (password-check-alert check))
 
          (not= new-password confirm-password)
          (redirect-request request {:type :alert :content "New password and confirmation do not match."})
@@ -1693,11 +1773,21 @@
           (markup/mtls-page state)))))
 
    (comp/POST "/admin/mtls" request
-     (try
-       (auth/save-mtls-settings-from-request! request)
-       (redirect-request request {:type :success :content "mTLS login configuration saved and activated."})
-       (catch clojure.lang.ExceptionInfo e
-         (redirect-request request {:type :alert :content (.getMessage e)}))))
+     ;; The password is checked first, under the login brake; a correct password followed by another
+     ;; mistake in the form (a short secret, a malformed fingerprint) must not count as a wrong guess.
+     (let [check (current-password-check (get-in request [:params :current-password]))]
+       (if-not (= :ok check)
+         (redirect-request request (password-check-alert check))
+         (try
+           (let [{:keys [revoked?]} (auth/save-mtls-settings-from-request! request)]
+             (if revoked?
+               ;; A removed certificate must not keep the sessions it opened; this one is renewed.
+               (do (p/bump-session-generation!)
+                   (assoc (redirect-request request {:type :success :content "mTLS login configuration saved and activated. Sessions of removed certificates have been ended."})
+                          :session (authenticate-session (:session request))))
+               (redirect-request request {:type :success :content "mTLS login configuration saved and activated."})))
+           (catch clojure.lang.ExceptionInfo e
+             (redirect-request request {:type :alert :content (.getMessage e)}))))))
 
    (comp/GET "/" {} {:status  302
                      :headers {"Location" (if (db/any-emails?) "/emails" "/admin")}})
@@ -1924,7 +2014,9 @@
            result (app/fetch-emails context (parse-fn params))
            batch-id (get-in result [:parameters :batch])
            options (cond-> (:optional result)
-                     (some? batch-id) (assoc :batch-move-url (batch-move-url batch-id)))]
+                     ;; Only for a batch that exists: the id comes from the URL, and a crafted one such as
+                     ;; "../../admin/..." would turn the button into a POST to any route of Plauna.
+                     (and (some? batch-id) (some? (db/parse-batch batch-id))) (assoc :batch-move-url (batch-move-url batch-id)))]
        (success-html-with-body (result-with-messages (markup/list-emails (:data result) (:parameters result) options) global-messages))))
 
    (comp/POST "/admin/connections/:id/folders/move" request
@@ -2004,8 +2096,10 @@
      (let [id (get (:params request) :id)]
        ;; Close and deregister the live connection first: deleting only the DB row would leave an
        ;; active monitor running with no way to reach it from the UI anymore.
-       (client/remove-connection! id)
-       (db/delete-connection id)
+       ;; Under the connect lock, so a login still in progress cannot register the deleted connection.
+       (app/with-connection-lock id (fn []
+                                      (client/remove-connection! id)
+                                      (db/delete-connection id)))
        {:status 200}))
 
    (comp/GET "/admin/new-connection" []
@@ -2030,13 +2124,23 @@
 
    (comp/PUT "/admin/auth-providers/:id" request
      (let [params (:params request)
-           existing (db/get-auth-provider (:id params))]
-       (db/update-auth-provider (-> (auth-provider-fields params)
-                                    (auth-provider-update-from-params existing)
-                                    (assoc :id (:id params))))
-       ;; The handler used to end with the JDBC result vector, which Compojure cannot render (a 500
-       ;; after a successful update).
-       {:status 204}))
+           existing (db/get-auth-provider (:id params))
+           target-pairs [[(:token_url params) (:token-url existing)]
+                         [(:auth_url params) (:auth-url existing)]
+                         [(:client_id params) (:client-id existing)]]]
+       (if (secret-redirected? (:client_secret params) (:client-secret existing) target-pairs)
+         secret-redirected-response
+         (do (db/update-auth-provider (-> (auth-provider-fields params)
+                                          (auth-provider-update-from-params existing)
+                                          (assoc :id (:id params))))
+             ;; The refresh tokens of its connections would go to the new token URL.
+             (when (target-changed? target-pairs)
+               (forget-oauth-tokens! (->> (db/get-connections)
+                                          (filter #(= (str (:auth-provider %)) (str (:id params))))
+                                          (map :id))))
+             ;; The handler used to end with the JDBC result vector, which Compojure cannot render (a 500
+             ;; after a successful update).
+             {:status 204}))))
 
    (comp/GET "/admin/connections/:id/activity" request
      {:status 200
@@ -2076,17 +2180,31 @@
 
    (comp/PUT "/admin/connections/:id" request
      (let [params (:params request)
-           existing (db/get-connection (:id params))]
-       (db/update-connection (connection-update-from-params params existing))
-       {:status 200}))
+           existing (db/get-connection (:id params))
+           ;; Everything that decides where the stored password or OAuth token goes, and whether it
+           ;; travels encrypted. The OAuth provider only matters for the tokens: switching a connection
+           ;; to OAuth does not send its stored password anywhere.
+           server-pairs [[(:host params) (:host existing)]
+                         [(:port params) (:port existing)]
+                         [(:user params) (:user existing)]
+                         [(:security params) (:security existing)]
+                         [(= "true" (:check-ssl-certs params)) (true? (:check-ssl-certs existing))]]
+           token-pairs (conj server-pairs [(:auth-provider params) (:auth-provider existing)])]
+       (if (secret-redirected? (:secret params) (:secret existing) server-pairs)
+         secret-redirected-response
+         (do (db/update-connection (connection-update-from-params params existing))
+             (when (target-changed? token-pairs)
+               (forget-oauth-tokens! [(:id params)]))
+             {:status 200}))))
 
    (comp/POST "/admin/connections/:id/controls" request
      (let [id (:id (:route-params request))
            operation (:operation (:params request))]
        (cond (= "reconnect" operation) (reconnect-control-response context request id)
-             (= "disconnect" operation) (do (if-let [connection-data (client/connection-data-from-id id)]
-                                              (client/disconnect connection-data)
-                                              (t/log! :info ["Connection" id "is not registered; nothing to disconnect."]))
+             (= "disconnect" operation) (do (app/with-connection-lock
+                                             id #(if-let [connection-data (client/connection-data-from-id id)]
+                                                   (client/disconnect connection-data)
+                                                   (t/log! :info ["Connection" id "is not registered; nothing to disconnect."])))
                                             (client/forget-disconnected-cache!)
                                             (redirect-request request))
              (= "connect" operation) (connect-control-response context request id)
@@ -2102,9 +2220,17 @@
 
    (comp/POST "/repl" request
      (let [operation (get-in request [:params :operation])]
-       (cond (= operation "start") (swap! repl-server (fn [_] (t/log! :info "Starting repl server") (nrepl/start-server :bind "127.0.0.1" :port 7888)))
-             (= operation "stop") (swap! repl-server (fn [_] (t/log! :info "Stopping repl server") (nrepl/stop-server @repl-server) nil))
-             :else (t/log! :error ["Unsupported operation" operation "at /repl"]))
+       ;; locking, not swap!: starting and stopping a server are side effects that must run once, and
+       ;; "stop" without a running server must not hand nil to stop-server.
+       (locking repl-server
+         (cond (= operation "start") (when (nil? @repl-server)
+                                       (t/log! :info "Starting repl server")
+                                       (reset! repl-server (nrepl/start-server :bind "127.0.0.1" :port 7888)))
+               (= operation "stop") (when-let [server @repl-server]
+                                      (t/log! :info "Stopping repl server")
+                                      (nrepl/stop-server server)
+                                      (reset! repl-server nil))
+               :else (t/log! :error ["Unsupported operation" operation "at /repl"])))
        (redirect-request request)))
 
    (comp/GET "/oauth2/callback" request
@@ -2218,7 +2344,8 @@
         ;; A page script's request (fetch) would follow the redirect and get the login page as its
         ;; answer; tell it plainly instead, and base.html sends the browser to the login page.
         (let [mode (get-in request [:headers "sec-fetch-mode"])]
-          (and (some? mode) (not= "navigate" mode)))
+          (or (some? (get-in request [:headers "x-plauna-fetch"]))
+              (and (some? mode) (not= "navigate" mode))))
         {:status 401 :headers {"Content-Type" "text/plain; charset=UTF-8"} :body "login-required"}
 
         :else

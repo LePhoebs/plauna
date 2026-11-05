@@ -4,7 +4,6 @@
             [selmer.filters :refer [add-filter!]]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [ring.util.codec :refer [base64-encode]]
             [plauna.client :as client]
             [plauna.core.email :as core-email]
             [plauna.core.flags :as flags]
@@ -81,7 +80,18 @@
                           (str acc (:address el))
                           (str acc ", " (:address el)))) "" contacts)))
 
-(add-filter! :concat-senders (partial concat-contacts :sender))
+;; "From" shows the From address where Plauna stored it, else the sender as before (the Sender header,
+;; else From): e-mails saved before both were kept only have the sender.
+(defn- from-text [contacts]
+  (let [from (concat-contacts :from contacts)]
+    (if (seq from) from (concat-contacts :sender contacts))))
+
+(add-filter! :concat-senders from-text)
+
+;; The Sender header (a mailing service, a secretary) when it differs from what "From" shows.
+(add-filter! :envelope-sender (fn [contacts]
+                                (let [sender (concat-contacts :sender contacts)]
+                                  (when (and (seq sender) (not= sender (from-text contacts))) sender))))
 
 (add-filter! :concat-receivers (partial concat-contacts :receiver))
 
@@ -93,7 +103,9 @@
 
 (add-filter! :readable-message-id core-email/imap-message-id)
 
-(add-filter! :base64-encode (fn [^String string] (base64-encode (.getBytes string))))
+;; URL-safe Base64 (- and _ instead of + and /): the value is a path segment of /emails/:id, and a / in
+;; it - for example from a Message-ID containing ? - would make the route miss.
+(add-filter! :base64-encode (fn [^String string] (.encodeToString (java.util.Base64/getUrlEncoder) (.getBytes string java.nio.charset.StandardCharsets/UTF_8))))
 
 (defn confidence->percent
   "Render a stored 0..1 model probability as a percentage. A missing probability is deliberately

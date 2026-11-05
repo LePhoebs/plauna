@@ -797,7 +797,7 @@
     (app/fetch-emails {:db db} {:filter "all" :from-keys ["key-1" "key-2"] :page 1 :size 20})
     (is (= {:where [:in :headers.message-id
                     {:select [:communications.message-id] :from [:communications]
-                     :where [:and [:in :communications.type ["sender" ":sender"]]
+                     :where [:and [:in :communications.type ["sender" ":sender" "from"]]
                                   [:in :communications.contact-key ["key-1" "key-2"]]]}]
             :order-by [[:date :desc]]}
            @captured)))
@@ -823,7 +823,7 @@
     (app/fetch-emails {:db db} {:filter "all" :from-keys-exclude ["key-1"] :page 1 :size 20})
     (is (= {:where [:not [:in :headers.message-id
                           {:select [:communications.message-id] :from [:communications]
-                           :where [:and [:in :communications.type ["sender" ":sender"]]
+                           :where [:and [:in :communications.type ["sender" ":sender" "from"]]
                                         [:in :communications.contact-key ["key-1"]]]}]]
             :order-by [[:date :desc]]}
            @captured)))
@@ -1035,7 +1035,7 @@
         result (app/fetch-emails {:db db} {:filter "all" :from-keys ["alice-key"] :page 1 :size 20})]
     (is (= [:in :headers.message-id
             {:select [:communications.message-id] :from [:communications]
-             :where [:and [:in :communications.type ["sender" ":sender"]] [:in :communications.contact-key ["alice-key"]]]}]
+             :where [:and [:in :communications.type ["sender" ":sender" "from"]] [:in :communications.contact-key ["alice-key"]]]}]
            @captured-where)
         "The category checklist's reachable set is scoped by the From filter")
     (is (= ["Work"] (mapv :name (:category-filter-options (:optional result))))
@@ -1100,7 +1100,7 @@
             ["conn-1" [{:message-id "m-5" :category "friends"}]]]
            @moves)
         "Only categorized e-mails are moved, one call per chunk over the batch's connection")
-    (is (= {:batch-id "run-1" :total 4 :uncategorized 1 :moved 1 :not-found 1 :failed 2} summary))
+    (is (= {:batch-id "run-1" :total 4 :uncategorized 1 :moved 1 :in-place 0 :not-found 1 :failed 2} summary))
     (is (= 3 (count @progress)) "Progress is reported after every chunk")
     (is (= summary (last @progress)))))
 
@@ -1291,7 +1291,7 @@
                  (move-emails-by-id [_ _ moves] (mapv (constantly true) moves)))
         summary (app/move-folder-emails! {:db db :client client} "conn-1" "Newsletter_Alt" (fn [_] nil))]
     (is (= ["conn-1" "Newsletter_Alt"] @asked))
-    (is (= {:folder "Newsletter_Alt" :total 1 :uncategorized 0 :moved 1 :not-found 0 :failed 0} summary))))
+    (is (= {:folder "Newsletter_Alt" :total 1 :uncategorized 0 :moved 1 :in-place 0 :not-found 0 :failed 0} summary))))
 
 (deftest category-filter-with-only-unknown-tokens-matches-nothing-without-an-empty-in
   (let [captured (atom nil)
@@ -1393,3 +1393,26 @@
     (is (= [:like :bodies.content [:escape "%invoice%" "\\"]]
            (get-in @query [:where 2 :where]))
         "The substring search does not look for the quote characters")))
+
+(defn- relocation-context [recorded still-there?]
+  {:db (reify int/DB
+         (fetch-email-category-state [_ _] {:category-id 1 :folder "Categories/Shop" :connection-id "c1"})
+         (update-email-folder [_ message-id folder] (swap! recorded conj [message-id folder]))
+         (update-email-connection [_ _ _] nil))
+   :client (reify int/EmailClient
+             (email-in-folder? [_ connection-id folder message-id]
+               (is (= ["c1" "Categories/Shop" "<moved@x>"] [connection-id folder message-id]))
+               still-there?))})
+
+(deftest a-known-e-mail-moved-back-gets-its-new-location
+  (let [recorded (atom [])]
+    (#'app/relocate-known-email! (relocation-context recorded false) "<moved@x>" "c1" "INBOX")
+    (is (= [["<moved@x>" "INBOX"]] @recorded) "Not in the recorded folder any more: the user moved it back")))
+
+(deftest a-second-copy-does-not-take-over-the-record
+  (let [recorded (atom [])]
+    (#'app/relocate-known-email! (relocation-context recorded true) "<moved@x>" "c1" "INBOX")
+    (is (= [] @recorded) "Still in the category folder: the e-mail in INBOX is a duplicate (or the view was stale)"))
+  (let [recorded (atom [])]
+    (#'app/relocate-known-email! (relocation-context recorded nil) "<moved@x>" "c1" "INBOX")
+    (is (= [] @recorded) "Unknown (disconnected): nothing is changed")))
