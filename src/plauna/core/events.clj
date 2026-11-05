@@ -12,7 +12,8 @@
     :payload payload})
   ([type payload options triggering-event]
    {:type type
-    :options (conj (:options triggering-event) options)
+    ;; merge, not conj: conj onto nil options builds a list, and every option lookup would then miss.
+    :options (merge (:options triggering-event) options)
     :payload payload}))
 
 (defn return-key-on-complete [key fn]

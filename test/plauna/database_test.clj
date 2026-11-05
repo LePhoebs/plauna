@@ -314,11 +314,12 @@
                                  true)]
     (is (empty? (:headers buffer)))
     (is (empty? (:bodies buffer)))
-    (is (= [{:message-id "m" :language "eng"}] (:metadata buffer)))
+    (is (empty? (:metadata buffer)) "The whole metadata row is not rewritten: it would undo a category change made meanwhile")
+    (is (= [{:message-id "m" :language "eng"}] (:languages buffer)))
     (is (= 1 (db/buffer-size buffer)))
-    (is (= [{:headers [] :bodies [] :participants [] :metadata [{:message-id "m" :language "eng"}] :count 1}]
+    (is (= [{:headers [] :bodies [] :participants [] :metadata [] :languages [{:message-id "m" :language "eng"}] :count 1}]
            (db/buffer->single-email-buffers buffer))))
-  "Re-enriching a stored e-mail rewrites its metadata without re-inserting bodies (and duplicating attachment rows)")
+  "Re-enriching a stored e-mail writes only its language, without re-inserting bodies (and duplicating attachment rows)")
 
 (deftest unknown-connection-id-yields-nil
   (is (nil? (db/get-connection "no-such-connection"))))
@@ -432,3 +433,40 @@
     (db/mark-email-expired! "bt-trashed" "Trash")
     (is (= ["bt-kept"] (db/parse-batch-message-ids "batch-ret")) "Moving the batch must not pull a trashed e-mail back out")
     (is (= ["bt-kept"] (db/categorized-message-ids-in-folder "conn-bt" "Trash")))))
+
+(deftest retention-counts-from-when-an-e-mail-got-its-category
+  (let [cat (ensure-category "retention-later")]
+    (db/save-headers [{:mime-type "text/plain" :subject "old but filed now" :message-id "ret-filed" :date 100 :in-reply-to nil}])
+    (db/update-metadata-batch [{:message-id "ret-filed" :language "eng" :language-confidence 0.9 :category-id nil :category-confidence 0 :connection-id "conn-ret"}])
+    (db/update-email-folder "ret-filed" "INBOX")
+    (db/update-metadata-category "ret-filed" cat 1.0)
+    (is (= [] (db/expired-emails cat 500))
+        "An old e-mail that only now got the category is not trashed for its date")
+    (is (= ["ret-filed"] (map :message-id (db/expired-emails cat (+ 10 (quot (System/currentTimeMillis) 1000)))))
+        "Its days count from the moment it got the category")))
+
+(deftest metadata-only-saves-write-only-the-language
+  (let [cat (ensure-category "redetect-cat")]
+    (db/save-headers [{:mime-type "text/plain" :subject "s" :message-id "redetect-1" :date 1 :in-reply-to nil}])
+    (db/update-metadata-batch [{:message-id "redetect-1" :language nil :language-confidence 0 :category-id nil :category-confidence 0}])
+    (db/update-metadata-category "redetect-1" cat 1.0)
+    ;; A re-detection read the e-mail before the category change and writes its stale metadata.
+    (#'db/save-buffer-logging-errors!
+     (db/add-to-buffer {:header {:message-id "redetect-1"} :body [] :participants []
+                        :metadata {:message-id "redetect-1" :language "deu" :language-confidence 0.8 :category-id nil :category-confidence 0}}
+                       (db/empty-buffer) true))
+    (let [stored (db/fetch-metadata "redetect-1")]
+      (is (= "deu" (:language stored)))
+      (is (= cat (:category-id stored)) "The category changed meanwhile is kept"))))
+
+(deftest body-header-columns-fit-mariadb
+  (let [row (db/fit-body-row {:mime-type "text/plain\u00e4" :charset (apply str (repeat 80 "x")) :transfer-encoding nil})]
+    (is (= "text/plain" (:mime-type row)))
+    (is (= 50 (count (:charset row))))
+    (is (nil? (:transfer-encoding row)))))
+
+(deftest only-utf8mb4-text-columns-pass-the-charset-check
+  (is (= [] (db/text-charset-problems [{:table_name "bodies" :column_name "content" :character_set_name "utf8mb4"}])))
+  (is (= ["headers.subject (latin1)"]
+         (db/text-charset-problems [{:table_name "headers" :column_name "subject" :character_set_name "latin1"}
+                                    {:table_name "bodies" :column_name "content" :character_set_name "UTF8MB4"}]))))

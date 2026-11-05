@@ -340,16 +340,25 @@
   []
   (reset! categorizer-cache {}))
 
-(defn categorize-tokens [tokens ^File model-file]
-  (if (and (.exists model-file) (seq tokens))
-    (let [doccat (categorizer-for model-file)
-          cat-results (.categorize doccat (into-array String tokens))
-          best-category (.getBestCategory doccat cat-results)
-          best-probability (get cat-results (.getIndex doccat best-category))]
-      (if (> best-probability (p/categorization-threshold))
-        {:name best-category :confidence best-probability}
-        {:name nil :confidence 0}))
-    {:name nil :confidence 0}))
+(defn categorize-tokens
+  "The most likely label of the model for the tokens, when its probability is above the categorization
+   threshold: {:name label :confidence p}, else {:name nil :confidence 0}. With usable-label?, only
+   labels it accepts compete - a label of a deleted category must not win and leave the e-mail
+   uncategorized while an existing category is above the threshold too."
+  ([tokens model-file] (categorize-tokens tokens model-file (constantly true)))
+  ([tokens ^File model-file usable-label?]
+   (if (and (.exists model-file) (seq tokens))
+     (let [doccat (categorizer-for model-file)
+           cat-results (.categorize doccat (into-array String tokens))
+           best (->> (range (.getNumberOfCategories doccat))
+                     (map (fn [i] {:name (.getCategory doccat (int i)) :confidence (aget ^doubles cat-results (int i))}))
+                     (filter #(usable-label? (:name %)))
+                     ;; The first of equally likely labels wins, as with getBestCategory.
+                     (reduce (fn [a b] (if (or (nil? a) (> (double (:confidence b)) (double (:confidence a)))) b a)) nil))]
+       (if (and (some? best) (> (double (:confidence best)) (double (p/categorization-threshold))))
+         best
+         {:name nil :confidence 0}))
+     {:name nil :confidence 0})))
 
 (defn category-scores-for-tokens
   "Every label of the model with its probability for the tokens, most likely first, as
@@ -420,7 +429,9 @@
      (when (some #(= language-code %) (activated-languages))
        (let [model-file (files/model-file language-code (p/categorization-model))
              tokens (classification-tokens-for-model email language-code model-file cleaned-body)]
-         (categorize-tokens tokens model-file))))))
+         (categorize-tokens tokens model-file
+                            ;; A database hiccup must not make every label unusable: then all compete, as before.
+                            (fn [label] (try (some? (label->category label)) (catch Exception _ true)))))))))
 
 (defn category-scores-for-email
   "The model's probability for each existing category of the e-mail in the given language, most

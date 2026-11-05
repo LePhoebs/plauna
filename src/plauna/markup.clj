@@ -245,8 +245,11 @@
                                             :active-nav :admin}
                                      (some? messages) (assoc :messages (mapv type->toast-role messages))))))
 
-(defn languages-admin-page [language-preferences]
-  (render "admin-languages.html" {:language-preferences language-preferences :active-nav :admin}))
+(defn languages-admin-page
+  ([language-preferences] (languages-admin-page language-preferences nil))
+  ([language-preferences messages]
+   (render "admin-languages.html" (cond-> {:language-preferences language-preferences :active-nav :admin}
+                                    (seq messages) (assoc :messages (mapv type->toast-role messages))))))
 
 (defn connections-list
   ([connections] (render "admin-connections.html" {:configs connections :active-nav :admin}))

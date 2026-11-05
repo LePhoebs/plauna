@@ -33,6 +33,36 @@ All notable changes to this project will be documented in this file.
 - Training reads the e-mails in a stable order, so paging cannot skip or repeat e-mails.
 - A database error while resolving a predicted category no longer loses an e-mail being imported.
 - The connection delete dialog was titled "Delete Category".
+- The language re-detection wrote back the whole metadata row it had read earlier, so a category
+  changed meanwhile was reverted. It now writes only the language. It also got a button under
+  "Admin" → "Languages"; before, it was only reachable as a bare POST.
+- Text parts without a character set (or declaring US-ASCII) lost their umlauts, over IMAP and in mbox
+  imports. They are now read as UTF-8 when valid, else as Windows-1252; sloppy declarations such as
+  `charset="\UTF-8"` are understood too.
+- E-mails read over IMAP stored the envelope's `Sender` as sender - often a mailing service's bounce
+  address - while the mbox import stored `From`. Both now store `From`, so the model and the From
+  filter see the same value however an e-mail came in.
+- A deleted category's label could win a prediction and leave the e-mail uncategorized while an
+  existing category was above the threshold too. Only existing categories compete now.
+- When the server lacks MOVE, a copy that succeeded was reported as failed if removing the original
+  failed afterwards, and the next attempt copied the e-mail again. A completed copy now counts as moved.
+- A message arriving while a connection is (re)established could be processed by IDLE and the back-fill
+  at once; the second one is now skipped.
+- Two connects of the same account (startup retry, Connect button, OAuth callback) are serialized, so
+  they cannot cancel each other's health check and folder scan.
+- The clean-up and flag summaries reported every e-mail of an account as failed when only closing a
+  folder or the connection failed after the work was done; they now keep the real counts.
+- Leaving an e-mail in place reported success even when it is not stored, so nothing was recorded.
+- On the e-mail details page, a recategorization whose e-mail is missing on the mail server silently
+  changed only Plauna's category. It now changes nothing and says how to update only Plauna, like the
+  list's dialog.
+- Saving a metadata form without a confidence field answered with an error page; a blank MariaDB port
+  in the database form answered "400" instead of using 3306.
+- MariaDB rejected a body part whose `Content-Type` is unusually long or contains non-ASCII
+  characters, and with it the whole e-mail. The values are now trimmed to fit.
+- Body search: on MariaDB a short word or phrase with punctuation (`"Nr. 5"`, `e-mail`) was searched
+  without its punctuation and found nothing; on SQLite a quoted search looked for the quote characters.
+- An internal event option was lost when the triggering event had no options (`conj` onto `nil`).
 
 - Plauna no longer expunges IMAP folders. Closing the monitored folder on disconnect and closing the
   source and target folders of every recategorization used `Folder.close()`, which is `close(true)`:
@@ -117,6 +147,21 @@ All notable changes to this project will be documented in this file.
 
 ### 🛡️ Hardening
 
+- Every state-changing request a browser sends from another site (`Sec-Fetch-Site`; in older browsers
+  `Origin`, else `Referer`) is refused, not only those authenticated by a client certificate: SameSite
+  treats every service under the same domain as the same site.
+- The session cookie is `Secure` when the request came over HTTPS (directly or per
+  `X-Forwarded-Proto`). The README's NGINX example now sets `X-Forwarded-Proto` and `X-Forwarded-Host`.
+- The login brake counts an attempt before checking it, so parallel attempts cannot all slip through
+  when a pause ends.
+- The redirect back to the previous page uses only the `Referer`'s path; a proxy that rewrites `Host`
+  or the port no longer breaks it, and another site's `Referer` still cannot lead off-site.
+- A page script whose session expired gets `401` and opens the login page, instead of receiving the
+  login page as its answer.
+- New category names must not contain a dot, which Maildir++ servers use as folder separator.
+- On MariaDB, Plauna warns at startup when the text columns do not use `utf8mb4`.
+- Removed the unreachable `/training/new` route and its unused page.
+
 - All dependencies brought up to date, among them Clojure 1.12.6, core.async 1.9.865, telemere 1.4.0,
   next.jdbc 1.4.72, HoneySQL 2.8.85, sqlite-jdbc 3.53.4.0, Flyway 13.11.1, ring 1.15.6 and selmer
   1.13.5. The MariaDB driver moves to 4.0.0 and HikariCP to 7.1.0. Driver 4 switches TLS on by default
@@ -157,7 +202,9 @@ All notable changes to this project will be documented in this file.
   category is cleared or deleted or loses its color. "Flag existing e-mails" flags what was filed
   before. New column `categories.flag_color`.
 - Automatic clean-up per category: a category can move its e-mails to the account's trash folder a
-  number of days after their date (`categories.retention_days`). Only e-mails in the folder Plauna
+  number of days after they got the category (`categories.retention_days`, counted from
+  `metadata.categorized_at`, or the e-mail's date for e-mails categorized on arrival), so an old e-mail
+  filed into the category later still stays the full time. Only e-mails in the folder Plauna
   files the category into are affected, never an archive or the sent folder. The run starts ten
   minutes after startup and repeats every six hours, or on demand from "Admin" -> "Categories". An
   e-mail the user moved elsewhere, or - in a flagged category - without a flag, is kept; an account

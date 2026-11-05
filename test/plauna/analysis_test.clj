@@ -134,6 +134,8 @@
           (analysis/serialize-and-write-model! (:model trained) os))
         (is (= "1" (:name (analysis/categorize-tokens ["sender-domain:shop.example" "subject:invoice" "body:payment"] model-file))))
         (is (= "2" (:name (analysis/categorize-tokens ["sender-domain:friends.example" "subject:dinner"] model-file))))
+        (is (not= "1" (:name (analysis/categorize-tokens ["sender-domain:shop.example" "subject:invoice" "body:payment"] model-file #(not= "1" %))))
+            "The label of a deleted category never wins")
         (is (:done? (last @events)) "A trainer without iteration callbacks still reports completion"))
       (finally
         (io/delete-file training-file true)

@@ -1373,3 +1373,23 @@
   (is (some? (app/category-name-problem "work" ["Work" "Invoices"])) "Work and work would share one IMAP folder")
   (is (some? (app/category-name-problem " Invoices " ["Work" "Invoices"])))
   (is (nil? (app/category-name-problem "Parcels" ["Work" "Invoices"]))))
+
+(deftest a-message-is-processed-by-one-path-at-a-time
+  (is (true? (#'app/claim-message! "<inflight@x>")))
+  (is (false? (#'app/claim-message! "<inflight@x>")) "The back-fill skips what IDLE is handling right now")
+  (swap! @#'app/messages-in-flight disj "<inflight@x>"))
+
+(deftest dots-are-refused-in-new-category-names
+  (is (some? (app/category-name-problem "Amazon.de")))
+  (is (nil? (app/category-name-problem "Amazon"))))
+
+(deftest searches-keep-punctuation-and-ignore-quotes
+  (let [query (atom nil)
+        database (stub-emails-db #(reset! query %) {:total 0 :data []})]
+    (app/fetch-emails {:db database :db-type :mariadb} {:search-text "\"Nr. 5\" e-mail" :size 20})
+    (let [[_ & params] (honey/format (:where @query))]
+      (is (every? (set params) ["%Nr. 5%" "%e-mail%"]) "Short words are searched as typed, punctuation included"))
+    (app/fetch-emails {:db database} {:search-text "\"invoice\"" :size 1})
+    (is (= [:like :bodies.content [:escape "%invoice%" "\\"]]
+           (get-in @query [:where 2 :where]))
+        "The substring search does not look for the quote characters")))

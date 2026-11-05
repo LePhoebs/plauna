@@ -42,7 +42,7 @@ You can parse your e-mails from mbox files or directly by connecting to your IMA
 
 - Apple Mail flags per category: mark a category's e-mails with a colored flag - for example to keep parcel notices in the inbox but recognizable at a glance.
 
-- Automatic clean-up per category: move a category's e-mails to the trash a chosen number of days after their date.
+- Automatic clean-up per category: move a category's e-mails to the trash a chosen number of days after they got the category.
 
 - Learning from your mail client: move an e-mail into a category folder in Outlook, Thunderbird or on your phone, and Plauna gives it that category - as if you had changed it in Plauna's own UI, so the next training learns from it. E-mails Plauna did not know yet are saved with that category.
 
@@ -113,7 +113,7 @@ The web UI is protected by one configurable login name and password (see "Web UI
 
 The password protects the UI, but Plauna still has no transport encryption of its own and is meant to run inside a trusted, isolated network.
 
-After wrong guesses the login imposes a growing pause (a quarter of a second after the first failure, up to five seconds after a burst); an attempt arriving inside the pause is refused with "429 Too Many Requests" without checking the password, so a guessing script gets a few attempts per minute while the administrator is never locked out. The login page does not reveal the configured login name, and a session ends automatically when the password or login name changes or 30 days after the login. Requests authenticated only by an mTLS client certificate are refused when a browser sends them from another site (the =Origin= header names a different host), because the SameSite rule that protects cookie sessions against cross-site request forgery does not cover that login path.
+After wrong guesses the login imposes a growing pause (a quarter of a second after the first failure, up to five seconds after a burst); an attempt arriving inside the pause is refused with "429 Too Many Requests" without checking the password, so a guessing script gets a few attempts per minute while the administrator is never locked out. Attempts sent in parallel cannot slip through together when a pause ends: each one is counted before its password is checked. The login page does not reveal the configured login name, and a session ends automatically when the password or login name changes or 30 days after the login. Every state-changing request (POST, PUT, DELETE) that a browser sends from another site is refused with "403". Plauna asks the browser's =Sec-Fetch-Site= header; an older browser without it is judged by its =Origin= header, or without one its =Referer=, which must name Plauna's host. The session cookie's SameSite rule alone would not be enough: every service under the same domain (=git.example.com= next to =plauna.example.com=) counts as the same site for it, and a client certificate is presented for cross-site requests too. For that comparison behind a reverse proxy, Plauna uses =X-Forwarded-Host= when the proxy sends it, else =Host=. When the browser reached Plauna over HTTPS (directly, or as the proxy says in =X-Forwarded-Proto=), the session cookie is marked =Secure=; over plain HTTP in the LAN it works without. A page script whose session expired gets "401" and the page opens the login form.
 
 The Docker image runs Plauna as the unprivileged =plauna= user.
 
@@ -318,6 +318,8 @@ server {
 
     location / {
         proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Plauna-Client-Verify $ssl_client_verify;
         proxy_set_header X-Plauna-Client-Cert $ssl_client_escaped_cert;
         proxy_set_header X-Plauna-Proxy-Secret "a-random-shared-secret-with-at-least-32-characters";
@@ -332,7 +334,7 @@ certificate before Plauna can offer the password form.
 
 The proxy secret is mandatory. It prevents a client that can reach Plauna directly from forging the
 forwarded certificate headers. Still, do not publish port 8080: only NGINX should be able to reach
-Plauna's HTTP listener. NGINX must overwrite all three =X-Plauna-*= headers as shown. If the allowlist
+Plauna's HTTP listener. NGINX must overwrite all three =X-Plauna-*= headers as shown. =X-Forwarded-Proto= lets Plauna mark the session cookie =Secure=, and setting =X-Forwarded-Host= replaces a value a client may have sent itself. If the allowlist
 or secret is absent or malformed, Plauna fails closed and leaves mTLS login disabled.
 
 *** Upgrading an existing Docker volume
@@ -385,6 +387,8 @@ When you start Plauna, it starts a web server on the port which you specified (d
 
    The "Skipped" column of a run counts e-mails that were already in Plauna's database and therefore not saved or categorized again. They come from two places, and the run's message tells them apart: e-mails saved by an earlier run of the same folder that have not been moved yet (they disappear from the folder once you move them), and duplicates of e-mails that Plauna stored from another folder or account - shown as "elsewhere" in the table. Those duplicates never belong to a batch and stay in the folder; delete or move them by hand if they bother you.
 
+   The sender Plauna stores is the =From= address, for e-mails read over IMAP as for an mbox import - not the =Sender= header a mailing service may add. A text part that declares no character set (or US-ASCII) but contains umlauts is read as UTF-8 when it is valid UTF-8 and as Windows-1252 otherwise, so the umlauts survive.
+
    A message without a Message-ID header (some newsletters and automatic notifications) gets a stable substitute id derived from its date, sender and subject, so it can be stored and is recognised as already stored on later runs - the same id whether it is read from IMAP or an mbox file.
 
    A message that cannot be read or processed (for example because the server returns an unparseable IMAP envelope) is skipped and recorded under "Messages That Could Not Be Read" on the connection page, with its folder, IMAP UID, Message-ID and subject where known, the error and the number of attempts. This list also covers the automatic catch-up after a reconnect. "Retry" reads the listed messages of a folder again by UID and turns the recovered ones into a reviewable batch; entries vanish as soon as the message is stored or no longer exists on the server. Failures from before this list existed left no trace apart from the log: to recover those, simply run the folder parse again with an empty batch size - every message that is already stored is skipped, so the run's batch contains exactly the e-mails that had never been saved.
@@ -408,13 +412,13 @@ The days field is required here - a blank field is refused rather than reading t
    
 ** Language Detection
 
-Plauna automatically detects the language of an e-mail when parsing it. Under "Admin" → "Languages", select the languages that should be used for training and categorization. Only languages that have already occurred in parsed e-mails appear there. E-mails whose language could not be determined keep no language (shown as "n/a" or "Not detected"); a detector failure never prevents the e-mail itself from being saved. Re-running the language detection for every e-mail without a language (=POST /metadata/languages=) queues each of those e-mails exactly once and works in the background.
+Plauna automatically detects the language of an e-mail when parsing it. Under "Admin" → "Languages", select the languages that should be used for training and categorization. Only languages that have already occurred in parsed e-mails appear there. E-mails whose language could not be determined keep no language (shown as "n/a" or "Not detected"); a detector failure never prevents the e-mail itself from being saved. "Re-detect Missing Languages" on the same page runs the language detection again for every e-mail without a language: it queues each of those e-mails exactly once and works in the background. It writes only the language, so a category you change meanwhile is kept.
 
 ** Categorization
 
 *** Create Categories
 
-Go to "Admin" -> "Categories" to create and delete categories. A category name becomes an IMAP folder name, so it must not be empty, longer than 100 characters, or contain the characters =/= =\= =*= =%= or double quotes (they are hierarchy separators and wildcards in IMAP folder names). When you create a category, Plauna tries to create its folder on every active IMAP connection. Deleting a category clears that category from affected Plauna metadata, but does not delete the corresponding folder or messages from the IMAP server. Plauna creates folders and moves messages as part of categorization; category administration itself does not remove server-side folders or messages.
+Go to "Admin" -> "Categories" to create and delete categories. A category name becomes an IMAP folder name, so it must not be empty, longer than 100 characters, or contain the characters =/= =\= =*= =%= =.= or double quotes (they are hierarchy separators and wildcards in IMAP folder names; the dot is the separator of Maildir++ servers such as many Dovecot setups). When you create a category, Plauna tries to create its folder on every active IMAP connection. Deleting a category clears that category from affected Plauna metadata, but does not delete the corresponding folder or messages from the IMAP server. Plauna creates folders and moves messages as part of categorization; category administration itself does not remove server-side folders or messages.
 
 *** Destination Folders
 
@@ -454,7 +458,7 @@ Two more settings per category in "Admin" -> "Categories" cover e-mails that bel
 - When an e-mail's category changes - in Plauna, also when you clear it, when the trained model categorizes a stored e-mail, or when you move it into a category folder in your mail program - its flag follows: a category with a flag gives the e-mail its color, and leaving a flagged category for one without a flag removes Plauna's flag. Deleting a category, or removing its flag color, removes the flag from its e-mails as well. A flag you set yourself on an e-mail of a category without a flag is left alone.
 - Setting or changing a category's flag color affects only e-mails filed from then on, so e-mails you unflagged to keep them stay unflagged. "Flag existing e-mails" next to the category flags every e-mail of the category in the category's folder, including those; e-mails of the category elsewhere (an archive, the sent folder) are left alone.
 
-*Days until trash:* Plauna moves the e-mails of the category to the trash folder of their account this many days after their date (the =Date= header). Only e-mails in the folder Plauna files the category into are affected - its destination folder, =INBOX= for a category kept in the inbox. E-mails of the category that Plauna only read elsewhere, for example in an archive or the sent folder, are never touched. It looks for expired e-mails ten minutes after startup and then every six hours; "Move expired e-mails to the trash now" starts a run at once. Leave the field empty to keep the e-mails forever.
+*Days until trash:* Plauna moves the e-mails of the category to the trash folder of their account this many days after they got the category. For an e-mail Plauna categorizes on arrival that is its arrival; for an e-mail you give the category later - in Plauna or by moving it into the category's folder - the days count from then, so an old e-mail you file to teach the model still stays the full time. E-mails categorized before this rule existed count from their date (the =Date= header). Only e-mails in the folder Plauna files the category into are affected - its destination folder, =INBOX= for a category kept in the inbox. E-mails of the category that Plauna only read elsewhere, for example in an archive or the sent folder, are never touched. It looks for expired e-mails ten minutes after startup and then every six hours; "Move expired e-mails to the trash now" starts a run at once. Leave the field empty to keep the e-mails forever.
 
 - The trash is the folder the server marks as =\Trash=; without that marking, a folder named for example =Trash=, =Deleted Messages= or =Papierkorb=. An account without a trash folder keeps all its e-mails - Plauna never deletes e-mails permanently. They stay in the trash until you or your mail server empty it.
 - An e-mail is kept if you moved it to another folder. If the category also has a flag, removing the flag in your mail program keeps the e-mail too - that is the way to hold on to a single one. Plauna cannot tell an e-mail you unflagged from one that never had a flag (filed before the category got its color, for instance), so those are kept as well until you use "Flag existing e-mails". Conversely, once a category has no flag color any more, unflagged e-mails are no longer protected.
@@ -499,7 +503,7 @@ Each checklist only offers values still reachable given your *other* active filt
 
 All filters combine with AND: for example, you can search body text, pick two senders, restrict the list to a category and add a date range at the same time. Active filters are shown as removable chips above the table. Pagination controls appear both above and below the list, with "First", "Back", "Next" and "Last" buttons; the complete filter state is preserved as you page through the results. The number of e-mails shown per page can be set below the list from 1 to 500 (default 20).
 
-On MariaDB, body search requires every entered word, supports prefix matching and accepts quoted phrases such as ="annual invoice"=. It uses the FULLTEXT index where possible; short terms, stopwords and punctuation-only searches transparently fall back to literal matching so they still return correct results. SQLite treats the complete input as a literal substring and is slower on large mailboxes.
+On MariaDB, body search requires every entered word, supports prefix matching and accepts quoted phrases such as ="annual invoice"=. It uses the FULLTEXT index where possible; short terms, stopwords and punctuation-only searches transparently fall back to literal matching so they still return correct results. A short word, a stopword or a phrase containing one is matched literally as typed, punctuation included, so ="Nr. 5"= or =e-mail= find exactly that text. SQLite treats the complete input as a literal substring (double quotes are ignored) and is slower on large mailboxes.
 
 *** Data Training
 
@@ -534,7 +538,7 @@ By default Plauna stores everything in a local SQLite file. For larger installat
 
 ** Setting up MariaDB
 
-Provide a MariaDB 10.6+ database and a user with full privileges on it, then tell Plauna how to reach it.
+Provide a MariaDB 10.6+ database and a user with full privileges on it, then tell Plauna how to reach it. Create the database with the =utf8mb4= character set (=CREATE DATABASE plauna CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;=): with =latin1=, the default of older MariaDB images, e-mails lose emojis and other characters. Plauna checks this at startup and logs a warning with the statement that converts a column.
 
 *** Via environment variables (recommended for Docker)
 

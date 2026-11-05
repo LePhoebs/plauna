@@ -118,10 +118,39 @@
 
 (def my-addresses (atom #{}))
 
+(defn text-charset-problems
+  "The text columns ([{:table_name :column_name :character_set_name}]) that cannot hold every character
+   an e-mail may contain, as \"table.column (charset)\" strings. Only utf8mb4 stores all of Unicode,
+   emojis included; latin1 or the 3-byte utf8 lose characters or make the insert fail."
+  [columns]
+  (vec (for [{:keys [table_name column_name character_set_name]} columns
+             :when (and (some? character_set_name)
+                        (not= "utf8mb4" (string/lower-case character_set_name)))]
+         (str table_name "." column_name " (" character_set_name ")"))))
+
+(defn- warn-about-mariadb-charset!
+  "Plauna's MariaDB migrations take the database's default character set for text columns. A database
+   created with latin1 (the default of older MariaDB images) silently loses characters, so say so once
+   at startup. Converting the tables is left to the administrator: done automatically it would also
+   touch the deliberately ASCII key columns, and it rewrites the largest tables."
+  []
+  (try
+    (let [problems (text-charset-problems
+                    (jdbc/execute! (ds) ["SELECT table_name, column_name, character_set_name FROM information_schema.columns WHERE table_schema = DATABASE() AND ((table_name = 'headers' AND column_name = 'subject') OR (table_name = 'bodies' AND column_name = 'content') OR (table_name = 'contacts' AND column_name = 'name'))"]
+                                   {:builder-fn as-unqualified-lower-maps}))]
+      (when (seq problems)
+        (t/log! :warn ["The MariaDB text columns" (string/join ", " problems)
+                       "do not use utf8mb4, so e-mails with emojis or other characters outside their character set lose them or are not saved."
+                       "Convert them, e.g.: ALTER TABLE bodies MODIFY content LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"])))
+    (catch Exception e
+      (t/log! {:level :debug :error e} "Could not check the character set of the MariaDB tables."))))
+
 (defn create-db []
   ;; SQLite pragmas (foreign_keys, WAL, busy_timeout) are set in the JDBC URL — see sqlite-url —
   ;; because they are connection-scoped and would not carry over to later connections if set here.
-  (.migrate ^Flyway (flyway)))
+  (.migrate ^Flyway (flyway))
+  (when (= :mariadb @active-db-type)
+    (warn-about-mariadb-charset!)))
 
 (def builder-function {:builder-fn as-unqualified-lower-maps})
 
@@ -203,6 +232,19 @@
                    (insert->insert-ignore))
                   {:batch true})))
 
+(defn- clip [^String value max-length]
+  (if (and (string? value) (> (count value) max-length)) (subs value 0 max-length) value))
+
+(defn fit-body-row
+  "Make the header-derived columns of a body part fit MariaDB's columns (mime_type ASCII up to 100,
+   charset and transfer_encoding up to 50 characters), where SQLite would take anything. A malformed
+   Content-Type must not cost the whole e-mail: MariaDB rejects the row, and with it the e-mail's batch."
+  [body]
+  (-> body
+      (update :mime-type #(some-> % (string/replace #"[^\x20-\x7e]" "") (clip 100)))
+      (update :charset clip 50)
+      (update :transfer-encoding clip 50)))
+
 (defn save-bodies
   ([bodies] (save-bodies (ds) bodies))
   ([conn bodies]
@@ -211,7 +253,7 @@
                    (builder/for-insert-multi
                     :bodies
                     [:content :mime_type :charset :transfer_encoding :message_id :filename :content_disposition]
-                    (mapv (juxt :content :mime-type :charset :transfer-encoding :message-id :filename :content-disposition) bodies) {})
+                    (mapv (comp (juxt :content :mime-type :charset :transfer-encoding :message-id :filename :content-disposition) fit-body-row) bodies) {})
                    (insert->insert-ignore))
                   {:batch true})))
 
@@ -268,9 +310,25 @@
                            (insert->metadata-upsert))
                       {:batch true})))))
 
+(defn update-metadata-language-batch
+  "Write only the detected language of stored e-mails ([{:message-id :language :language-confidence}]).
+   The language re-detection works from e-mails it read earlier; writing their whole metadata row would
+   put back a category the user changed meanwhile."
+  ([metadata] (update-metadata-language-batch (ds) metadata))
+  ([conn metadata]
+   (when (seq metadata)
+     (doseq [chunk (partition-all 200 metadata)]
+       (jdbc/execute! conn
+         (into [(str "INSERT INTO metadata (message_id, language, language_confidence) VALUES "
+                     (string/join ", " (repeat (count chunk) "(?, ?, ?)"))
+                     (if (mariadb?)
+                       " ON DUPLICATE KEY UPDATE language = VALUES(language), language_confidence = VALUES(language_confidence)"
+                       " ON CONFLICT(message_id) DO UPDATE SET language = excluded.language, language_confidence = excluded.language_confidence"))]
+               (mapcat (juxt :message-id :language :language-confidence) chunk)))))))
+
 (def batch-size 500)
 
-(defn empty-buffer [] {:headers [] :bodies [] :participants [] :metadata [] :count 0})
+(defn empty-buffer [] {:headers [] :bodies [] :participants [] :metadata [] :languages [] :count 0})
 
 (defn buffer-size
   "How many e-mails a buffer holds (headers plus metadata-only entries)."
@@ -284,7 +342,10 @@
    UNIQUE constraint on bodies does not cover their NULL content."
   ([e-mail buffer] (add-to-buffer e-mail buffer false))
   ([e-mail buffer metadata-only?]
-   (let [with-metadata (fn [b] (if (some? (:metadata e-mail)) (update b :metadata conj (:metadata e-mail)) b))]
+   ;; A re-enrichment only contributes its language (see update-metadata-language-batch).
+   (let [with-metadata (fn [b] (if (some? (:metadata e-mail))
+                                 (update b (if metadata-only? :languages :metadata) (fnil conj []) (:metadata e-mail))
+                                 b))]
      (-> (if metadata-only?
            buffer
            (-> buffer
@@ -339,7 +400,8 @@
     (doseq [chunk (partition-all participant-insert-max-rows (:participants buffer))]
       (save-contacts tx chunk)
       (save-communications tx chunk))
-    (when (seq (:metadata buffer)) (update-metadata-batch tx (:metadata buffer)))))
+    (when (seq (:metadata buffer)) (update-metadata-batch tx (:metadata buffer)))
+    (when (seq (:languages buffer)) (update-metadata-language-batch tx (:languages buffer)))))
 
 (defn buffer->single-email-buffers
   "Split a batch buffer into one buffer per e-mail (by message id), so a failed batch can be retried
@@ -353,10 +415,12 @@
      (map (fn [header]
             (let [id (:message-id header)]
               {:headers [header] :bodies (vec (get bodies id)) :participants (vec (get participants id))
-               :metadata (vec (get metadata id)) :count 1}))
+               :metadata (vec (get metadata id)) :languages [] :count 1}))
           (:headers buffer))
-     (map (fn [m] {:headers [] :bodies [] :participants [] :metadata [m] :count 1})
-          (remove #(contains? header-ids (:message-id %)) (:metadata buffer))))))
+     (map (fn [m] {:headers [] :bodies [] :participants [] :metadata [m] :languages [] :count 1})
+          (remove #(contains? header-ids (:message-id %)) (:metadata buffer)))
+     (map (fn [m] {:headers [] :bodies [] :participants [] :metadata [] :languages [m] :count 1})
+          (:languages buffer)))))
 
 (defn- save-buffer-logging-errors!
   "Keep the database event loop alive when a batch save fails: the transaction has already rolled
@@ -369,7 +433,7 @@
     (catch Exception e
       (if (<= (buffer-size buffer) 1)
         (t/log! {:level :error :error e}
-                ["Saving e-mail" (or (some :message-id (:headers buffer)) (some :message-id (:metadata buffer)))
+                ["Saving e-mail" (or (some :message-id (:headers buffer)) (some :message-id (:metadata buffer)) (some :message-id (:languages buffer)))
                  "failed and was rolled back. It was not written and will be picked up by a later backfill or re-parse:" (.getMessage e)])
         (do (t/log! {:level :warn :error e}
                     ["Saving a batch of" (buffer-size buffer) "e-mails failed and was rolled back; retrying them one by one so a single rejected e-mail does not discard the others:" (.getMessage e)])
@@ -459,13 +523,16 @@
                                                        :language_confidence)))
                             (honey/format)))))
 
-(defn clear-email-expiry!
-  "Forget that the retention moved an e-mail to the trash. Called when its category changes: from then
-   on it is an e-mail of the new category, which its retention and flag handling must see again."
+(declare epoch-seconds)
+
+(defn category-changed!
+  "Record that an e-mail just got a different category: from now on it is an e-mail of the new
+   category. Its retention counts from now (categorized_at), and a retention mark from the previous
+   category is cleared, so the new category's retention and flag handling see it again."
   [message-id]
   (jdbc/execute! (ds) (honey/format {:update :metadata
-                                     :set    {:expired-at nil}
-                                     :where  [:and [:= :message-id message-id] [:<> :expired-at nil]]})))
+                                     :set    {:expired-at nil :categorized-at (epoch-seconds)}
+                                     :where  [:= :message-id message-id]})))
 
 (defn- update-metadata-category!
   [message_id category confidence]
@@ -480,11 +547,10 @@
                             (honey/format)))))
 
 (defn update-metadata-category
-  "Set the category of a stored e-mail. Every caller changes the category, so a retention mark from
-   the previous category is cleared (see clear-email-expiry!)."
+  "Set the category of a stored e-mail. Every caller changes the category (see category-changed!)."
   [message-id category confidence]
   (update-metadata-category! message-id category confidence)
-  (clear-email-expiry! message-id))
+  (category-changed! message-id))
 
 (defn update-metadata-language [message_id language confidence]
   (if (mariadb?)
@@ -821,19 +887,22 @@
                                      :where  [:= :id id]})))
 
 (defn expired-emails
-  "The stored e-mails of a category dated before cutoff (epoch seconds) that Plauna has not moved to
-   the trash yet and whose location is known: [{:message-id :folder :connection-id}], oldest first.
+  "The stored e-mails of a category that got it before cutoff (epoch seconds; see category-changed!) and
+   that Plauna has not moved to the trash yet and whose location is known:
+   [{:message-id :folder :connection-id}], oldest first.
    E-mails without a recorded folder or account are left out: Plauna cannot tell where they are."
   [category-id cutoff]
   (jdbc/execute! (ds) (honey/format {:select [:metadata.message-id :metadata.folder :metadata.connection-id]
                                      :from :metadata
                                      :join [:headers [:= :headers.message-id :metadata.message-id]]
                                      :where [:and [:= :metadata.category category-id]
-                                             [:< :headers.date cutoff]
+                                             ;; From when it got the category; before that column existed, and for
+                                             ;; an e-mail categorized on arrival, from its date.
+                                             [:< [:coalesce :metadata.categorized-at :headers.date] cutoff]
                                              [:= :metadata.expired-at nil]
                                              [:<> :metadata.folder nil]
                                              [:<> :metadata.connection-id nil]]
-                                     :order-by [[:headers.date :asc]]})
+                                     :order-by [[[:coalesce :metadata.categorized-at :headers.date] :asc]]})
                  builder-function-kebab))
 
 (defn mark-email-expired!

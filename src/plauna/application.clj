@@ -24,28 +24,32 @@
     "what" "when" "where" "who" "will" "with" "und" "www"})
 
 (defn- search-units
-  "Parse a user query into quoted phrases and unquoted word tokens. Boolean-mode operators are not
-   passed through: search input is always treated as text, never as MariaDB query syntax."
+  "Parse a user query into quoted phrases and unquoted tokens, each with the text as typed (:text) and
+   its indexable words. Boolean-mode operators are not passed through: search input is always treated
+   as text, never as MariaDB query syntax."
   [search-text]
-  (mapcat (fn [[_ phrase unquoted]]
-            (let [text (or phrase unquoted)
-                  words (re-seq #"[\p{L}\p{N}_]+" text)]
-              (if phrase
-                (when (seq words) [{:type :phrase :text (str/join " " words) :words words}])
-                (map (fn [word] {:type :word :text word :words [word]}) words))))
-          (re-seq #"\"([^\"]+)\"|(\S+)" search-text)))
+  (keep (fn [[_ phrase unquoted]]
+          (let [text (or phrase unquoted)
+                words (re-seq #"[\p{L}\p{N}_]+" text)]
+            (when-not (str/blank? text)
+              {:type (if phrase :phrase :word) :text (str/trim text) :words words})))
+        (re-seq #"\"([^\"]+)\"|(\S+)" search-text)))
 
 (defn- fulltext-search-plan
   "Translate plain user input into a safe MariaDB boolean query plus LIKE fallbacks. Unquoted words
-   are required prefix matches; quoted text is a required phrase. Phrases containing a short token
-   and individual short words use LIKE because InnoDB does not index them by default."
+   are required prefix matches; quoted text is a required phrase. A phrase or token with a word InnoDB
+   does not index (too short, a stopword) is searched with LIKE instead - as typed, punctuation
+   included, so \"Nr. 5\" or e-mail still find the text that contains them."
   [search-text min-token-length]
-  (reduce (fn [{:keys [boolean-parts] :as plan} {:keys [type text words]}]
-            (if (every? #(and (>= (count %) min-token-length)
-                              (not (contains? innodb-default-stopwords (str/lower-case %))))
-                        words)
-              (update plan :boolean-parts conj
-                      (if (= :phrase type) (str "+\"" text "\"") (str "+" text "*")))
+  (reduce (fn [plan {:keys [type text words]}]
+            (if (and (seq words)
+                     (every? #(and (>= (count %) min-token-length)
+                                   (not (contains? innodb-default-stopwords (str/lower-case %))))
+                             words))
+              (update plan :boolean-parts into
+                      (if (= :phrase type)
+                        [(str "+\"" (str/join " " words) "\"")]
+                        (map #(str "+" % "*") words)))
               (update plan :like-terms conj text)))
           {:boolean-parts [] :like-terms []}
           (search-units search-text)))
@@ -95,13 +99,20 @@
    not selective anyway."
   5000)
 
+(defn- literal-search-text
+  "The text the substring search (SQLite) looks for: the input without its double quotes, which mark a
+   phrase - the substring search treats all input as one phrase anyway, and a literal quote would make
+   \"invoice\" find nothing."
+  [search-text]
+  (some-> search-text (str/replace "\"" "") str/trim))
+
 (defn- resolve-search-ids
   "SQLite only: the message ids whose body contains search-text, resolved ONCE. The e-mail list runs six
    statements per page (four checklist scopes, the page, the count) and every one of them would
    otherwise rescan the whole bodies table with LIKE. nil when unavailable (the caller keeps the subquery)."
   [db db-type search-text]
   (when (= :sqlite db-type)
-    (try (int/fetch-content-match-ids db search-text)
+    (try (int/fetch-content-match-ids db (literal-search-text search-text))
          (catch Exception e
            (t/log! {:level :warn :error e} "Could not pre-resolve the body search; using the subquery instead.")
            nil))))
@@ -113,7 +124,7 @@
    MariaDB uses its FULLTEXT index; SQLite retains the literal substring search and, when the ids were
    resolved up front (resolved-ids, see resolve-search-ids), inlines them."
   [search-text correlated? fulltext-min-token-length resolved-ids]
-  (when-not (str/blank? search-text)
+  (when-not (str/blank? (literal-search-text search-text))
     (cond
       fulltext-min-token-length
       (related-message->where :bodies :bodies.message-id
@@ -128,7 +139,7 @@
 
       :else
       (related-message->where :bodies :bodies.message-id
-                              (like-contains :bodies.content search-text)
+                              (like-contains :bodies.content (literal-search-text search-text))
                               correlated?))))
 
 (defn- contact-keys->where
@@ -317,9 +328,27 @@
   "There is no entry for 'no entry' in the database. This function adds a 'n/a' entry to the actual list."
   [db] (conj (int/fetch-categories db) {:id nil :name "n/a" :color default-category-color}))
 
+(defonce ^:private connect-locks (atom {}))
+
+(declare connect-to-client*)
+
+(defn- connect-lock
+  "One lock object per connection id."
+  [id]
+  (or (get @connect-locks id)
+      (get (swap! connect-locks (fn [locks] (if (contains? locks id) locks (assoc locks id (Object.))))) id)))
+
 (defn connect-to-client
   "Returns {:result :ok}, {:result :redirect :provider provider} in case of oauth2, or
-   {:result :error ...} when the connection could not be established."
+   {:result :error ...} when the connection could not be established. Connects of the same connection
+   run one after the other: the startup retry, the Connect button and the OAuth callback can overlap,
+   and two interleaved connects would each register their store and could cancel each other's health
+   check and folder scan."
+  [context id]
+  (locking (connect-lock id)
+    (connect-to-client* context id)))
+
+(defn- connect-to-client*
   [{:keys [db client] :as context} id]
   (try
     ;; start-monitor returns nil when the login fails (the client catches
@@ -451,7 +480,7 @@
         ;; Built once and shared by the checklist scopes, the page query and the count: a body search
         ;; is the most expensive predicate of the list.
         content-where (content->where search-text date-filter-active? fulltext-min-token-length
-                                      (when-not (or (str/blank? search-text) fulltext-min-token-length)
+                                      (when-not (or (str/blank? (literal-search-text search-text)) fulltext-min-token-length)
                                         (resolve-search-ids db (:db-type context) search-text)))
         other-where (partial other-filters-where parameters date-filter content-where)
         cat-list (annotate-checked-by (categories db) category-selection #(or (:id %) uncategorized-token))
@@ -542,7 +571,9 @@
        "A category with this name already exists."
        (> (count trimmed) 100) "The category name must not exceed 100 characters."
        (re-find #"[\p{Cntrl}]" trimmed) "The category name must not contain control characters."
-       (re-find #"[/\\*%\"]" trimmed) "The category name must not contain / \\ * % or double quotes: they have a special meaning in IMAP folder names."
+       ;; The dot is the hierarchy separator of Maildir++ servers (e.g. many Dovecot setups): "Amazon.de"
+       ;; would become the folder "Amazon" with a subfolder "de".
+       (re-find #"[/\\*%\".]" trimmed) "The category name must not contain / \\ * % . or double quotes: they have a special meaning in IMAP folder names."
        :else nil))))
 
 (def max-retention-days
@@ -654,9 +685,30 @@
           (record-current-folder!)
           :na))))
 
+(defonce ^:private messages-in-flight (atom #{}))
+
+(defn- claim-message!
+  "True when message-id was not being processed yet and is now claimed by the caller."
+  [message-id]
+  (let [[before _] (swap-vals! messages-in-flight conj message-id)]
+    (not (contains? before message-id))))
+
+(declare incoming-email-workflow*)
+
 (defn- incoming-email-workflow
   "Save, categorize and (optionally) move one freshly read message. Returns {:status :skipped} when the
-   message is already stored, otherwise {:status :processed :move <move-message result>}."
+   message is already stored - or is being processed right now: the IDLE monitor and the back-fill
+   after a (re)connect can both see a message that arrives during the connect, and both would pass
+   the already-stored check - otherwise {:status :processed :move <move-message result>}."
+  [email-message connection-id folder options context]
+  (let [message-id (-> email-message :email :header :message-id)]
+    (if (and (some? message-id) (not (claim-message! message-id)))
+      (do (t/log! :info ["Email" message-id "is being processed already — skipping it here"])
+          {:status :skipped})
+      (try (incoming-email-workflow* email-message connection-id folder options context)
+           (finally (when (some? message-id) (swap! messages-in-flight disj message-id)))))))
+
+(defn- incoming-email-workflow*
   [email-message connection-id folder {:keys [move? assigned-category assigned-category-id]} {:keys [analyzer db] :as context}]
   (let [message-id (-> email-message :email :header :message-id)]
     (if (int/email-exists? db message-id)

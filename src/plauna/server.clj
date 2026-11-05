@@ -89,6 +89,12 @@
         category-confidence (vectorize (get param-map :category-confidence))]
     (map (fn [vect] {:message-id (nth vect 0) :language (nth vect 1) :category (nth vect 2) :language-confidence (nth vect 3) :category-confidence (nth vect 4)}) (partition 5 (interleave-all message-ids languages categories language-confidence category-confidence)))))
 
+(defn- parse-confidence
+  "A confidence from a form field; 1.0 (a value the user set) when the field is missing, blank or not a
+   number, instead of a NullPointerException and an error page."
+  [value]
+  (or (some-> value str st/trim parse-double) 1.0))
+
 (defn params->update-request [params]
   (let [language (:language params)
         category-id (:category params)
@@ -96,8 +102,8 @@
         category-exists (and (some? category-id) (seq category-id))]
     {:language   (when language-exists (:language params))
      :category-id (when category-exists (Integer/parseInt (:category params)))
-     :category-confidence  (when category-exists (Float/parseFloat (:category-confidence params)))
-     :language-confidence (when language-exists (Float/parseFloat (:language-confidence params)))}))
+     :category-confidence  (when category-exists (parse-confidence (:category-confidence params)))
+     :language-confidence (when language-exists (parse-confidence (:language-confidence params)))}))
 
 (defn per-connection
   "Group located e-mails ({:connection-id ...}) by account, call (f connection-id emails) for each
@@ -136,7 +142,7 @@
                                old-category-id (:category-id (db/email-category-state (:message-id x)))]
                            (db/update-metadata (:message-id x) (:category-id request) (:category-confidence request) (:language request) (:language-confidence request))
                            (when (not= old-category-id (:category-id request))
-                             (db/clear-email-expiry! (:message-id x)))
+                             (db/category-changed! (:message-id x)))
                            {:message-id (:message-id x) :old-category-id old-category-id :new-category-id (:category-id request)}))
                        transformed)]
      (when sync-flags? (sync-flags! changes)))))
@@ -162,19 +168,18 @@
     default))
 
 (defn same-origin-referer
-  "Extract the path (+query) from the request's Referer only when its host matches the request Host,
-   so a cross-origin Referer can never be used as an open-redirect target. Returns nil otherwise."
+  "The path (+query) of the request's Referer, as a same-origin redirect target, or nil. Only the path is
+   taken - the Referer's host is ignored - and it must pass safe-redirect-path, so a Referer from another
+   site can never send the browser away, and a reverse proxy that rewrites Host or the port does not
+   break the redirect back to the page the user came from."
   [request]
-  (let [referer (get (:headers request) "referer")
-        host    (get (:headers request) "host")]
-    (when (and referer host)
-      (try
-        (let [uri (java.net.URI. referer)]
-          (when (= (.getAuthority uri) host)
-            (let [path (.getRawPath uri)
-                  q    (.getRawQuery uri)]
-              (str (if (st/blank? path) "/" path) (when q (str "?" q))))))
-        (catch Exception _ nil)))))
+  (when-let [referer (get (:headers request) "referer")]
+    (try
+      (let [uri (java.net.URI. referer)
+            path (.getRawPath uri)
+            q (.getRawQuery uri)]
+        (safe-redirect-path (str (if (st/blank? path) "/" path) (when q (str "?" q))) nil))
+      (catch Exception _ nil))))
 
 (defn redirect-to-referer [request]
   {:status 303
@@ -928,43 +933,6 @@
         (t/log! {:level :error :error e} ["Flagging the e-mails of" (:name category) "failed"])
         (add-to-messages {:type :alert :content "Flagging failed. Please see the logs."})))))
 
-(defn categorize-email [email]
-  (let [category (analysis/category-for-email email (-> email :metadata :language))
-        matched  (analysis/label->category (:name category))]
-    {:id         (:id matched)
-     :name       (:name matched)
-     :confidence (:confidence category)}))
-
-(defn categorize-uncategorized-n-emails
-  "Categorize up to n stored, uncategorized e-mails in the activated training languages. Returns the
-   number of e-mails that received a category. Without an activated language there is nothing to do
-   (and no `IN ()` clause, which MariaDB rejects)."
-  [n]
-  (let [languages-to-use (vec (map :language (db/get-activated-language-preferences)))]
-    (if (empty? languages-to-use)
-      0
-      (let [uncategorized-emails (:data (db/fetch-data {:entity :enriched-email :strict false
-                                                        :page {:page 1 :size n}}
-                                                       {:where [:and [:in :language languages-to-use]
-                                                                [:<> :language nil]
-                                                                [:= :category nil]]}))
-            trained-emails (map (fn [email]
-                                  (assoc (categorize-email email)
-                                         :message-id (-> email :header :message-id)))
-                                uncategorized-emails)]
-        (let [categorized (into []
-                                (comp
-                                 ;; Below-threshold results come back with a nil category; skip them instead
-                                 ;; of overwriting the row with category nil / confidence 0.
-                                 (filter #(some? (:id %)))
-                                 (map (fn [trained-email]
-                                        (db/update-metadata-category (:message-id trained-email) (:id trained-email) (:confidence trained-email))
-                                        trained-email)))
-                                trained-emails)]
-          ;; They were uncategorized: a category with a flag marks them like any e-mail it files.
-          (sync-flags! (mapv (fn [e] {:message-id (:message-id e) :old-category-id nil :new-category-id (:id e)}) categorized))
-          (count categorized))))))
-
 (defn mime-type-statistics []
   ;; Header MIME type represents one value per e-mail. Counting body parts here would count multipart
   ;; messages more than once and make this chart disagree with the total e-mail count.
@@ -1116,6 +1084,11 @@
 
 (defn- keep-existing-when-blank [submitted existing]
   (if (st/blank? submitted) existing submitted))
+
+(defn- mariadb-port
+  "The port of the database form: MariaDB's default 3306 when the field is left blank."
+  [port]
+  (if (st/blank? port) 3306 (Integer/parseInt (st/trim port))))
 
 (defn- connection-update-from-params [params existing]
   {:id (get params :id)
@@ -1587,25 +1560,28 @@
          (authenticated-session? (:session request))
          (redirect "/")
 
-         ;; Brake after recent failures (see auth/login-wait-remaining-millis): an attempt that arrives
-         ;; before the pause is over is refused without checking anything - no PBKDF2 work for the
-         ;; guesser, and no request thread parked in a sleep.
-         (pos? (auth/login-wait-remaining-millis))
-         (let [seconds (long (Math/ceil (/ (auth/login-wait-remaining-millis) 1000.0)))]
-           {:status 429
-            :headers (assoc html-headers "Retry-After" (str (max 1 seconds)))
-            :body (markup/login-page {:error (str "Too many failed login attempts. Please wait " (max 1 seconds) " second(s) and try again.")})})
-
-         (auth/verify-web-credentials? login-name password)
-         (do (auth/record-login-success!)
-             (-> (redirect "/")
-                 (assoc :session (authenticate-session (:session request)))))
-
          :else
-         (do (auth/record-login-failure!)
-             (t/log! :warn "Rejected a web login attempt: wrong login name or password.")
-             (success-html-with-body
-              (markup/login-page {:error "Invalid login name or password."}))))))
+         ;; Brake after recent failures (see auth/claim-login-attempt!): an attempt that arrives before
+         ;; the pause is over is refused without checking anything - no PBKDF2 work for the guesser, and
+         ;; no request thread parked in a sleep. Claiming is atomic, so parallel attempts cannot all
+         ;; slip through the moment a pause ends.
+         (let [wait (long (auth/claim-login-attempt!))]
+           (cond
+             (pos? wait)
+             (let [seconds (max 1 (long (Math/ceil (/ wait 1000.0))))]
+               {:status 429
+                :headers (assoc html-headers "Retry-After" (str seconds))
+                :body (markup/login-page {:error (str "Too many failed login attempts. Please wait " seconds " second(s) and try again.")})})
+
+             (auth/verify-web-credentials? login-name password)
+             (do (auth/record-login-success!)
+                 (-> (redirect "/")
+                     (assoc :session (authenticate-session (:session request)))))
+
+             :else
+             (do (t/log! :warn "Rejected a web login attempt: wrong login name or password.")
+                 (success-html-with-body
+                  (markup/login-page {:error "Invalid login name or password."}))))))))
 
    (comp/GET "/logout" {}
      (-> (redirect "/login") (assoc :session nil)))
@@ -1630,7 +1606,7 @@
            cfg (merge (or (db-cfg/read-file) {})
                       {:type     :mariadb
                        :host     host
-                       :port     (Integer/parseInt port)
+                       :port     (mariadb-port port)
                        :name     name
                        :user     user
                        :password (if (st/blank? password) (:password existing "") password)})]
@@ -1641,7 +1617,7 @@
      (let [{:keys [host port name user password]} (:params request)
            existing (db-cfg/load-config)
            cfg {:host     host
-                :port     (Integer/parseInt port)
+                :port     (mariadb-port port)
                 :name     name
                 :user     user
                 :password (if (st/blank? password) (:password existing "") password)
@@ -1744,7 +1720,7 @@
 
    (comp/GET "/admin/languages" {}
      (success-html-with-body
-      (markup/languages-admin-page (language-preferences))))
+      (result-with-messages (markup/languages-admin-page (language-preferences)) global-messages)))
 
    (comp/GET "/admin/preferences" {}
      (let [language-datection-threshold (p/language-detection-threshold)
@@ -1913,8 +1889,12 @@
              new-category-id (Integer/parseInt (:category (:params request)))
              new-category-name (get (first (filter #(= (:id %) new-category-id) (db/get-categories))) :name "")
              process (app/move-email-to-category email-before-update new-category-name context)]
-         (if (= :error (:result process))
-           (add-to-messages (:message process))
+         (case (:result process)
+           :error (add-to-messages (:message process))
+           ;; Like the e-mail list, never change only Plauna's category without the user's consent when
+           ;; the mail server does not have the e-mail: the user would believe it was moved.
+           :not-found (add-to-messages {:type :alert
+                                        :content "The e-mail was not found on the mail server, so nothing was changed. To change only Plauna's category, save again without \"Move email after update\"."})
            ;; The move already gave the e-mail the flag of its new category.
            (save-metadata-form (:params request) false)))
        (save-metadata-form (:params request)))
@@ -1938,12 +1918,6 @@
      {:status 200
       :headers {"Content-Type" "application/json; charset=UTF-8" "Cache-Control" "no-store"}
       :body (generate-string (training-status))})
-
-   (comp/POST "/training/new" request
-     ;; The number of e-mails is an optional form field (`count`); the route has no path parameter.
-     (let [n (-> (or (parse-long (str (get-in request [:params :count]))) 20) (max 1) (min 500))
-           categorized (categorize-uncategorized-n-emails n)]
-       (redirect-request request {:type :success :content (str "Categorized " categorized " of up to " n " uncategorized e-mail(s).")})))
 
    (comp/GET "/emails" {params :params}
      (let [parse-fn (template->request-parameters emails-template)
@@ -2185,17 +2159,24 @@
   (or (get-in request [:headers "x-forwarded-host"]) (get-in request [:headers "host"])))
 
 (defn cross-site-request?
-  "True when a state-changing request carries an Origin header naming a different site than the one the
-   browser addressed. Browsers always send Origin on cross-site POSTs; requests without one (non-browser
-   clients) are not judged."
+  "True when a state-changing request was sent by another site. Browsers say so in Sec-Fetch-Site,
+   which no proxy rewriting and no Referrer-Policy affects (with no-referrer a browser sends even a
+   same-origin form POST with Origin: null). Without it (older browsers) the Origin header, or the
+   Referer when Origin is missing, must name the host the browser addressed. Requests with none of
+   these headers (non-browser clients) are not judged."
   [request]
-  (let [origin (get-in request [:headers "origin"])]
+  (let [headers (:headers request)
+        site (some-> (get headers "sec-fetch-site") st/trim st/lower-case)
+        origin (or (get headers "origin") (get headers "referer"))]
     (boolean
-     (and origin
-          (contains? state-changing-methods (:request-method request))
-          (or (= "null" origin)
-              (not= (try (.getAuthority (java.net.URI. ^String origin)) (catch Exception _ nil))
-                    (request-host request)))))))
+     (and (contains? state-changing-methods (:request-method request))
+          (cond
+            (some? site) (not (contains? #{"same-origin" "none"} site))
+            (some? origin) (or (= "null" origin)
+                               (not= (some-> (try (.getAuthority (java.net.URI. ^String origin)) (catch Exception _ nil))
+                                             st/lower-case)
+                                     (some-> (request-host request) st/lower-case)))
+            :else false)))))
 
 (defn wrap-authentication
   "Require a logged-in session or an allowlisted mTLS client certificate for every non-public
@@ -2214,8 +2195,12 @@
                                        (assoc request :session (authenticate-session (:session request)))
                                        request)]
       (cond
-        (and certificate-authenticated? (cross-site-request? request))
-        (do (t/log! :warn ["Refused a cross-site" (name (:request-method request)) "to" (:uri request) "authenticated only by a client certificate."])
+        ;; SameSite=Lax keeps the session cookie off requests from other *sites*, but every service under
+        ;; the same registrable domain counts as the same site. The browser also presents the client
+        ;; certificate to the proxy for cross-site requests. So a state-changing request that another
+        ;; origin sent is refused, whichever way it would be authenticated.
+        (cross-site-request? request)
+        (do (t/log! :warn ["Refused a cross-site" (name (:request-method request)) "to" (:uri request)])
             {:status 403 :headers html-headers :body "Cross-site request refused."})
 
         (or (public-path? (:uri request))
@@ -2229,6 +2214,12 @@
                    (not (contains? response :session)))
             (assoc response :session (:session authenticated-request))
             response))
+
+        ;; A page script's request (fetch) would follow the redirect and get the login page as its
+        ;; answer; tell it plainly instead, and base.html sends the browser to the login page.
+        (let [mode (get-in request [:headers "sec-fetch-mode"])]
+          (and (some? mode) (not= "navigate" mode)))
+        {:status 401 :headers {"Content-Type" "text/plain; charset=UTF-8"} :body "login-required"}
 
         :else
         (redirect "/login")))))
@@ -2266,6 +2257,27 @@
         (assoc-in response [:headers "Cache-Control"] "no-cache")
         response))))
 
+(defn- https-request?
+  "True when the browser reached Plauna over HTTPS: directly, or through a reverse proxy that says so in
+   X-Forwarded-Proto."
+  [request]
+  (or (= :https (:scheme request))
+      (= "https" (some-> (get-in request [:headers "x-forwarded-proto"]) (st/split #",") first st/trim st/lower-case))))
+
+(defn wrap-secure-session-cookie
+  "Mark the cookies of a response Secure when the request came in over HTTPS, so the browser never
+   sends the session over plain HTTP. Requests over plain HTTP (e.g. directly in the LAN) keep working
+   because they get the cookie without the attribute."
+  [handler]
+  (fn [request]
+    (let [response (handler request)
+          cookies (get-in response [:headers "Set-Cookie"])]
+      (if (and cookies (https-request? request))
+        (assoc-in response [:headers "Set-Cookie"]
+                  (mapv (fn [^String cookie] (if (re-find #"(?i);\s*Secure(;|$)" cookie) cookie (str cookie ";Secure")))
+                        (if (string? cookies) [cookies] cookies)))
+        response))))
+
 (defn app [context] (-> (fn [req] ((make-routes context) req))
                         wrap-keyword-params
                         (wrap-multipart-params {:progress-fn upload-progress})
@@ -2280,7 +2292,8 @@
                                        ;; HttpOnly keeps the cookie out of JS; SameSite=Lax blocks forged
                                        ;; cross-site POSTs (CSRF) while still allowing the OAuth provider's
                                        ;; top-level redirect back to /oauth2/callback to carry the session.
-                                       :cookie-attrs {:http-only true :same-site :lax}})))
+                                       :cookie-attrs {:http-only true :same-site :lax}})
+                        wrap-secure-session-cookie))
 
 (defn get-random-port []
   (with-open [socket (ServerSocket. 0)]

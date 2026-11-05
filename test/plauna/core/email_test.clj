@@ -85,3 +85,13 @@
     (is (not (core.email/synthetic-message-id? "<real@example.com>")))
     (is (not (core.email/synthetic-message-id? nil)))
     (is (string? (core.email/synthetic-message-id nil nil nil)) "Even a message with nothing to hash gets an id")))
+
+(deftest text-without-a-usable-charset-keeps-its-umlauts
+  (let [utf8 (.getBytes "Rückgabe" "UTF-8")
+        latin (.getBytes "Rückgabe" "windows-1252")]
+    (is (= "Rückgabe" (core.email/decode-text utf8 nil)) "Valid UTF-8 without a declaration")
+    (is (= "Rückgabe" (core.email/decode-text latin nil)) "Windows-1252 without a declaration")
+    (is (= "Rückgabe" (core.email/decode-text latin "us-ascii")) "US-ASCII is what libraries assume when nothing is declared")
+    (is (= "Rückgabe" (core.email/decode-text latin "ISO-8859-1")) "A declared charset is used")
+    (is (= "Rückgabe" (core.email/decode-text utf8 "\\\"UTF-8\\\"")) "A sloppy UTF-8 declaration")
+    (is (= "Rückgabe" (core.email/decode-text utf8 "x-unknown")) "An unknown charset is guessed")))

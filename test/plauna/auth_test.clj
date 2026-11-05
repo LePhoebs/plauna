@@ -249,3 +249,11 @@ bzuLfe5C33mbwSNMdxoMu/9snkZOnkLj4oHIyDrEWQ7LkAVv+Lqx0RRp0EU1AOek
     (is (< 3500 remaining 4001) "Right after four failures the whole 4 s pause is still ahead"))
   (auth/record-login-success!)
   (is (zero? (auth/login-wait-remaining-millis))))
+
+(deftest parallel-login-attempts-cannot-all-slip-through
+  (auth/record-login-success!)
+  (is (zero? (auth/claim-login-attempt!)) "The first attempt is checked")
+  (is (pos? (auth/claim-login-attempt!)) "One arriving at the same time waits for the first one's pause")
+  (auth/record-login-success!)
+  (is (zero? (auth/claim-login-attempt!)) "A successful login clears the claim")
+  (auth/record-login-success!))

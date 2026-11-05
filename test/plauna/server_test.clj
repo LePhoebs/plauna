@@ -749,12 +749,6 @@
     (is (= ["one" "two"] (mapv :content taken)))
     (is (empty? (server/take-messages!)) "Taking empties the queue in the same step")))
 
-(deftest categorizing-without-activated-languages-does-nothing
-  (with-redefs [db/get-activated-language-preferences (constantly [])
-                db/fetch-data (fn [& _] (throw (ex-info "must not query with an empty IN list" {})))]
-    (is (= 0 (server/categorize-uncategorized-n-emails 20))))
-  "No activated language means no `IN ()` clause and no work")
-
 (deftest unknown-urls-and-malformed-email-ids-get-proper-status-codes
   (with-redefs [client/disconnected-connections (fn [] [])]
     (let [routes (server/make-routes {})]
@@ -974,3 +968,41 @@
       (is (= :busy (server/start-language-redetection!)) "A re-detection waits for the running import")
       (is (false? (claim! :mbox-import)))
       (finally (release!)))))
+
+(deftest a-referer-from-another-site-also-marks-a-cross-site-request
+  (is (true? (server/cross-site-request? {:request-method :post :headers {"referer" "https://other.example/page" "host" "plauna.example"}})))
+  (is (false? (server/cross-site-request? {:request-method :post :headers {"referer" "https://Plauna.example/emails" "host" "plauna.example"}}))))
+
+(deftest every-cross-site-post-is-refused
+  (let [handler (server/wrap-authentication (fn [_] {:status 200}))]
+    (is (= 403 (:status (handler {:request-method :post :uri "/admin/categories/1" :session {}
+                                  :headers {"origin" "https://evil.example" "host" "plauna.example"}}))))))
+
+(deftest session-cookies-are-secure-behind-https
+  (let [handler (server/wrap-secure-session-cookie (fn [_] {:status 200 :headers {"Set-Cookie" ["ring-session=abc;Path=/;HttpOnly"]}}))]
+    (is (= ["ring-session=abc;Path=/;HttpOnly;Secure"]
+           (get-in (handler {:headers {"x-forwarded-proto" "https"}}) [:headers "Set-Cookie"])))
+    (is (= ["ring-session=abc;Path=/;HttpOnly"]
+           (get-in (handler {:headers {}}) [:headers "Set-Cookie"])) "Plain HTTP in the LAN keeps working")))
+
+(deftest the-referer-redirect-takes-only-the-path
+  (is (= "/emails?page=2" (server/same-origin-referer {:headers {"referer" "https://plauna.example:8443/emails?page=2" "host" "plauna:8080"}}))
+      "A proxy that rewrites Host or the port does not break the way back")
+  (is (nil? (server/same-origin-referer {:headers {"referer" "https://evil.example//evil.example/x"}}))))
+
+(deftest page-scripts-get-401-when-the-session-expired
+  (let [handler (server/wrap-authentication (fn [_] {:status 200}))]
+    (is (= 401 (:status (handler {:request-method :get :uri "/training/status" :session {} :headers {"sec-fetch-mode" "cors"}}))))
+    (is (= 302 (:status (handler {:request-method :get :uri "/emails" :session {} :headers {"sec-fetch-mode" "navigate"}}))))))
+
+(deftest a-missing-confidence-is-not-an-error
+  (is (= 1.0 (:category-confidence (server/params->update-request {:category "3"}))))
+  (is (= 0.5 (:category-confidence (server/params->update-request {:category "3" :category-confidence "0.5"})))))
+
+(deftest fetch-metadata-decides-before-origin
+  (is (false? (server/cross-site-request? {:request-method :post :headers {"sec-fetch-site" "same-origin" "origin" "null" "host" "plauna.example"}}))
+      "A same-origin form under Referrer-Policy: no-referrer sends Origin: null")
+  (is (true? (server/cross-site-request? {:request-method :post :headers {"sec-fetch-site" "same-site" "origin" "https://git.example" "host" "plauna.example"}}))
+      "Another service under the same domain is refused")
+  (is (false? (server/cross-site-request? {:request-method :post :headers {"sec-fetch-site" "same-origin" "origin" "https://plauna.example" "host" "plauna:8080"}}))
+      "A proxy that rewrites Host does not matter"))

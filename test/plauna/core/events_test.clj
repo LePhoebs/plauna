@@ -57,3 +57,7 @@
           (events/stop-event-loops!)
           (async/close! @test-chan)
           (async/<!! supervisor))))))
+
+(test/deftest options-survive-a-triggering-event-without-options
+  (test/is (= {:a 1} (:options (events/create-event :x nil {:a 1} {:type :y}))))
+  (test/is (= {:a 1 :b 2} (:options (events/create-event :x nil {:b 2} {:type :y :options {:a 1}})))))

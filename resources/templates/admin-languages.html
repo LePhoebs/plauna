@@ -21,4 +21,10 @@
 
 </form>
 
+<form action="/metadata/languages" method="post" class="mt-6">
+  <input type="hidden" name="redirect-url" value="/admin/languages" />
+  <p class="text-sm mb-2">E-mails whose language could not be determined keep none. Detect it again for all of them, in the background:</p>
+  <button class="btn btn-outline">Re-detect Missing Languages</button>
+</form>
+
 {% endblock %}

@@ -8,6 +8,19 @@
     <meta charset="UTF-8">
     <meta content="width=device-width, initial-scale=1" name="viewport">
     <title>Plauna</title>
+    <script>
+      // A request of a page script whose session expired gets 401 instead of the login page (which
+      // fetch would silently follow): open the login page instead of showing it as an error.
+      (function () {
+        var originalFetch = window.fetch;
+        window.fetch = function () {
+          return originalFetch.apply(this, arguments).then(function (response) {
+            if (response.status === 401) { window.location.href = '/login'; }
+            return response;
+          });
+        };
+      })();
+    </script>
     {% block head-extra %}{% endblock %}
   </head>
   <body class="mx-2 sm:mx-8 my-4">

@@ -136,12 +136,26 @@
 
 (defonce ^:private login-failures (atom {:count 0 :last-failure 0}))
 
+(defn- failure-after
+  "The throttle state after one more failure at now."
+  [{:keys [count last-failure]} now]
+  (let [recent? (< (- (long now) (long last-failure)) login-failure-window-millis)]
+    {:count (if recent? (inc (long count)) 1) :last-failure now}))
+
+(defn- delay-millis [{:keys [count last-failure]} now]
+  (if (or (zero? (long count))
+          (>= (- (long now) (long last-failure)) login-failure-window-millis))
+    0
+    (min max-login-delay-millis (* 250 (long count) (long count)))))
+
+(defn- wait-remaining-millis [{:keys [last-failure] :as state} now]
+  (let [delay (delay-millis state now)]
+    (if (zero? (long delay))
+      0
+      (max 0 (- (+ (long last-failure) (long delay)) (long now))))))
+
 (defn record-login-failure! []
-  (swap! login-failures
-         (fn [{:keys [count last-failure]}]
-           (let [now (System/currentTimeMillis)
-                 recent? (< (- now (long last-failure)) login-failure-window-millis)]
-             {:count (if recent? (inc (long count)) 1) :last-failure now}))))
+  (swap! login-failures failure-after (System/currentTimeMillis)))
 
 (defn record-login-success! []
   (reset! login-failures {:count 0 :last-failure 0}))
@@ -152,21 +166,25 @@
    brake, not a lockout: the administrator can always log in, just not quickly after a burst of wrong
    guesses, and a guessing script is held to a few attempts per minute."
   []
-  (let [{:keys [count last-failure]} @login-failures]
-    (if (or (zero? (long count))
-            (>= (- (System/currentTimeMillis) (long last-failure)) login-failure-window-millis))
-      0
-      (min max-login-delay-millis (* 250 (long count) (long count))))))
+  (delay-millis @login-failures (System/currentTimeMillis)))
 
 (defn login-wait-remaining-millis
   "How much of the pause after the last failure is still ahead of us: an attempt arriving earlier is
    refused outright (no password check, no thread parked in a sleep), one arriving later is checked."
   []
-  (let [{:keys [last-failure]} @login-failures
-        delay (login-delay-millis)]
-    (if (zero? (long delay))
-      0
-      (max 0 (- (+ (long last-failure) (long delay)) (System/currentTimeMillis))))))
+  (wait-remaining-millis @login-failures (System/currentTimeMillis)))
+
+(defn claim-login-attempt!
+  "Atomically decide whether a login attempt may be checked now. Returns 0 when it may - the attempt is
+   then already counted as a failure, so attempts arriving in parallel see its pause and are refused;
+   record-login-success! clears it again - or the milliseconds still to wait."
+  []
+  (let [now (System/currentTimeMillis)
+        [old new] (swap-vals! login-failures
+                              (fn [state] (if (pos? (long (wait-remaining-millis state now)))
+                                            state
+                                            (failure-after state now))))]
+    (if (identical? old new) (wait-remaining-millis old now) 0)))
 
 (defn password-from-env-var?
   "True if the password is being supplied via the PLAUNA_PASSWORD environment variable."

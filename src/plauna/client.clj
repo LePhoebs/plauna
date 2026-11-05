@@ -12,7 +12,7 @@
    [clojure.core.async :as async])
   (:import
    (plauna.core.email Header Body-Part Participant Email)
-   (jakarta.mail Store Session Folder FolderNotFoundException BodyPart Multipart Message Message$RecipientType Flags Flags$Flag AuthenticationFailedException MessagingException FetchProfile FetchProfile$Item UIDFolder$FetchProfileItem)
+   (jakarta.mail Store Session Folder FolderNotFoundException BodyPart Multipart Message Part Message$RecipientType Flags Flags$Flag AuthenticationFailedException MessagingException FetchProfile FetchProfile$Item UIDFolder$FetchProfileItem)
    (jakarta.mail.internet InternetAddress MailDateFormat MimeMessage MimePart MimeUtility)
    (org.eclipse.angus.mail.imap IMAPFolder IMAPMessage)
    (jakarta.mail.event ConnectionAdapter ConnectionEvent MessageCountAdapter MessageCountEvent MessageCountListener)
@@ -292,6 +292,14 @@
   [^MimePart part]
   (try (.getEncoding part) (catch Exception _ nil)))
 
+(defn- text-of
+  "The text of a text part or single-part message. The bytes are decoded by core-email/decode-text rather
+   than by getContent: the mail library reads a part without a charset as US-ASCII and replaces every
+   umlaut, and fails outright on a sloppy declaration such as charset=\"\\UTF-8\"."
+  ^String [^Part part]
+  (with-open [in (.getInputStream part)]
+    (core-email/decode-text (.readAllBytes in) (charset (.getContentType part)))))
+
 (defmethod create-body-part String [content ^IMAPMessage message message-id]
   (new Body-Part message-id (charset (.getContentType message)) (mime-type (.getContentType message)) (transfer-encoding message) content (.getFileName message) (.getDisposition message)))
 
@@ -303,7 +311,7 @@
       ;; downloaded: getContent would transfer the complete part from the server only for its bytes to
       ;; be dropped here. Storing them would bloat the DB and, on MariaDB, fail the insert outright.
       ;; Attachments are intentionally not stored, mirroring the mbox parser.
-      (let [content (when (text? content-type) (.getContent bodypart))]
+      (let [content (when (text? content-type) (text-of bodypart))]
         (new Body-Part message-id (charset content-type) (mime-type content-type) (transfer-encoding bodypart)
              (when (string? content) content)
              (.getFileName bodypart) (disposition (.getDisposition bodypart)))))))
@@ -334,8 +342,10 @@
 (defn create-participants
   "The participants of a message, tagged with message-id (the header's id, synthetic or not)."
   [^IMAPMessage message message-id]
-  (let [sender (.getSender message)
-        sender-participant (when sender (create-participant sender :sender message-id))
+  ;; The sender is the From address, as the mbox import (plauna.parser) stores it and mail clients show
+  ;; it. The IMAP envelope's Sender is often a mailing service's bounce address, which would give the
+  ;; model and the From filter different values depending on how an e-mail came in.
+  (let [sender-participant (mapv (fn [address] (create-participant address :sender message-id)) (.getFrom message))
         recipient-participants (mapv (fn [address] (create-participant address :receiver message-id)) (.getRecipients message Message$RecipientType/TO))
         cc-participants (mapv (fn [address] (create-participant address :cc message-id)) (.getRecipients message Message$RecipientType/CC))
         bcc-participants (mapv (fn [address] (create-participant address :bcc message-id)) (.getRecipients message Message$RecipientType/BCC))]
@@ -427,7 +437,7 @@
    binary part whose bytes are never downloaded because only text is stored."
   [^IMAPMessage message]
   (cond (.isMimeType message "multipart/*") (.getContent message)
-        (text? (.getContentType message)) (.getContent message)
+        (text? (.getContentType message)) (text-of message)
         :else ::binary-content))
 
 (defn message->email [^IMAPMessage message]
@@ -534,24 +544,33 @@
     folder))
 
 (defn copy-message
-  "Copy a message to the target folder and delete it from the source. Returns true on confirmed success, false if any step failed."
+  "Copy a message to the target folder and delete it from the source. Returns true once the copy is in
+   the target folder, false when the copy itself failed. A failure while removing the original is only
+   logged: the message already sits in the target, and reporting the move as failed would make the
+   next attempt copy it a second time."
   [^Message message ^Folder source-folder ^Folder target-folder]
-  (try
-    (.setPeek ^IMAPMessage message true)
-    (.copyMessages source-folder (into-array Message [message]) target-folder)
-    (t/log! :debug ["Copied" message])
-    (.setFlag message Flags$Flag/DELETED true)
-    (t/log! :debug ["Set DELETED flag for" message])
-    ;; Expunge ONLY the message we copied (UID EXPUNGE, which needs the UIDPLUS extension). The no-arg
-    ;; expunge would remove every DELETED-flagged message in the folder, including unrelated ones the
-    ;; user flagged in a mail client. Without UIDPLUS the copy stays flagged until a client expunges.
-    (if (.hasCapability ^IMAPStore (.getStore source-folder) "UIDPLUS")
-      (do (.expunge ^IMAPFolder source-folder (into-array Message [message]))
-          (t/log! :debug ["Expunged the copied message from the source folder"]))
-      (t/log! :info ["The server supports neither MOVE nor UIDPLUS: the copied message stays in" (.getFullName source-folder) "flagged as deleted until a mail client expunges the folder."]))
-    true
-    (catch Exception e (t/log! {:level :error :error e} ["There was an error copying and deleting the message" message])
-           false)))
+  (if-not (try
+            (.setPeek ^IMAPMessage message true)
+            (.copyMessages source-folder (into-array Message [message]) target-folder)
+            (t/log! :debug ["Copied" message])
+            true
+            (catch Exception e (t/log! {:level :error :error e} ["There was an error copying the message" message])
+                   false))
+    false
+    (do
+      (try
+        (.setFlag message Flags$Flag/DELETED true)
+        (t/log! :debug ["Set DELETED flag for" message])
+        ;; Expunge ONLY the message we copied (UID EXPUNGE, which needs the UIDPLUS extension). The no-arg
+        ;; expunge would remove every DELETED-flagged message in the folder, including unrelated ones the
+        ;; user flagged in a mail client. Without UIDPLUS the copy stays flagged until a client expunges.
+        (if (.hasCapability ^IMAPStore (.getStore source-folder) "UIDPLUS")
+          (do (.expunge ^IMAPFolder source-folder (into-array Message [message]))
+              (t/log! :debug ["Expunged the copied message from the source folder"]))
+          (t/log! :info ["The server supports neither MOVE nor UIDPLUS: the copied message stays in" (.getFullName source-folder) "flagged as deleted until a mail client expunges the folder."]))
+        (catch Exception e
+          (t/log! {:level :warn :error e} ["The message was copied to" (.getFullName target-folder) "but could not be removed from" (.getFullName source-folder) "- the original stays there."])))
+      true)))
 
 (defn inbox-or-category-folder-name [^Store store ^String folder-name default]
   (let [real-default (if (s/blank? default) "INBOX" default)]
@@ -863,9 +882,11 @@
    concrete folder and account and stays findable for future moves."
   [connection-id message-id folder-name]
   (t/log! :info ["Source and target folder are both" folder-name "- leaving the message in place."])
-  (db/update-email-folder message-id folder-name)
-  (db/update-email-connection message-id connection-id)
-  true)
+  (if (pos? (long (or (:next.jdbc/update-count (first (db/update-email-folder message-id folder-name))) 0)))
+    (do (db/update-email-connection message-id connection-id)
+        true)
+    (do (t/log! :warn ["The e-mail" message-id "is not stored; nothing was recorded."])
+        false)))
 
 (declare apply-flags!)
 
@@ -990,10 +1011,17 @@
       (do (t/log! :info ["IMAP store in connection" id "is not connected; its" (count emails) "e-mail(s) wait for the next run."])
           {:offline (count emails)})
       :else
-      (try (with-dedicated-store (:config connection-data) f)
-           (catch Exception e
-             (t/log! {:level :warn :error e} ["Could not work on the e-mails of connection" id])
-             {:failed (count emails)})))))
+      ;; The counts survive a failure that only comes after f finished (closing the folders or the
+      ;; Store): the e-mails were handled, and reporting them all as failed would be wrong.
+      (let [result (volatile! nil)]
+        (try (with-dedicated-store (:config connection-data)
+               (fn [store folder-named release!] (vreset! result (f store folder-named release!))))
+             (catch Exception e
+               (if-let [counts @result]
+                 (do (t/log! {:level :warn :error e} ["The e-mails of connection" id "were handled, but closing its connection failed."])
+                     counts)
+                 (do (t/log! {:level :warn :error e} ["Could not work on the e-mails of connection" id])
+                     {:failed (count emails)}))))))))
 
 (defn- tally
   "Run (per-email email) for every e-mail and count the resulting keywords. The e-mails are handled
@@ -1013,7 +1041,11 @@
                             (t/log! {:level :warn :error e} ["Could not handle the e-mail" (:message-id email)])
                             :failed)))
                    group))
-             (finally (release! folder))))))
+             (finally
+               ;; A folder that cannot be closed must not lose the counts of the e-mails handled in it.
+               (try (release! folder)
+                    (catch Exception e
+                      (t/log! {:level :warn :error e} ["Could not close the folder" folder]))))))))
 
 (defn trash-expired-emails!
   "Move the expired e-mails of one connection ([{:message-id :folder :category :protect?}], see

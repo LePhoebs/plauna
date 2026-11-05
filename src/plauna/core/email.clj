@@ -86,6 +86,38 @@
 
 (defn attachment? [body-part] (or (= "attachment" (:content-disposition body-part)) (some? (:filename body-part))))
 
+(defn- usable-charset
+  "The java.nio Charset a declared MIME charset names, or nil when it names none Java knows. Sloppy
+   UTF-8 declarations (\"utf-8\" in quotes, \\UTF-8, utf8) count as UTF-8."
+  ^java.nio.charset.Charset [declared]
+  (let [cleaned (some-> declared str s/trim (s/replace #"[\"'\\]" "") s/lower-case)]
+    (cond (s/blank? cleaned) nil
+          (re-matches #".*utf-?8.*" cleaned) java.nio.charset.StandardCharsets/UTF_8
+          :else (try (java.nio.charset.Charset/forName cleaned) (catch Exception _ nil)))))
+
+(defn- valid-utf8? [^bytes bytes]
+  (try (-> java.nio.charset.StandardCharsets/UTF_8
+           .newDecoder
+           (.onMalformedInput java.nio.charset.CodingErrorAction/REPORT)
+           (.onUnmappableCharacter java.nio.charset.CodingErrorAction/REPORT)
+           (.decode (java.nio.ByteBuffer/wrap bytes)))
+       true
+       (catch java.nio.charset.CharacterCodingException _ false)))
+
+(defn decode-text
+  "Decode the bytes of a text part. A part that declares a charset Java knows is decoded with it - except
+   US-ASCII, which is also what mail libraries assume when a part declares nothing: such a part often
+   carries umlauts anyway, so it is read as UTF-8 when the bytes are valid UTF-8 and as Windows-1252
+   otherwise (pure ASCII reads the same either way). Windows-1252 text is practically never valid UTF-8,
+   so the guess is reliable."
+  ^String [^bytes bytes declared-charset]
+  (let [charset (usable-charset declared-charset)]
+    (if (and (some? charset) (not= charset java.nio.charset.StandardCharsets/US_ASCII))
+      (String. bytes charset)
+      (String. bytes (if (valid-utf8? bytes)
+                       java.nio.charset.StandardCharsets/UTF_8
+                       (java.nio.charset.Charset/forName "windows-1252"))))))
+
 (defn text-content? [mime-type] (and (some? mime-type) (.startsWith ^String mime-type "text")))
 
 (defn body-text-content? [body-part] (text-content? (:mime-type body-part)))

@@ -196,7 +196,7 @@
     (with-redefs [client/connected? (fn [_] true)
                   client/connection-data-from-id (fn [_] {:store nil :config {:id 1 :folder "INBOX"}})
                   db/email-folder (fn [_] nil)
-                  db/update-email-folder (fn [message-id folder] (reset! recorded [message-id folder]))
+                  db/update-email-folder (fn [message-id folder] (reset! recorded [message-id folder]) [{:next.jdbc/update-count 1}])
                   db/update-email-connection (fn [_ _] nil)
                   client/inbox-or-default-category-folder-name (fn [_ _ _] "INBOX")
                   client/inbox-or-category-folder-name (fn [_ _ _] "INBOX")]
@@ -209,7 +209,7 @@
   (with-redefs [client/connected? (fn [_] true)
                 client/connection-data-from-id (fn [_] {:store nil :config {:id 1 :folder "INBOX"}})
                 db/email-folder (fn [_] nil)
-                db/update-email-folder (fn [_ _] nil)
+                db/update-email-folder (fn [_ _] [{:next.jdbc/update-count 1}])
                 db/update-email-connection (fn [_ _] nil)
                 client/inbox-or-default-category-folder-name (fn [_ _ _] "Archive/Projects")
                 client/inbox-or-category-folder-name (fn [_ _ _] "Archive/Projects")]
@@ -224,7 +224,7 @@
   (with-redefs [client/connected? (fn [_] true)
                 client/connection-data-from-id (fn [_] {:store nil :config {:id 1 :folder "INBOX"}})
                 db/email-folder (fn [_] nil)
-                db/update-email-folder (fn [_ _] nil)
+                db/update-email-folder (fn [_ _] [{:next.jdbc/update-count 1}])
                 db/update-email-connection (fn [_ _] nil)
                 ;; default resolver (correct for legacy emails) and the custom-destination resolver
                 ;; return DIFFERENT values; the target resolves to the same value as the default resolver.
@@ -237,7 +237,7 @@
   (with-redefs [client/connected? (fn [_] true)
                 client/connection-data-from-id (fn [_] {:store nil :config {:id 1 :folder "INBOX"}})
                 db/email-folder (fn [_] "Recorded/Folder")
-                db/update-email-folder (fn [_ _] nil)
+                db/update-email-folder (fn [_ _] [{:next.jdbc/update-count 1}])
                 db/update-email-connection (fn [_ _] nil)
                 ;; category-derived resolution would give a *different* source ("Derived/Work").
                 client/inbox-or-category-folder-name (fn [_ folder-name _] (if (= folder-name "projects") "Recorded/Folder" "Derived/Work"))]
@@ -501,7 +501,7 @@
         source (folder-finding [(message-flagged true)])
         target (folder-finding [(message-flagged true)])]
     (with-redefs [client/set-category-flag! (fn [folder _ color] (swap! flagged conj [(if (identical? folder target) :target :source) color]))
-                  db/update-email-folder (fn [& _] nil)
+                  db/update-email-folder (fn [& _] [{:next.jdbc/update-count 1}])
                   db/update-email-connection (fn [& _] nil)]
       (with-redefs [client/move-found-messages! (fn [& _] false)]
         (is (false? (move! "c1" source target "INBOX" "Work" "<m@x>" :clear)))
@@ -517,7 +517,7 @@
                   client/resolve-move-folders (fn [& _] ["INBOX" "INBOX"])
                   client/category-flag-color (fn [category] ({"parcels" "orange"} category))
                   client/apply-flags! (fn [_ emails] (swap! applied conj emails) {})
-                  db/update-email-folder (fn [& _] nil)
+                  db/update-email-folder (fn [& _] [{:next.jdbc/update-count 1}])
                   db/update-email-connection (fn [& _] nil)]
       (is (true? (client/move-messages-by-id-between-category-folders "c1" "<m@x>" "parcels" "parcels" {})))
       (is (= [] @applied) "The user may have unflagged it to keep it")
@@ -571,3 +571,27 @@
         (client/refresh-access-token config)
         (client/refresh-access-token config)
         (is (= 2 @calls) "A failed refresh is retried on the next call")))))
+
+(deftest leaving-an-unstored-e-mail-in-place-is-not-a-success
+  (with-redefs [client/connected? (fn [_] true)
+                client/connection-data-from-id (fn [_] {:store nil :config {:id 1 :folder "INBOX"}})
+                db/email-folder (fn [_] nil)
+                client/inbox-or-default-category-folder-name (fn [_ _ _] "INBOX")
+                client/inbox-or-category-folder-name (fn [_ _ _] "INBOX")
+                client/category-flag-color (constantly nil)
+                db/update-email-folder (fn [_ _] [{:next.jdbc/update-count 0}])
+                db/update-email-connection (fn [& _] (throw (ex-info "must not be recorded" {})))]
+    (is (false? (client/move-messages-by-id-between-category-folders "c1" "<gone@x>" "a" "b" {})))))
+
+(deftest imap-text-without-a-charset-keeps-its-umlauts
+  (let [raw (byte-array (concat (.getBytes "Message-ID: <umlaut@x>\r\nContent-Type: text/plain\r\nContent-Transfer-Encoding: 8bit\r\n\r\n" "US-ASCII")
+                                (.getBytes "Rückgabe bis Freitag" "windows-1252")))
+        message (jakarta.mail.internet.MimeMessage. (jakarta.mail.Session/getInstance (java.util.Properties.))
+                                                    (java.io.ByteArrayInputStream. raw))]
+    (is (= "Rückgabe bis Freitag" (#'client/text-of message)))))
+
+(deftest counts-survive-a-folder-that-cannot-be-closed
+  (is (= {:trashed 2}
+         (#'client/tally [{:message-id "a" :folder "INBOX"} {:message-id "b" :folder "INBOX"}]
+                         (fn [_] (throw (ex-info "close failed" {})))
+                         (constantly :trashed)))))

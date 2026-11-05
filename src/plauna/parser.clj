@@ -50,20 +50,10 @@
                                            (when from (.getAddress ^Mailbox from))
                                            subject))))))
 
-(defn detect-utf8
-  "Some emails have the charset uft-8 in quotation marks or escaped like \\UTF-8
-  which throws UnsupportedEncodingException. This function tries to 'sanitize'
-  those poorly formatted utf-8 declarations."
-  [^String charset-string] (if (.equalsIgnoreCase charset-string "utf-8")
-                             charset-string
-                             (if (some? (re-matches #"(?i).*utf-8.*" charset-string))
-                               "utf-8"
-                               charset-string)))
-
 (defn decode-body [^BinaryBody body]
-  ;; Decode explicitly as UTF-8 (the dominant email charset) instead of the JVM's platform-default
-  ;; charset, so parsing is deterministic across machines. Fall back to empty on any decode failure.
-  (try (String. ^bytes (stream->bytes (.getInputStream body)) java.nio.charset.StandardCharsets/UTF_8)
+  ;; A text part the parser kept as binary: decode it like any text part without a usable charset
+  ;; (UTF-8 when valid, else Windows-1252; see core-email/decode-text). Fall back to empty on any failure.
+  (try (core-email/decode-text (stream->bytes (.getInputStream body)) nil)
        (catch Exception e (t/log! {:level :error :error e} (.getMessage e)) "")))
 
 (defn reader->string [^Reader reader]
@@ -71,7 +61,10 @@
 
 (defmulti parse-body-content (fn [body] (type body)))
 
-(defmethod parse-body-content TextBody [^TextBody text-body] (reader->string (.getReader text-body)))
+(defmethod parse-body-content TextBody [^TextBody text-body]
+  ;; Decode the bytes ourselves instead of using getReader: mime4j reads a part without a charset as
+  ;; US-ASCII and turns every umlaut into a replacement character (see core-email/decode-text).
+  (core-email/decode-text (stream->bytes (.getInputStream text-body)) (.getMimeCharset text-body)))
 
 (defmethod parse-body-content BinaryBody [^BinaryBody binary-body] (decode-body binary-body))
 
