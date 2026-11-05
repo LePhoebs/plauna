@@ -49,6 +49,20 @@
       {% endfor %}
     </select></td></tr>
     <tr><td><strong>Category Confidence: </strong></td><td>{{email.metadata.category-confidence|confidence-percent}}</td></tr>
+    {% if not email.metadata.category-id %}
+    <tr><td class="align-top"><strong>Model Scores: </strong></td><td>
+      {% if category-scores|not-empty %}
+      <ul class="text-sm">
+        {% for score in category-scores %}
+        <li class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded-full" style="background-color: {{score.color|category-color}};"></span><span>{{score.name}}</span><span class="opacity-70">{{score.confidence|confidence-percent}}</span></li>
+        {% endfor %}
+      </ul>
+      <p class="text-xs opacity-70 mt-1">Below the categorization threshold, so no category was assigned.</p>
+      {% else %}
+      <span class="text-sm opacity-70">No prediction: the language is not activated for training or has no model yet.</span>
+      {% endif %}
+    </td></tr>
+    {% endif %}
   <tr><td><label for="move">Move email after update</label>
   <input class="checkbox" name="move" type="checkbox" data-tooltip-target="tooltip-checkbox" data-tooltip-placement="right" checked>
   <div id="tooltip-checkbox" role="tooltip" class="absolute z-10 invisible inline-block px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg shadow-xs opacity-0 tooltip dark:bg-gray-700">

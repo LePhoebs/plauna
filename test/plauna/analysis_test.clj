@@ -197,3 +197,29 @@
       (is (nil? (-> enriched :metadata :category)))
       (is (some? (-> enriched :metadata :language)) "The language was still detected")))
   "An exception in the categorizer must not lose the e-mail in the enrichment pipeline")
+
+(deftest category-scores-list-every-label-most-likely-first-regardless-of-the-threshold
+  (let [training-file (java.io.File/createTempFile "plauna-training-" ".train")
+        model-file (java.io.File/createTempFile "plauna-model-" ".bin")]
+    (try
+      (spit training-file (str "1 sender-domain:shop.example subject:invoice body:payment\n"
+                               "2 sender-domain:friends.example subject:dinner body:tomorrow\n"
+                               "3 sender-domain:club.example subject:training body:saturday\n"))
+      (let [trained (first (analysis/train-data [{:language "eng" :file training-file}] "naive-bayes"))]
+        (with-open [os (io/output-stream model-file)]
+          (analysis/serialize-and-write-model! (:model trained) os)))
+      (analysis/forget-cached-models!)
+      (with-redefs [plauna.preferences/categorization-threshold (constantly 1.0)]
+        (let [tokens ["sender-domain:shop.example" "subject:invoice" "body:payment"]
+              scores (analysis/category-scores-for-tokens tokens model-file)]
+          (is (nil? (:name (analysis/categorize-tokens tokens model-file))) "Below the threshold nothing is assigned")
+          (is (= #{"1" "2" "3"} (set (map :name scores))) "Yet every label still has a score")
+          (is (= "1" (:name (first scores))))
+          (is (apply >= (map :confidence scores)) "Most likely first")
+          (is (< 0.99 (reduce + (map :confidence scores)) 1.01))))
+      (is (= [] (analysis/category-scores-for-tokens [] model-file)))
+      (is (= [] (analysis/category-scores-for-tokens ["x"] (java.io.File. "/nonexistent/model.bin"))))
+      (finally
+        (analysis/forget-cached-models!)
+        (io/delete-file training-file true)
+        (io/delete-file model-file true)))))

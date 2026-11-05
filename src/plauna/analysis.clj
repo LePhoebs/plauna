@@ -351,6 +351,20 @@
         {:name nil :confidence 0}))
     {:name nil :confidence 0}))
 
+(defn category-scores-for-tokens
+  "Every label of the model with its probability for the tokens, most likely first, as
+   [{:name label :confidence p}]. Unlike categorize-tokens this ignores the categorization threshold:
+   it shows what the model thinks, not what Plauna would assign. Empty without a model or tokens."
+  [tokens ^File model-file]
+  (if (and (.exists model-file) (seq tokens))
+    (let [doccat (categorizer-for model-file)
+          cat-results (.categorize doccat (into-array String tokens))]
+      (->> (range (.getNumberOfCategories doccat))
+           (map (fn [i] {:name (.getCategory doccat (int i)) :confidence (aget cat-results (int i))}))
+           (sort-by :confidence >)
+           vec))
+    []))
+
 (defn categorize [text ^File model-file]
   (categorize-tokens (when-not (st/blank? text) (st/split text #"\s+")) model-file))
 
@@ -407,6 +421,24 @@
        (let [model-file (files/model-file language-code (p/categorization-model))
              tokens (classification-tokens-for-model email language-code model-file cleaned-body)]
          (categorize-tokens tokens model-file))))))
+
+(defn category-scores-for-email
+  "The model's probability for each existing category of the e-mail in the given language, most
+   likely first, as [{:id :name :color :confidence}] - regardless of the categorization threshold.
+   nil when there is no prediction: no or a non-activated language, or no model yet. Labels of
+   deleted categories are left out."
+  ([email language-code] (category-scores-for-email email language-code (body-text email)))
+  ([email language-code cleaned-body]
+   (when (and (some? email) (some? language-code)
+              (some #(= language-code %) (activated-languages)))
+     (let [model-file (files/model-file language-code (p/categorization-model))]
+       (when (.exists ^File model-file)
+         (let [tokens (classification-tokens-for-model email language-code model-file cleaned-body)]
+           (into []
+                 (keep (fn [{:keys [name confidence]}]
+                         (when-let [category (label->category name)]
+                           (assoc (select-keys category [:id :name :color]) :confidence confidence))))
+                 (category-scores-for-tokens tokens model-file))))))))
 
 (defn detect-language-and-categorize-email
   "Detect the language of an e-mail and, for an activated language with a model, its category. The

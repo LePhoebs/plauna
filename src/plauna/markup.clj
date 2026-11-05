@@ -123,10 +123,16 @@
      (render "emails.html" (merge {:emails emails-with-java-date :page page-info :header "Emails" :messages (mapv type->toast-role messages) :active-nav :emails} filter-options)))))
 
 (defn list-email-contents
+  "category-scores: the model's most likely categories of an uncategorized e-mail ([{:id :name :color
+   :confidence}]), or nil when there is none to show."
   ([email-data categories]
-   (render "email.html" {:email (update-in email-data [:header :date] timestamp->date) :categories categories :active-nav :emails}))
-  ([email-data categories messages]
-   (render "email.html" {:email (update-in email-data [:header :date] timestamp->date) :categories categories :active-nav :emails :messages (mapv type->toast-role messages)})))
+   (list-email-contents email-data categories nil))
+  ([email-data categories category-scores]
+   (render "email.html" {:email (update-in email-data [:header :date] timestamp->date) :categories categories
+                         :category-scores category-scores :active-nav :emails}))
+  ([email-data categories category-scores messages]
+   (render "email.html" {:email (update-in email-data [:header :date] timestamp->date) :categories categories
+                         :category-scores category-scores :active-nav :emails :messages (mapv type->toast-role messages)})))
 
 (def ^:private vega-lite-schema "https://vega.github.io/schema/vega-lite/v6.json")
 (def ^:private chart-color "#8c0327")

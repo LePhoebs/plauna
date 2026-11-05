@@ -296,3 +296,24 @@
       (is (= 1 (count (re-seq #"Not detected" html))) "NULL and n/a languages become one bar")
       (is (str/includes? html "\"count\":5"))))
   "A chart never shows the same label twice")
+
+(deftest uncategorized-email-page-shows-the-model-scores
+  (with-redefs [client/disconnected-connections (fn [] [])]
+    (let [email {:header {:message-id "m" :subject "Hello" :date 0}
+                 :metadata {:category-id nil}
+                 :participants [] :body []}
+          categories [{:id 1 :name "Bills"} {:id nil :name "n/a"}]
+          html (markup/list-email-contents email categories [{:id 1 :name "Bills" :color "#112233" :confidence 0.42}
+                                                             {:id 2 :name "Friends" :color nil :confidence 0.3}])]
+      (is (str/includes? html "Model Scores"))
+      (is (str/includes? html "Bills"))
+      (is (str/includes? html "42.00 %"))
+      (is (str/includes? html "30.00 %")))
+    (testing "without a prediction the page says why"
+      (let [html (markup/list-email-contents {:header {:message-id "m" :date 0} :metadata {} :participants [] :body []}
+                                             [{:id nil :name "n/a"}] nil)]
+        (is (str/includes? html "No prediction"))))
+    (testing "a categorized e-mail shows no model scores"
+      (let [html (markup/list-email-contents {:header {:message-id "m" :date 0} :metadata {:category-id 1} :participants [] :body []}
+                                             [{:id 1 :name "Bills"}] nil)]
+        (is (not (str/includes? html "Model Scores")))))))
