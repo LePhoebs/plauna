@@ -3,6 +3,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [next.jdbc]
+            [plauna.core.email]
             [plauna.db-migration :as migration]))
 
 (deftest every-table-of-the-schema-is-migrated
@@ -35,3 +36,7 @@
             "Column names derived from the first row read every value of a row"))
       (finally
         (io/delete-file file true)))))
+
+(deftest copied-message-ids-fit-mariadb
+  (is (= [(plauna.core.email/storable-message-id "<ü@x>") "s"]
+         (migration/row-values ["message_id" "subject"] {:message_id "<ü@x>" :subject "s"}))))

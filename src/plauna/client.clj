@@ -265,14 +265,15 @@
     (when sender (.getAddress sender))))
 
 (defn envelope-message-id
-  "The Message-ID from the ENVELOPE, or a stable synthetic one (see core-email/synthetic-message-id)
-   when the message has no such header - Plauna cannot store a message without an id."
+  "The Message-ID from the ENVELOPE (in its storable form, see core-email/storable-message-id), or a
+   stable synthetic one (see core-email/synthetic-message-id) when the message has no such header -
+   Plauna cannot store a message without an id."
   [^IMAPMessage message]
   (let [message-id (.getMessageID message)]
     (if (s/blank? message-id)
       (let [sent (.getSentDate message)]
         (core-email/synthetic-message-id (when sent (quot (.getTime sent) 1000)) (sender-address-of message) (.getSubject message)))
-      message-id)))
+      (core-email/storable-message-id message-id))))
 
 (defn create-header [^IMAPMessage message]
   (let [sent (.getSentDate message)]
@@ -397,7 +398,7 @@
         ^InternetAddress from (or (first (header-addresses message "From")) (first (header-addresses message "Sender")))]
     (new Header (if (s/blank? message-id)
                   (core-email/synthetic-message-id date (when from (.getAddress from)) subject)
-                  message-id)
+                  (core-email/storable-message-id message-id))
                 (raw-header message "In-Reply-To")
                 subject
                 (mime-type (.getContentType message))
@@ -662,7 +663,7 @@
    search as well - is only logged."
   [^IMAPFolder folder message-id flag]
   (when (some? flag)
-    (try (when-let [found (seq (.search folder (MessageIDTerm. message-id)))]
+    (try (when-let [found (seq (.search folder (MessageIDTerm. (core-email/imap-message-id message-id))))]
            (set-category-flag! folder found flag))
          (catch Exception e
            (t/log! {:level :warn :error e} ["Could not flag" message-id "in" (.getFullName folder)])))))
@@ -790,7 +791,7 @@
    move, in the target folder: a failed move leaves the e-mail, its category and its flag unchanged.
    Returns true, :not-found, or false when the move did not complete."
   [connection-id ^IMAPFolder source-folder ^IMAPFolder target-folder ^String source-folder-name ^String target-folder-name message-id flag]
-  (let [found-messages (.search source-folder (MessageIDTerm. message-id))]
+  (let [found-messages (.search source-folder (MessageIDTerm. (core-email/imap-message-id message-id)))]
     (t/log! :debug ["Found" (count found-messages) "messages when searched for the message-id:" message-id])
     (if (some? (seq found-messages))
       (do
@@ -990,7 +991,7 @@
 
     :else
     (let [^IMAPFolder source (folder-named folder)
-          found (seq (.search source (MessageIDTerm. message-id)))]
+          found (seq (.search source (MessageIDTerm. (core-email/imap-message-id message-id))))]
       (cond
         (nil? found) :missing
         (and protect? (not-any? flagged? found)) :protected
@@ -1076,7 +1077,7 @@
                                (if (and (some? category) (not (same-folder-name? folder (category-folder-of category))))
                                  :elsewhere
                                  (let [^IMAPFolder source (folder-named folder)]
-                                   (if-let [found (seq (.search source (MessageIDTerm. message-id)))]
+                                   (if-let [found (seq (.search source (MessageIDTerm. (core-email/imap-message-id message-id))))]
                                      (do (set-category-flag! source found flag) :flagged)
                                      :missing)))))))))
 
@@ -1649,7 +1650,7 @@
                                         nil))]
                         (when bulk
                           (try
-                            (when-let [^IMAPMessage msg (first (.search ^IMAPFolder (:folder bulk) (MessageIDTerm. message-id)))]
+                            (when-let [^IMAPMessage msg (first (.search ^IMAPFolder (:folder bulk) (MessageIDTerm. (core-email/imap-message-id message-id))))]
                               (set-message-as-peek msg)
                               (message->email msg))
                             (finally (close-folder-for-bulk-read bulk))))))

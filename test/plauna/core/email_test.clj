@@ -95,3 +95,13 @@
     (is (= "Rückgabe" (core.email/decode-text latin "ISO-8859-1")) "A declared charset is used")
     (is (= "Rückgabe" (core.email/decode-text utf8 "\\\"UTF-8\\\"")) "A sloppy UTF-8 declaration")
     (is (= "Rückgabe" (core.email/decode-text utf8 "x-unknown")) "An unknown charset is guessed")))
+
+(deftest non-ascii-message-ids-are-stored-in-ascii-and-reversible
+  (is (= "<plain@example.com>" (core.email/storable-message-id "<plain@example.com>")) "ASCII ids stay as they are")
+  (is (nil? (core.email/storable-message-id nil)))
+  (let [stored (core.email/storable-message-id "<rückgabe@beispiel.de>")]
+    (is (re-matches #"=\?UTF-8\?B\?[A-Za-z0-9+/=]+\?=" stored))
+    (is (every? #(< (int %) 128) stored))
+    (is (= "<rückgabe@beispiel.de>" (core.email/imap-message-id stored))))
+  (is (= "<plain@example.com>" (core.email/imap-message-id "<plain@example.com>")))
+  (is (= "=?UTF-8?B?not base64?=" (core.email/imap-message-id "=?UTF-8?B?not base64?=")) "Something that only looks encoded stays"))

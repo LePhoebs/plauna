@@ -6,6 +6,7 @@
             [clojure.string :as str]
             [ring.util.codec :refer [base64-encode]]
             [plauna.client :as client]
+            [plauna.core.email :as core-email]
             [plauna.core.flags :as flags]
             [plauna.preferences :as preferences])
   (:import
@@ -89,6 +90,8 @@
 (add-filter! :concat-bcc (partial concat-contacts :bcc))
 
 (add-filter! :iconize (fn [pred] (if pred "✓" "⤫")))
+
+(add-filter! :readable-message-id core-email/imap-message-id)
 
 (add-filter! :base64-encode (fn [^String string] (base64-encode (.getBytes string))))
 

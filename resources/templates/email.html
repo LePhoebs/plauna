@@ -4,7 +4,7 @@
 
 <h2 class="uppercase text-lg my-10 break-words">{{email.header.subject}}</h2>
 <table class="table">
-  <tr><td><strong>Message ID: </strong></td><td class="break-all">{{email.header.message-id}}</td></tr>
+  <tr><td><strong>Message ID: </strong></td><td class="break-all">{{email.header.message-id|readable-message-id}}</td></tr>
   <tr><td><strong>Date: </strong></td><td>{{email.header.date|date:"dd.MM.yyyy HH:mm:ss"}}</td></tr>
   <tr><td><strong>Senders: </strong></td><td>{{email.participants|concat-senders}}</td></tr>
   <tr><td><strong>Recipients: </strong></td><td>{{email.participants|concat-receivers}}</td></tr>

@@ -8,6 +8,7 @@
   (:require [clojure.string :as string]
             [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs :refer [as-unqualified-lower-maps]]
+            [plauna.core.email :as core-email]
             [plauna.database :as db]
             [plauna.db-config :as db-cfg]
             [plauna.files :as files]
@@ -66,8 +67,14 @@
          " VALUES " (string/join ", " (repeat row-count placeholders))
          " ON DUPLICATE KEY UPDATE " (first cols) " = " (first cols))))
 
-(defn row-values [cols row]
-  (map #(get row (keyword %)) cols))
+(defn row-values
+  "The values of row for cols. A Message-ID that SQLite stored with non-ASCII characters (before
+   core-email/storable-message-id existed) is converted, so MariaDB's ASCII columns accept it - in every
+   table alike, which keeps the references between them intact."
+  [cols row]
+  (map (fn [col] (let [value (get row (keyword col))]
+                   (if (= "message_id" col) (core-email/storable-message-id value) value)))
+       cols))
 
 (def ^:private source-row-options
   ;; Unqualified, lower-case column keys. next.jdbc builds plan rows with the builder given to `plan`

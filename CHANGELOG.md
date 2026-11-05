@@ -63,6 +63,9 @@ All notable changes to this project will be documented in this file.
 - Body search: on MariaDB a short word or phrase with punctuation (`"Nr. 5"`, `e-mail`) was searched
   without its punctuation and found nothing; on SQLite a quoted search looked for the quote characters.
 - An internal event option was lost when the triggering event had no options (`conj` onto `nil`).
+- On MariaDB, an e-mail whose Message-ID contains non-ASCII characters could not be saved: the id
+  columns are ASCII. Such ids are now stored as `=?UTF-8?B?…?=` and decoded again for IMAP searches and
+  the details page; copying a SQLite database to MariaDB converts them as well. ASCII ids are unchanged.
 
 - Plauna no longer expunges IMAP folders. Closing the monitored folder on disconnect and closing the
   source and target folders of every recategorization used `Folder.close()`, which is `close(true)`:

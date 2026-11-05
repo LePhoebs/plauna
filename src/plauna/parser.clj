@@ -41,7 +41,7 @@
   [^Message message]
   (let [message-id (.getMessageId message)]
     (if (not (st/blank? message-id))
-      (st/trim message-id)
+      (core-email/storable-message-id (st/trim message-id))
       (let [date (.getDate message)
             from (first (.getFrom message))
             subject (.getSubject message)]

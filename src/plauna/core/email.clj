@@ -35,6 +35,30 @@
   [message-id]
   (boolean (and (string? message-id) (s/starts-with? message-id "<plauna-") (s/ends-with? message-id "@generated.plauna>"))))
 
+(def ^:private encoded-message-id-pattern #"=\?UTF-8\?B\?([A-Za-z0-9+/]*={0,2})\?=")
+
+(defn storable-message-id
+  "The form in which Plauna stores and compares a Message-ID. An id of ASCII characters - practically
+   every id - stays as it is. One with other characters (internationalized mail, RFC 6532) becomes
+   =?UTF-8?B?<base64 of its UTF-8 bytes>?=: MariaDB keeps Message-IDs in ASCII columns, which reject it
+   and with it the whole e-mail. No real Message-ID can look like that encoded form, so the two never
+   collide, and imap-message-id turns it back for the mail server."
+  [message-id]
+  (if (and (string? message-id) (some #(> (int %) 127) message-id))
+    (str "=?UTF-8?B?"
+         (.encodeToString (java.util.Base64/getEncoder) (.getBytes ^String message-id java.nio.charset.StandardCharsets/UTF_8))
+         "?=")
+    message-id))
+
+(defn imap-message-id
+  "The Message-ID as the mail server knows it: storable-message-id undone. Used for IMAP searches and
+   for showing the id."
+  [message-id]
+  (if-let [[_ encoded] (and (string? message-id) (re-matches encoded-message-id-pattern message-id))]
+    (try (String. (.decode (java.util.Base64/getDecoder) ^String encoded) java.nio.charset.StandardCharsets/UTF_8)
+         (catch IllegalArgumentException _ message-id))
+    message-id))
+
 (defn construct-body-part [body-part] (map->Body-Part body-part))
 
 (defn construct-participants [participant]

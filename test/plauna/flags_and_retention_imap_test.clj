@@ -2,6 +2,7 @@
   "Apple Mail flags and moving expired e-mails to the trash, against a real IMAP server (GreenMail)."
   (:require [clojure.test :refer :all]
             [plauna.client :as client]
+            [plauna.core.email]
             [plauna.database :as db]
             [taoensso.telemere :as t])
   (:import (com.icegreen.greenmail.util GreenMail ServerSetupTest)
@@ -107,4 +108,32 @@
             (is (true? (client/move-message-on-dedicated-store! config "INBOX" "Work" "<kept@x>" "green")))
             (is (nil? (flags-of config "INBOX" "<kept@x>")))
             (is (= #{:flagged "$MailFlagBit0" "$MailFlagBit1"} (flags-of config "Work" "<kept@x>"))))))
+      (finally (.stop greenmail)))))
+
+(deftest a-non-ascii-message-id-is-stored-in-ascii-and-found-on-the-server
+  (let [greenmail (doto (GreenMail. ServerSetupTest/IMAP) (.start))]
+    (try
+      (.setUser greenmail imap-user "secret")
+      (let [config (connection-config greenmail)
+            utf8-session (Session/getInstance (doto (Properties.) (.put "mail.mime.allowutf8" "true")))
+            raw-id "<rückgabe-1@beispiel.de>"]
+        (with-open [^Store store (client/login config)]
+          (.appendMessages (.getFolder store "INBOX")
+                           (into-array Message [(doto (MimeMessage. utf8-session)
+                                                  (.setFrom (InternetAddress. "shop@example.com"))
+                                                  (.setSubject "Rückgabe")
+                                                  (.setText "Ihre Rückgabe")
+                                                  (.saveChanges)
+                                                  (.setHeader "Message-ID" raw-id))])))
+        (let [stored-id (with-open [^Store store (client/login config)]
+                          (let [folder (.getFolder store "INBOX")]
+                            (.open folder Folder/READ_ONLY)
+                            (try (client/message-id-of (first (.getMessages folder)))
+                                 (finally (.close folder false)))))]
+          (is (every? #(< (int %) 128) stored-id) "MariaDB's ASCII columns accept the stored id")
+          (is (= raw-id (plauna.core.email/imap-message-id stored-id)))
+          (with-redefs [client/connection-data-from-id (fn [_] {:config config})
+                        client/connected? (constantly true)]
+            (is (= {:flagged 1} (client/apply-flags! "conn-flags" [{:message-id stored-id :folder "INBOX" :flag "red"}]))
+                "The IMAP search finds the e-mail by its real Message-ID"))))
       (finally (.stop greenmail)))))
