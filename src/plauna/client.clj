@@ -8,10 +8,11 @@
    [plauna.interfaces :as int]
    [plauna.application :as app]
    [plauna.core.email :as core-email]
+   [plauna.core.flags :as flags]
    [clojure.core.async :as async])
   (:import
    (plauna.core.email Header Body-Part Participant Email)
-   (jakarta.mail Store Session Folder BodyPart Multipart Message Message$RecipientType Flags$Flag AuthenticationFailedException MessagingException FetchProfile FetchProfile$Item UIDFolder$FetchProfileItem)
+   (jakarta.mail Store Session Folder FolderNotFoundException BodyPart Multipart Message Message$RecipientType Flags Flags$Flag AuthenticationFailedException MessagingException FetchProfile FetchProfile$Item UIDFolder$FetchProfileItem)
    (jakarta.mail.internet InternetAddress MailDateFormat MimeMessage MimePart MimeUtility)
    (org.eclipse.angus.mail.imap IMAPFolder IMAPMessage)
    (jakarta.mail.event ConnectionAdapter ConnectionEvent MessageCountAdapter MessageCountEvent MessageCountListener)
@@ -571,6 +572,63 @@
 (defn- move-supported? [^Store store]
   (.hasCapability ^IMAPStore store "MOVE"))
 
+;; ── Apple Mail flags ─────────────────────────────────────────────────────────────
+
+(defn- user-keywords-allowed?
+  "True when the server keeps keywords of the client's choosing in this folder (PERMANENTFLAGS \\*)."
+  [^Folder folder]
+  (let [permanent (.getPermanentFlags folder)]
+    (boolean (and permanent (.contains permanent Flags$Flag/USER)))))
+
+(defn- flags-of ^Flags [system-flag keywords]
+  (let [result (Flags.)]
+    (when system-flag (.add result ^Flags$Flag system-flag))
+    (doseq [^String keyword keywords] (.add result keyword))
+    result))
+
+(defn set-category-flag!
+  "Give messages of an open READ_WRITE folder the Apple Mail flag of color (a plauna.core.flags color
+   id), or take Plauna's flag and its color away again when color is :clear. Without permission for
+   keywords on the server only the plain flag (red in Apple Mail) is set."
+  [^Folder folder messages color]
+  (when (seq messages)
+    (let [message-array (into-array Message messages)
+          keywords? (user-keywords-allowed? folder)
+          all-color-keywords (set (vals flags/color-keywords))]
+      (if (= :clear color)
+        (do (.setFlags folder ^"[Ljakarta.mail.Message;" message-array (flags-of Flags$Flag/FLAGGED (when keywords? all-color-keywords)) false)
+            (t/log! :debug ["Removed the flag of" (count messages) "message(s) in" (.getFullName folder)]))
+        (let [[to-set to-clear] (flags/keywords-for color)]
+          (.setFlags folder ^"[Ljakarta.mail.Message;" message-array (flags-of Flags$Flag/FLAGGED (when keywords? to-set)) true)
+          (when (and keywords? (seq to-clear))
+            (.setFlags folder ^"[Ljakarta.mail.Message;" message-array (flags-of nil to-clear) false))
+          (when-not keywords?
+            (t/log! :info ["The server does not keep custom keywords in" (.getFullName folder) "- the messages get a plain flag without the color" color]))
+          (t/log! :debug ["Flagged" (count messages) "message(s) in" (.getFullName folder) color]))))))
+
+(defn flagged?
+  "True when the message carries the \\Flagged system flag."
+  [^Message message]
+  (.isSet message Flags$Flag/FLAGGED))
+
+(defn category-flag-color
+  "The flag color id configured for a category name, or nil - also when the lookup fails: a flag is a
+   convenience and must never stop the move it accompanies."
+  [category-name]
+  (when-not (s/blank? category-name)
+    (try (flags/valid-color (:flag_color (db/category-by-name category-name)))
+         (catch Exception e
+           (t/log! {:level :warn :error e} ["Could not read the flag color of the category" category-name])
+           nil))))
+
+(defn- flag-quietly!
+  "set-category-flag!, but a failure is only logged: a flag is a convenience and must never stop a move."
+  [^Folder folder messages color]
+  (when (some? color)
+    (try (set-category-flag! folder messages color)
+         (catch Exception e
+           (t/log! {:level :warn :error e} ["Could not flag" (count messages) "message(s) in" (.getFullName folder)])))))
+
 (defn move-message
   "Find the proper location for the email and move it there. Returns the name of the folder to which
    the email was moved, or nil when the move did not complete (the message is then still in the
@@ -583,6 +641,8 @@
         ;; lives in a dedicated bulk-read Store rather than the monitor's Store.
         store ^Store (.getStore source-folder)
         structured-folder (inbox-or-category-folder-name store target-name (-> connection-data :config :folder))]
+    ;; Flag first: MOVE and COPY carry the flags along, and a message that stays in place keeps them.
+    (flag-quietly! source-folder [message] (category-flag-color target-name))
     (try
       (let [target-folder ^IMAPFolder (.getFolder ^Store store ^String structured-folder)]
         (cond
@@ -674,9 +734,10 @@
 
 (defn- move-message-between-open-folders!
   "Search message-id in source-folder and move it to target-folder; both folders are already open on
-   the same Store. Records the new location. Returns true, :not-found, or false when the move did not
-   complete."
-  [connection-id ^IMAPFolder source-folder ^IMAPFolder target-folder ^String source-folder-name ^String target-folder-name message-id]
+   the same Store. Records the new location. flag (see plauna.core.flags/flag-change) is applied only after a successful
+   move, in the target folder: a failed move leaves the e-mail, its category and its flag unchanged.
+   Returns true, :not-found, or false when the move did not complete."
+  [connection-id ^IMAPFolder source-folder ^IMAPFolder target-folder ^String source-folder-name ^String target-folder-name message-id flag]
   (let [found-messages (.search source-folder (MessageIDTerm. message-id))]
     (t/log! :debug ["Found" (count found-messages) "messages when searched for the message-id:" message-id])
     (if (some? (seq found-messages))
@@ -685,32 +746,47 @@
         (if (move-found-messages! source-folder target-folder found-messages)
           (do (db/update-email-folder message-id target-folder-name)
               (db/update-email-connection message-id connection-id)
+              (when (some? flag)
+                (flag-quietly! target-folder (seq (.search target-folder (MessageIDTerm. message-id))) flag))
               true)
           false))
       (do (t/log! :info ["No messages found in" source-folder-name "for" message-id])
           :not-found))))
 
-(defn move-message-on-dedicated-store!
-  "Move message-id between two folders using a short-lived Store that is independent of IdleManager.
-   The Store and both folders are always closed after the attempt - without expunging: with-open would
-   call Folder.close(), which is close(true) and permanently deletes every message the user has
-   flagged for deletion in a mail client."
-  [connection-config source-folder-name target-folder-name message-id]
-  (when (oauth2? connection-config)
-    (refresh-access-token connection-config))
-  (with-open [^Store move-store (login connection-config)]
-    (let [open-folders (atom [])
-          open! (fn ^IMAPFolder [^String folder-name]
-                  (let [folder (open-folder-in-store move-store folder-name)]
-                    (swap! open-folders conj folder)
-                    folder))]
+(defn- with-dedicated-store
+  "Call (f store folder-named release!) with a short-lived Store of the connection, where
+   (folder-named name) opens a folder READ_WRITE once and reuses it, and (release! name) closes it
+   early - every open folder holds its own IMAP connection, and servers limit them per user. Every
+   folder is closed afterwards WITHOUT expunging, and so is the Store; the IDLE monitor's Store is
+   never touched."
+  [connection-config f]
+  (when (oauth2? connection-config) (refresh-access-token connection-config))
+  (with-open [^Store store (login connection-config)]
+    (let [open-folders (atom {})
+          folder-named (fn ^IMAPFolder [^String folder-name]
+                         (or (get @open-folders folder-name)
+                             (let [folder (open-folder-in-store store folder-name)]
+                               (swap! open-folders assoc folder-name folder)
+                               folder)))
+          release! (fn [^String folder-name]
+                     (when-let [folder (get @open-folders folder-name)]
+                       (swap! open-folders dissoc folder-name)
+                       (attempt-close-step! "closing a folder of a dedicated connection" #(close-folder-without-expunge! folder))))]
       (try
-        (let [target-folder (open! target-folder-name)
-              source-folder (open! source-folder-name)]
-          (move-message-between-open-folders! (:id connection-config) source-folder target-folder source-folder-name target-folder-name message-id))
+        (f store folder-named release!)
         (finally
-          (doseq [folder @open-folders]
-            (attempt-close-step! "closing a move folder" #(close-folder-without-expunge! folder))))))))
+          (doseq [folder (vals @open-folders)]
+            (attempt-close-step! "closing a folder of a dedicated connection" #(close-folder-without-expunge! folder))))))))
+
+(defn move-message-on-dedicated-store!
+  "Move message-id between two folders using a short-lived Store that is independent of IdleManager
+   (see with-dedicated-store: nothing is expunged when the folders close)."
+  [connection-config source-folder-name target-folder-name message-id flag]
+  (with-dedicated-store connection-config
+    (fn [_ folder-named _]
+      (let [target-folder (folder-named target-folder-name)
+            source-folder (folder-named source-folder-name)]
+        (move-message-between-open-folders! (:id connection-config) source-folder target-folder source-folder-name target-folder-name message-id flag)))))
 
 (defn- resolve-move-folders
   "[source-folder-name target-folder-name] for moving message-id into category target-name on the
@@ -734,18 +810,27 @@
   (db/update-email-connection message-id connection-id)
   true)
 
+(declare apply-flags!)
+
 (defn move-messages-by-id-between-category-folders
   "Return true if the message could be moved, :not-found if its source folder was searched but no
-   matching message exists, and false for other failures (for example a disconnected store)."
+   matching message exists, and false for other failures (for example a disconnected store). The
+   message's flag follows the new category (see plauna.core.flags/flag-change)."
   [^String id message-id ^String source-name ^String target-name _context]
   (let [^ConnectionData connection-data (connection-data-from-id id)]
     (if (and (some? connection-data) (connected? connection-data))
-      (let [[source-folder-name target-folder-name] (resolve-move-folders connection-data message-id source-name target-name)]
+      (let [[source-folder-name target-folder-name] (resolve-move-folders connection-data message-id source-name target-name)
+            ;; Saving an e-mail without changing its category must not re-flag one the user unflagged
+            ;; to keep it.
+            flag (when (not= source-name target-name)
+                   (flags/flag-change (category-flag-color source-name) (category-flag-color target-name)))]
         (if (= source-folder-name target-folder-name)
-          (record-in-place! id message-id target-folder-name)
+          (do (when (some? flag)
+                (apply-flags! id [{:message-id message-id :folder target-folder-name :flag flag}]))
+              (record-in-place! id message-id target-folder-name))
           ;; Never open move folders on the Store used by IdleManager. Closing either folder after the
           ;; move could otherwise close the monitored INBOX and create a gap in real-time delivery.
-          (move-message-on-dedicated-store! (:config connection-data) source-folder-name target-folder-name message-id)))
+          (move-message-on-dedicated-store! (:config connection-data) source-folder-name target-folder-name message-id flag)))
       (do
         (t/log! :info ["IMAP store in connection" id "is not connected. Cancelling the move attempt."])
         false))))
@@ -760,31 +845,144 @@
     (if-not (and (some? connection-data) (connected? connection-data))
       (do (t/log! :info ["IMAP store in connection" id "is not connected. Cancelling the batch move."])
           (vec (repeat (count moves) false)))
-      (let [connection-config (:config connection-data)
-            open-folders (atom {})]
-        (when (oauth2? connection-config) (refresh-access-token connection-config))
-        (with-open [^Store move-store (login connection-config)]
-          (let [folder-named (fn ^IMAPFolder [^String folder-name]
-                               (or (get @open-folders folder-name)
-                                   (let [folder (open-folder-in-store move-store folder-name)]
-                                     (swap! open-folders assoc folder-name folder)
-                                     folder)))]
-            (try
-              (mapv (fn [{:keys [message-id category]}]
-                      (try
-                        (let [[source-folder-name target-folder-name] (resolve-move-folders connection-data message-id category category)]
-                          (if (= source-folder-name target-folder-name)
-                            (record-in-place! id message-id target-folder-name)
-                            (move-message-between-open-folders! id (folder-named source-folder-name) (folder-named target-folder-name)
-                                                                source-folder-name target-folder-name message-id)))
-                        (catch Exception e
-                          (t/log! {:level :error :error e} ["Moving" message-id "failed"])
-                          false)))
-                    moves)
-              (finally
-                (doseq [^IMAPFolder folder (vals @open-folders)]
-                  (try (when (.isOpen folder) (.close folder false))
-                       (catch Exception e (t/log! {:level :warn :error e} "Error closing a batch-move folder"))))))))))))
+      (let [;; A batch holds thousands of e-mails of a handful of categories: look each color up once.
+            flag-color-of (memoize category-flag-color)]
+        (with-dedicated-store (:config connection-data)
+          (fn [_ folder-named _]
+            (mapv (fn [{:keys [message-id category]}]
+                    (try
+                      (let [[source-folder-name target-folder-name] (resolve-move-folders connection-data message-id category category)
+                            flag (flag-color-of category)]
+                        (if (= source-folder-name target-folder-name)
+                          (do (when (some? flag)
+                                (let [^IMAPFolder folder (folder-named target-folder-name)]
+                                  (flag-quietly! folder (seq (.search folder (MessageIDTerm. message-id))) flag)))
+                              (record-in-place! id message-id target-folder-name))
+                          (move-message-between-open-folders! id (folder-named source-folder-name) (folder-named target-folder-name)
+                                                              source-folder-name target-folder-name message-id flag)))
+                      (catch Exception e
+                        (t/log! {:level :error :error e} ["Moving" message-id "failed"])
+                        false)))
+                  moves)))))))
+
+(defn same-folder-name?
+  "True when two full folder names mean the same folder: INBOX is case-insensitive in IMAP, every
+   other folder name is not."
+  [a b]
+  (if (= "INBOX" (s/upper-case (str b))) (= "INBOX" (s/upper-case (str a))) (= a b)))
+
+(def trash-folder-names
+  "Last folder name segments (lower case) that mean the trash on servers without SPECIAL-USE."
+  #{"trash" "deleted" "deleted messages" "deleted items" "papierkorb" "gelöschte elemente" "gelöschte objekte"})
+
+(defn trash-folder-name
+  "The full name of the account's trash: the folder the server marks \\Trash (SPECIAL-USE), else
+   one with a well-known trash name. nil when there is none - then nothing is ever moved to a trash."
+  [^Store store]
+  (let [folders (seq (.list (.getDefaultFolder store) "*"))
+        separator (str (folder-separator store))
+        marked (some (fn [^IMAPFolder folder]
+                       (when (some #(= "\\trash" (s/lower-case %)) (.getAttributes folder))
+                         (.getFullName folder)))
+                     folders)
+        segments (fn [full-name] (s/split full-name (re-pattern (java.util.regex.Pattern/quote separator))))
+        ;; The shallowest match: 'Trash' or 'INBOX.Trash', not a category or project folder named so.
+        named (->> folders
+                   (map #(.getFullName ^Folder %))
+                   (filter #(contains? trash-folder-names (s/lower-case (or (last (segments %)) ""))))
+                   (sort-by (comp count segments))
+                   first)]
+    (or marked named)))
+
+(defn- trash-one!
+  "Move the stored e-mail message-id from its recorded folder to the trash. Returns :trashed, :missing
+   when it is not in that folder any more (the user moved or deleted it), :elsewhere when its folder
+   is not the one Plauna files the category into (an archive or the sent folder that was only read),
+   or :protected when protect? and the user has taken the flag away. category-folder-of returns the
+   folder of a category name."
+  [folder-named category-folder-of ^String trash-name {:keys [message-id folder protect? category]}]
+  (cond
+    (same-folder-name? folder trash-name)
+    (do (db/mark-email-expired! message-id trash-name) :trashed)
+
+    (not (same-folder-name? folder (category-folder-of category)))
+    :elsewhere
+
+    :else
+    (let [^IMAPFolder source (folder-named folder)
+          found (seq (.search source (MessageIDTerm. message-id)))]
+      (cond
+        (nil? found) :missing
+        (and protect? (not-any? flagged? found)) :protected
+        (move-found-messages! source (folder-named trash-name) found)
+        (do (db/mark-email-expired! message-id trash-name) :trashed)
+        :else :failed))))
+
+(defn- on-connection!
+  "Call (f store folder-named release!) on a dedicated Store of connection id for a non-empty list of its
+   stored e-mails and return f's counts. A disconnected account counts every e-mail as :offline; an
+   account that fails (a rejected login, a dropped connection) counts them as :failed instead of
+   throwing, so one broken account never holds up the others."
+  [^String id emails f]
+  (let [^ConnectionData connection-data (connection-data-from-id id)]
+    (cond
+      (empty? emails) {}
+      (not (and (some? connection-data) (connected? connection-data)))
+      (do (t/log! :info ["IMAP store in connection" id "is not connected; its" (count emails) "e-mail(s) wait for the next run."])
+          {:offline (count emails)})
+      :else
+      (try (with-dedicated-store (:config connection-data) f)
+           (catch Exception e
+             (t/log! {:level :warn :error e} ["Could not work on the e-mails of connection" id])
+             {:failed (count emails)})))))
+
+(defn- tally
+  "Run (per-email email) for every e-mail and count the resulting keywords. The e-mails are handled
+   folder by folder and each folder is released before the next one (see with-dedicated-store), so a
+   run holds at most two folders open however many folders the e-mails are spread over. An e-mail
+   whose folder no longer exists counts as :missing; one that throws otherwise counts as :failed and
+   does not stop the others."
+  [emails release! per-email]
+  (apply merge-with + {}
+         (for [[folder group] (group-by :folder emails)]
+           (try
+             (frequencies
+              (map (fn [email]
+                     (try (per-email email)
+                          (catch FolderNotFoundException _ :missing)
+                          (catch Exception e
+                            (t/log! {:level :warn :error e} ["Could not handle the e-mail" (:message-id email)])
+                            :failed)))
+                   group))
+             (finally (release! folder))))))
+
+(defn trash-expired-emails!
+  "Move the expired e-mails of one connection ([{:message-id :folder :category :protect?}], see
+   db/expired-emails) to its trash. Only e-mails in the folder Plauna files their category into are
+   moved; with :protect? an e-mail whose flag the user removed stays. Returns the counts {:trashed
+   :missing :elsewhere :protected :failed :offline}; {:no-trash n} when the account has no trash
+   folder, so nothing is deleted at all."
+  [^String id emails]
+  (on-connection! id emails
+                  (fn [store folder-named release!]
+                    (if-let [trash-name (trash-folder-name store)]
+                      (let [category-folder-of (memoize #(when % (structured-folder-name store %)))]
+                        (tally emails release! #(trash-one! folder-named category-folder-of trash-name %)))
+                      (do (t/log! :warn ["Connection" id "has no trash folder; its expired e-mails are kept."])
+                          {:no-trash (count emails)})))))
+
+(defn apply-flags!
+  "Set or clear the flags of stored e-mails of one connection ([{:message-id :folder :flag}], :flag a
+   color id or :clear). Returns the counts {:flagged :missing :failed :offline}."
+  [^String id emails]
+  (on-connection! id emails
+                  (fn [_ folder-named release!]
+                    (tally emails release!
+                           (fn [{:keys [message-id folder flag]}]
+                             (let [^IMAPFolder source (folder-named folder)]
+                               (if-let [found (seq (.search source (MessageIDTerm. message-id)))]
+                                 (do (set-category-flag! source found flag) :flagged)
+                                 :missing)))))))
 
 (defn- invalid-grant-error?
   "True only when the provider explicitly rejected the refresh token (HTTP 4xx with an
@@ -957,13 +1155,11 @@
                     (if (s/blank? destination_folder)
                       (str parent-folder-name separator (s/capitalize name))
                       (s/trim destination_folder)))
-        monitored (monitor-folder-name monitored-folder)
-        ;; INBOX is case-insensitive in IMAP, every other folder name is not.
-        same-folder? (fn [a b] (if (= "INBOX" (s/upper-case b)) (= "INBOX" (s/upper-case a)) (= a b)))]
+        monitored (monitor-folder-name monitored-folder)]
     (into {}
           (for [[folder categories-of-folder] (group-by folder-of categories)
                 :when (= 1 (count categories-of-folder))
-                :when (not (same-folder? folder monitored))]
+                :when (not (same-folder-name? folder monitored))]
             [folder (select-keys (first categories-of-folder) [:id :name])]))))
 
 (def category-folder-scan-chunk-size
@@ -1367,6 +1563,7 @@
   (move-email-between-categories [_ connection-id message-id old-category new-category context] (move-messages-by-id-between-category-folders connection-id message-id old-category new-category context))
   (move-email-to-category [_ connection-id message original-folder category] (move-message connection-id message original-folder category))
   (move-emails-by-id [_ connection-id moves] (move-emails-by-id! connection-id moves))
+  (apply-flags [_ connection-id emails] (apply-flags! connection-id emails))
   (prefetch-message-identities [_ folder from to]
     ;; One FETCH for a whole range of envelopes, so the per-message identity lookups that follow are
     ;; answered from the cache. Best effort: a range the server cannot serve is simply read one by one.

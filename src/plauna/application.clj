@@ -4,6 +4,7 @@
             [clojure.core.async :as async]
             [clojure.string :as str]
             [plauna.core.email :as core-email]
+            [plauna.core.flags :as flags]
             [plauna.preferences :as preferences]
             [plauna.util.page :as page]
             [plauna.util.sql :as sql]))
@@ -539,23 +540,43 @@
       (re-find #"[/\\*%\"]" trimmed) "The category name must not contain / \\ * % or double quotes: they have a special meaning in IMAP folder names."
       :else nil)))
 
-(defn create-new-category! [context category destination-folder color]
-  (let [db (:db context)
-        client (:client context)
-        cleaned (when-not (str/blank? destination-folder) (str/trim destination-folder))]
-    (int/save-category db category cleaned (clean-color color))
-    (doseq [connection-data (vals (int/connections client))]
-      (int/create-category-directories! client connection-data [category]))))
+(def max-retention-days
+  "Ten years: anything longer is as good as keeping the e-mails forever, and a typo of a huge number
+   must not overflow the cutoff computation."
+  3650)
+
+(defn clean-retention-days
+  "A whole number of days between 1 and max-retention-days, or nil (keep forever) for anything else,
+   including a blank field."
+  [days]
+  (let [n (cond (integer? days) days
+                (string? days) (parse-long (str/trim days))
+                :else nil)]
+    (when (and (some? n) (<= 1 n max-retention-days)) n)))
+
+(defn create-new-category!
+  "options: {:flag-color :retention-days}, both optional and validated (see update-category!)."
+  ([context category destination-folder color] (create-new-category! context category destination-folder color {}))
+  ([context category destination-folder color {:keys [flag-color retention-days]}]
+   (let [db (:db context)
+         client (:client context)
+         cleaned (when-not (str/blank? destination-folder) (str/trim destination-folder))]
+     (int/save-category db category cleaned (clean-color color) (flags/valid-color flag-color) (clean-retention-days retention-days))
+     (doseq [connection-data (vals (int/connections client))]
+       (int/create-category-directories! client connection-data [category])))))
 
 (defn update-category!
-  "Persist the destination folder and display color for a category, and make sure the folder exists on
-   every active connection. A blank destination-folder restores the default 'Categories/<Name>'
-   behaviour; an invalid or blank color falls back to default-category-color. Existing emails are not moved."
-  [context id category-name destination-folder color]
+  "Persist the destination folder, display color, flag color and retention of a category, and make sure
+   the folder exists on every active connection. A blank destination-folder restores the default
+   'Categories/<Name>' behaviour; an invalid or blank color falls back to default-category-color; an
+   unknown flag color means no flag and an invalid retention means keeping the e-mails forever.
+   Existing emails are neither moved nor flagged. options ({:flag-color :retention-days}) is required:
+   the form always submits both, and a missing value would silently erase the setting."
+  [context id category-name destination-folder color {:keys [flag-color retention-days]}]
   (let [db (:db context)
         client (:client context)
         cleaned (when-not (str/blank? destination-folder) (str/trim destination-folder))]
-    (int/update-category db id cleaned (clean-color color))
+    (int/update-category db id cleaned (clean-color color) (flags/valid-color flag-color) (clean-retention-days retention-days))
     (doseq [connection-data (vals (int/connections client))]
       (int/create-category-directories! client connection-data [category-name]))))
 
@@ -651,6 +672,27 @@
           (t/log! :debug ["Email with subject:" (-> email-message :email :header :subject) "was successfully saved to the database"])
           {:status :processed :move (move-message move? folder connection-id email-message category context)})))))
 
+(defn- category-flag-colors
+  "{category-id flag-color} of every category with a valid flag color."
+  [db]
+  (into {} (keep (fn [{:keys [id flag_color]}] (when-let [color (flags/valid-color flag_color)] [id color])))
+        (int/fetch-categories db)))
+
+(defn- sync-flag!
+  "Let the flag of an e-mail that changed category in the mail client follow the new category: the new
+   category's color, or Plauna's flag removed when only the old category had one. Best effort - a
+   failure is logged and the category change stands."
+  [{:keys [db client]} connection-id message-id folder-name old-category-id new-category-id]
+  (try
+    (let [colors (category-flag-colors db)
+          old-color (get colors old-category-id)
+          new-color (get colors new-category-id)
+          flag (flags/flag-change old-color new-color)]
+      (when (and (some? flag) (some? connection-id) (not= old-category-id new-category-id))
+        (int/apply-flags client connection-id [{:message-id message-id :folder folder-name :flag flag}])))
+    (catch Exception e
+      (t/log! {:level :warn :error e} ["Could not update the flag of" message-id "in" folder-name]))))
+
 (defn learn-category-from-folder!
   "Handle one message that arrived in a category folder of an account - moved there by the user in a
    mail client, or filed there by Plauna itself. The folder stands for exactly one category, so:
@@ -673,6 +715,7 @@
                                                       {:move? false :assigned-category (:name category) :assigned-category-id (:id category)}
                                                       context)]
         (when (= :processed status)
+          (sync-flag! context connection-id message-id folder-name nil (:id category))
           (t/log! :info ["Saved the new e-mail" message-id "found in" folder-name "with its category" (:name category)]))
         (if (= :processed status) :saved :confirmed))
 
@@ -682,6 +725,7 @@
       :else
       (do (int/update-email-category db message-id (:id category) 1.0)
           (record-location!)
+          (sync-flag! context connection-id message-id folder-name (:category-id state) (:id category))
           (t/log! :info ["Learned category" (:name category) "for" message-id "from its move into" folder-name])
           :learned))))
 

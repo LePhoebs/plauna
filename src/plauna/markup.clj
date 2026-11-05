@@ -6,6 +6,7 @@
             [clojure.string :as str]
             [ring.util.codec :refer [base64-encode]]
             [plauna.client :as client]
+            [plauna.core.flags :as flags]
             [plauna.preferences :as preferences])
   (:import
    (java.time Instant LocalDateTime)
@@ -233,9 +234,16 @@
                       (chart-context "categories" "Categories" "Current category assignments, including uncategorized e-mails."
                                      category-values (breakdown-chart "E-mails by category" category-values :name "Category"))]})))
 
+(defn- with-flag-hex [category]
+  (assoc category :flag_hex (:hex (first (filter #(= (:flag_color category) (:id %)) flags/colors)))))
+
 (defn categories-page
-  ([categories] (render "admin-categories.html" {:categories categories :active-nav :admin}))
-  ([categories messages] (render "admin-categories.html" {:categories categories :active-nav :admin :messages (mapv type->toast-role messages)})))
+  ([categories] (categories-page categories nil))
+  ([categories messages]
+   (render "admin-categories.html" (cond-> {:categories (mapv with-flag-hex categories)
+                                            :flag-colors flags/colors
+                                            :active-nav :admin}
+                                     (some? messages) (assoc :messages (mapv type->toast-role messages))))))
 
 (defn languages-admin-page [language-preferences]
   (render "admin-languages.html" {:language-preferences language-preferences :active-nav :admin}))

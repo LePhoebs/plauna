@@ -549,7 +549,8 @@
                                            :join [:headers [:= :headers.message-id :metadata.message-id]]
                                            :where [:and [:= :metadata.connection-id connection-id]
                                                    [:= :metadata.folder folder]
-                                                   [:<> :metadata.category nil]]
+                                                   [:<> :metadata.category nil]
+                                                   [:= :metadata.expired-at nil]]
                                            :order-by [[:headers.date :desc]]})
                        builder-function-kebab)))
 
@@ -764,7 +765,11 @@
         (jdbc/execute! (ds) (honey/format {:select [:headers.message-id]
                                            :from [:parse-batch-emails]
                                            :join [:headers [:= :headers.message-id :parse-batch-emails.message-id]]
-                                           :where [:= :parse-batch-emails.batch-id batch-id]
+                                           ;; An e-mail the retention moved to the trash stays there: moving the
+                                           ;; batch must not pull it out again.
+                                           :left-join [:metadata [:= :metadata.message-id :headers.message-id]]
+                                           :where [:and [:= :parse-batch-emails.batch-id batch-id]
+                                                   [:= :metadata.expired-at nil]]
                                            :order-by [[:headers.date :desc]]})
                        builder-function-kebab)))
 
@@ -774,8 +779,11 @@
 (defn create-category
   ([category] (create-category category nil nil))
   ([category destination-folder] (create-category category destination-folder nil))
-  ([category destination-folder color]
-   (jdbc/execute! (ds) (honey/format {:insert-into :categories :columns [:name :destination_folder :color] :values [[category destination-folder color]]}))))
+  ([category destination-folder color] (create-category category destination-folder color nil nil))
+  ([category destination-folder color flag-color retention-days]
+   (jdbc/execute! (ds) (honey/format {:insert-into :categories
+                                      :columns [:name :destination_folder :color :flag_color :retention_days]
+                                      :values [[category destination-folder color flag-color retention-days]]}))))
 
 (defn delete-category-by-id
   "Delete a category and, in the same transaction, clear it from every metadata row that still
@@ -786,10 +794,46 @@
     (jdbc/execute! tx ["UPDATE metadata SET category = NULL, category_confidence = NULL WHERE category = ?" id])
     (jdbc/execute! tx ["DELETE FROM categories WHERE id = ?" id])))
 
-(defn update-category [id destination-folder color]
+(defn update-category [id destination-folder color flag-color retention-days]
   (jdbc/execute! (ds) (honey/format {:update :categories
-                                     :set    {:destination_folder destination-folder :color color}
+                                     :set    {:destination_folder destination-folder :color color
+                                              :flag_color flag-color :retention_days retention-days}
                                      :where  [:= :id id]})))
+
+(defn expired-emails
+  "The stored e-mails of a category dated before cutoff (epoch seconds) that Plauna has not moved to
+   the trash yet and whose location is known: [{:message-id :folder :connection-id}], oldest first.
+   E-mails without a recorded folder or account are left out: Plauna cannot tell where they are."
+  [category-id cutoff]
+  (jdbc/execute! (ds) (honey/format {:select [:metadata.message-id :metadata.folder :metadata.connection-id]
+                                     :from :metadata
+                                     :join [:headers [:= :headers.message-id :metadata.message-id]]
+                                     :where [:and [:= :metadata.category category-id]
+                                             [:< :headers.date cutoff]
+                                             [:= :metadata.expired-at nil]
+                                             [:<> :metadata.folder nil]
+                                             [:<> :metadata.connection-id nil]]
+                                     :order-by [[:headers.date :asc]]})
+                 builder-function-kebab))
+
+(defn mark-email-expired!
+  "Record that an e-mail was moved to the trash folder because its category's retention ran out."
+  [message-id trash-folder]
+  (jdbc/execute! (ds) (honey/format {:update :metadata
+                                     :set    {:folder trash-folder :expired-at (epoch-seconds)}
+                                     :where  [:= :message-id message-id]})))
+
+(defn categorized-email-locations
+  "Where the stored e-mails of a category live: [{:message-id :folder :connection-id}] for every e-mail
+   with a recorded folder and account that has not been moved to the trash."
+  [category-id]
+  (jdbc/execute! (ds) (honey/format {:select [:message-id :folder :connection-id]
+                                     :from :metadata
+                                     :where [:and [:= :category category-id]
+                                             [:= :expired-at nil]
+                                             [:<> :folder nil]
+                                             [:<> :connection-id nil]]})
+                 builder-function-kebab))
 
 (defn delete-email-by-message-id [message-id]
   ;; Cascades to bodies/communications/metadata; SQLite enforces this via foreign_keys=true in the URL.
@@ -1199,8 +1243,8 @@
   (fetch-distinct-recipients [_ other-filters-where] (distinct-recipients other-filters-where))
   (fetch-header-categories [_ other-filters-where] (distinct-header-categories other-filters-where))
   (fetch-emails [_ entity customization] (fetch-data entity customization))
-  (save-category [_ category-name destination-folder color] (create-category category-name destination-folder color))
-  (update-category [_ id destination-folder color] (update-category id destination-folder color))
+  (save-category [_ category-name destination-folder color flag-color retention-days] (create-category category-name destination-folder color flag-color retention-days))
+  (update-category [_ id destination-folder color flag-color retention-days] (update-category id destination-folder color flag-color retention-days))
   (update-email-folder [_ message-id folder] (update-email-folder message-id folder))
   (email-exists? [_ message-id] (email-exists? message-id))
   (record-parse-batch-email [_ batch-id message-id] (record-parse-batch-email! batch-id message-id))

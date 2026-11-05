@@ -122,6 +122,23 @@ All notable changes to this project will be documented in this file.
 
 ### ✨ Features
 
+- Apple Mail flags per category: Plauna marks the e-mails it files in a category with a flag of the
+  chosen color (`\Flagged` plus the keywords `$MailFlagBit0`-`2`, as Apple Mail stores it; other
+  clients show a plain flag). The flag follows every category change - in the web UI, by the trained
+  model, or by moving an e-mail into a category folder in a mail client - and goes away when the
+  category is cleared or deleted or loses its color. "Flag existing e-mails" flags what was filed
+  before. New column `categories.flag_color`.
+- Automatic clean-up per category: a category can move its e-mails to the account's trash folder a
+  number of days after their date (`categories.retention_days`). Only e-mails in the folder Plauna
+  files the category into are affected, never an archive or the sent folder. The run starts ten
+  minutes after startup and repeats every six hours, or on demand from "Admin" -> "Categories". An
+  e-mail the user moved elsewhere, or - in a flagged category - without a flag, is kept; an account
+  that fails does not hold up the others. Plauna never deletes permanently and keeps the e-mail in its
+  database as a training example (`metadata.expired_at`); moving a parse batch or folder to category
+  folders leaves trashed e-mails in the trash.
+- The details page of an uncategorized e-mail lists the model's five most likely categories with
+  their probabilities, also below the categorization threshold.
+
 - Plauna learns from e-mails you move into a category folder in your mail client. Every account's
   category folders are scanned periodically (setting `category-folder-scan-interval`, default 300
   seconds, `0` turns it off) over a short-lived IMAP connection. A stored e-mail found there takes the

@@ -8,7 +8,7 @@
   (:import (java.util Properties)
            (java.io ByteArrayInputStream)
            (java.time LocalDate ZoneId)
-           (jakarta.mail Message Session)
+           (jakarta.mail Flags Flags$Flag Folder Message Session Store)
            (jakarta.mail.internet MimeMessage)
            (jakarta.mail.search ComparisonTerm ReceivedDateTerm SearchTerm)
            (org.eclipse.angus.mail.imap IMAPFolder IMAPMessage)
@@ -265,7 +265,7 @@
                                            (throw (ex-info "The dedicated move owns the folder update" {})))]
       (is (true? (client/move-messages-by-id-between-category-folders
                   "conn-1" "msg-id" nil "work" {})))
-      (is (= [connection-config "INBOX" "Categories/Work" "msg-id"] @move-call)
+      (is (= [connection-config "INBOX" "Categories/Work" "msg-id" nil] @move-call)
           "The actual move is delegated without opening a folder on the monitored Store")))
   "Recategorization resolves names from the live connection but performs the move on a dedicated Store")
 
@@ -364,3 +364,162 @@
     (.thenReturn (Mockito/when (.search folder ^SearchTerm (Mockito/any SearchTerm))) answer)
     (is (= [4] (int-protocol/message-numbers-since (client/->ImapClient) folder (LocalDate/of 2026 10 1)))
         "The protocol method of the real client is wired to the folder it is given")))
+
+;; ── Apple Mail flags and the trash ─────────────────────────────────────────────
+
+(defn- folder-with-permanent-flags ^IMAPFolder [keywords?]
+  (let [folder (Mockito/mock IMAPFolder)
+        permanent (doto (Flags.) (.add Flags$Flag/FLAGGED))]
+    (when keywords? (.add permanent Flags$Flag/USER))
+    (.thenReturn (Mockito/when (.getPermanentFlags folder)) permanent)
+    (.thenReturn (Mockito/when (.getFullName folder)) "INBOX")
+    folder))
+
+(defn- set-flags-calls
+  "[[flags value] ...] of every setFlags call on the folder mock."
+  [^IMAPFolder folder]
+  (let [flags-captor (ArgumentCaptor/forClass Flags)
+        value-captor (ArgumentCaptor/forClass Boolean)]
+    (.setFlags ^IMAPFolder (Mockito/verify folder (Mockito/atLeast 0))
+               ^"[Ljakarta.mail.Message;" (Mockito/any (Class/forName "[Ljakarta.mail.Message;"))
+               ^Flags (.capture flags-captor)
+               (boolean (.capture value-captor)))
+    (mapv vector (.getAllValues flags-captor) (.getAllValues value-captor))))
+
+(defn- flag-set [^Flags flags]
+  (into (set (map (fn [^Flags$Flag f] (cond (= f Flags$Flag/FLAGGED) :flagged :else f)) (.getSystemFlags flags)))
+        (.getUserFlags flags)))
+
+(deftest a-colored-flag-sets-its-bits-and-clears-the-others
+  (let [folder (folder-with-permanent-flags true)
+        message (Mockito/mock IMAPMessage)]
+    (client/set-category-flag! folder [message] "orange")
+    (is (= [[#{:flagged "$MailFlagBit0"} true] [#{"$MailFlagBit1" "$MailFlagBit2"} false]]
+           (mapv (fn [[flags value]] [(flag-set flags) value]) (set-flags-calls folder))))))
+
+(deftest without-keyword-permission-only-the-plain-flag-is-set
+  (let [folder (folder-with-permanent-flags false)
+        message (Mockito/mock IMAPMessage)]
+    (client/set-category-flag! folder [message] "blue")
+    (is (= [[#{:flagged} true]] (mapv (fn [[flags value]] [(flag-set flags) value]) (set-flags-calls folder))))))
+
+(deftest clearing-removes-the-flag-and-every-color-bit
+  (let [folder (folder-with-permanent-flags true)
+        message (Mockito/mock IMAPMessage)]
+    (client/set-category-flag! folder [message] :clear)
+    (is (= [[#{:flagged "$MailFlagBit0" "$MailFlagBit1" "$MailFlagBit2"} false]]
+           (mapv (fn [[flags value]] [(flag-set flags) value]) (set-flags-calls folder))))))
+
+(defn- listed-folder ^IMAPFolder [full-name attributes]
+  (let [folder (Mockito/mock IMAPFolder)]
+    (.thenReturn (Mockito/when (.getFullName folder)) full-name)
+    (.thenReturn (Mockito/when (.getAttributes folder)) (into-array String attributes))
+    folder))
+
+(defn- store-with-folders ^Store [separator folders]
+  (let [store (Mockito/mock Store)
+        root (Mockito/mock IMAPFolder)]
+    (.thenReturn (Mockito/when (.getDefaultFolder store)) root)
+    (.thenReturn (Mockito/when (.getSeparator root)) (char separator))
+    (.thenReturn (Mockito/when (.list root "*")) (into-array Folder folders))
+    store))
+
+(deftest the-trash-is-found-by-special-use-or-by-name
+  (is (= "[Gmail]/Papierkorb"
+         (client/trash-folder-name (store-with-folders \/ [(listed-folder "INBOX" [])
+                                                           (listed-folder "Trash Talk" [])
+                                                           (listed-folder "[Gmail]/Papierkorb" ["\\HasNoChildren" "\\Trash"])])))
+      "The SPECIAL-USE attribute wins over any name")
+  (is (= "INBOX.Papierkorb"
+         (client/trash-folder-name (store-with-folders \. [(listed-folder "INBOX" []) (listed-folder "INBOX.Papierkorb" [])]))))
+  (is (= "Deleted Messages"
+         (client/trash-folder-name (store-with-folders \/ [(listed-folder "Deleted Messages" [])]))))
+  (is (nil? (client/trash-folder-name (store-with-folders \/ [(listed-folder "INBOX" []) (listed-folder "Archive/Trash Talk" [])])))
+      "Without a trash nothing may ever be deleted"))
+
+(defn- message-flagged ^IMAPMessage [flagged?]
+  (let [m (Mockito/mock IMAPMessage)]
+    (.thenReturn (Mockito/when (.isSet m Flags$Flag/FLAGGED)) flagged?)
+    m))
+
+(defn- folder-finding ^IMAPFolder [messages]
+  (let [folder (Mockito/mock IMAPFolder)]
+    (.thenReturn (Mockito/when (.search folder ^SearchTerm (Mockito/any SearchTerm))) (into-array Message messages))
+    folder))
+
+(deftest expired-emails-go-to-the-trash-unless-the-user-kept-them
+  (let [trash-one! @#'client/trash-one!
+        trash (Mockito/mock IMAPFolder)
+        marked (atom [])
+        moved (atom [])]
+    (with-redefs [db/mark-email-expired! (fn [message-id folder] (swap! marked conj [message-id folder]))
+                  client/move-found-messages! (fn [_ _ found] (swap! moved conj (count found)) true)]
+      (let [folders {"INBOX-flagged" (folder-finding [(message-flagged true)])
+                     "INBOX-unflagged" (folder-finding [(message-flagged false)])
+                     "INBOX-empty" (folder-finding [])
+                     "Trash" trash}
+            folder-named (fn [name] (or (get folders name) (throw (ex-info "must not open" {:folder name}))))
+            ;; Each test e-mail's category is filed into the folder of the same name.
+            category-folder-of identity
+            trash! #(trash-one! folder-named category-folder-of "Trash" (assoc % :category (:folder %)))]
+        (is (= :trashed (trash! {:message-id "a" :folder "INBOX-flagged" :protect? true})))
+        (is (= :protected (trash! {:message-id "b" :folder "INBOX-unflagged" :protect? true}))
+            "Removing the flag keeps the e-mail")
+        (is (= :trashed (trash! {:message-id "c" :folder "INBOX-unflagged" :protect? false}))
+            "A category without a flag does not look at flags")
+        (is (= :missing (trash! {:message-id "d" :folder "INBOX-empty" :protect? true}))
+            "An e-mail the user moved elsewhere stays where it is")
+        (is (= :trashed (trash! {:message-id "e" :folder "Trash" :protect? true}))
+            "An e-mail already in the trash is only recorded")
+        (is (= :elsewhere (trash-one! folder-named category-folder-of "Trash"
+                                      {:message-id "f" :folder "Sent" :category "INBOX-flagged" :protect? false}))
+            "Only the folder Plauna files the category into is cleaned up, never an archive or the sent folder")
+        (is (= [["a" "Trash"] ["c" "Trash"] ["e" "Trash"]] @marked))
+        (is (= [1 1] @moved))))))
+
+(deftest a-vanished-folder-counts-as-missing-not-failed
+  (let [tally @#'client/tally
+        released (atom [])]
+    (is (= {:missing 1 :failed 1 :flagged 1}
+           (tally [{:message-id "a" :folder "Gone"} {:message-id "b" :folder "Broken"} {:message-id "c" :folder "INBOX"}]
+                  #(swap! released conj %)
+                  (fn [{:keys [folder]}]
+                    (case folder
+                      "Gone" (throw (jakarta.mail.FolderNotFoundException.))
+                      "Broken" (throw (ex-info "server said NO" {}))
+                      :flagged)))))
+    (is (= #{"Gone" "Broken" "INBOX"} (set @released)) "Every folder is released after its e-mails")))
+
+(deftest the-shallowest-trash-name-wins-without-special-use
+  (is (= "Trash"
+         (client/trash-folder-name (store-with-folders \/ [(listed-folder "Categories/Trash" [])
+                                                           (listed-folder "Trash" [])])))))
+
+(deftest the-flag-changes-only-after-a-successful-move
+  (let [move! @#'client/move-message-between-open-folders!
+        flagged (atom [])
+        source (folder-finding [(message-flagged true)])
+        target (folder-finding [(message-flagged true)])]
+    (with-redefs [client/set-category-flag! (fn [folder _ color] (swap! flagged conj [(if (identical? folder target) :target :source) color]))
+                  db/update-email-folder (fn [& _] nil)
+                  db/update-email-connection (fn [& _] nil)]
+      (with-redefs [client/move-found-messages! (fn [& _] false)]
+        (is (false? (move! "c1" source target "INBOX" "Work" "<m@x>" :clear)))
+        (is (= [] @flagged) "A failed move keeps the old flag, matching the unchanged category"))
+      (with-redefs [client/move-found-messages! (fn [& _] true)]
+        (is (true? (move! "c1" source target "INBOX" "Work" "<m@x>" "green")))
+        (is (= [[:target "green"]] @flagged) "The flag is set on the moved e-mail in the target folder")))))
+
+(deftest saving-without-a-category-change-leaves-the-flag-alone
+  (let [applied (atom [])]
+    (with-redefs [client/connection-data-from-id (fn [_] {:config {:id "c1" :folder "INBOX"} :store nil})
+                  client/connected? (constantly true)
+                  client/resolve-move-folders (fn [& _] ["INBOX" "INBOX"])
+                  client/category-flag-color (fn [category] ({"parcels" "orange"} category))
+                  client/apply-flags! (fn [_ emails] (swap! applied conj emails) {})
+                  db/update-email-folder (fn [& _] nil)
+                  db/update-email-connection (fn [& _] nil)]
+      (is (true? (client/move-messages-by-id-between-category-folders "c1" "<m@x>" "parcels" "parcels" {})))
+      (is (= [] @applied) "The user may have unflagged it to keep it")
+      (is (true? (client/move-messages-by-id-between-category-folders "c1" "<m@x>" nil "parcels" {})))
+      (is (= [[{:message-id "<m@x>" :folder "INBOX" :flag "orange"}]] @applied)))))

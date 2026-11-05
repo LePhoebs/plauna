@@ -14,6 +14,7 @@
             [plauna.client.oauth :as oauth]
             [plauna.diagnostics :as diagnostics]
             [plauna.core.email :as core-email]
+            [plauna.core.flags :as flags]
             [plauna.database :as db]
             [plauna.db-config :as db-cfg]
             [plauna.db-migration :as db-mig]
@@ -98,10 +99,45 @@
      :category-confidence  (when category-exists (Float/parseFloat (:category-confidence params)))
      :language-confidence (when language-exists (Float/parseFloat (:language-confidence params)))}))
 
-(defn save-metadata-form [params]
-  (let [transformed (flatten-map params)]
-    (dorun (map (fn [x] (let [request (params->update-request x)]
-                          (db/update-metadata (:message-id x) (:category-id request) (:category-confidence request) (:language request) (:language-confidence request)))) transformed))))
+(defn per-connection
+  "Group located e-mails ({:connection-id ...}) by account, call (f connection-id emails) for each
+   account and sum the counts it returns."
+  [emails f]
+  (apply merge-with + {} (for [[connection-id group] (group-by :connection-id emails)]
+                           (f connection-id group))))
+
+(defn sync-flags!
+  "Let the flags of e-mails whose category changed without an IMAP move follow the new category
+   (see plauna.core.flags/flag-change), on a background thread. changes: [{:message-id :old-category-id
+   :new-category-id}]; unchanged categories and e-mails without a known location are skipped."
+  [changes]
+  (let [colors (into {} (map (juxt :id #(flags/valid-color (:flag_color %)))) (db/get-categories))
+        jobs (into []
+                   (keep (fn [{:keys [message-id old-category-id new-category-id]}]
+                           (when (not= old-category-id new-category-id)
+                             (when-let [flag (flags/flag-change (get colors old-category-id) (get colors new-category-id))]
+                               (let [{:keys [folder connection-id]} (db/email-location message-id)]
+                                 (when (and folder connection-id)
+                                   {:message-id message-id :folder folder :connection-id connection-id :flag flag}))))))
+                   changes)]
+    (when (seq jobs)
+      (async/thread
+        (try (per-connection jobs client/apply-flags!)
+             (catch Throwable e (t/log! {:level :warn :error e} "Could not update the flags of recategorized e-mails")))))))
+
+(defn save-metadata-form
+  "Save the language and category fields of a metadata form. With sync-flags? the flags of e-mails
+   whose category changed follow the new category; leave it off when an IMAP move has already done it."
+  ([params] (save-metadata-form params true))
+  ([params sync-flags?]
+   (let [transformed (flatten-map params)
+         changes (mapv (fn [x]
+                         (let [request (params->update-request x)
+                               old-category-id (when sync-flags? (:category-id (db/email-category-state (:message-id x))))]
+                           (db/update-metadata (:message-id x) (:category-id request) (:category-confidence request) (:language request) (:language-confidence request))
+                           {:message-id (:message-id x) :old-category-id old-category-id :new-category-id (:category-id request)}))
+                       transformed)]
+     (when sync-flags? (sync-flags! changes)))))
 
 (defn success-html-with-body [body]
   {:status  200
@@ -735,6 +771,115 @@
   (stop-training-scheduler!)
   (start-training-scheduler!))
 
+;; ── Retention: moving the e-mails of a category to the trash after some days ──────────────────────
+
+(def retention-interval-hours
+  "How often the retention run looks for expired e-mails. Retention is counted in days, so a few runs
+   a day are precise enough."
+  6)
+
+(def retention-initial-delay-minutes
+  "Wait after startup so the run does not compete with connecting and the reconnect back-fill."
+  10)
+
+(defonce ^:private retention-running (atom false))
+
+(defonce ^:private retention-scheduler (atom nil))
+
+(defn- retention-thread-factory []
+  (reify ThreadFactory
+    (newThread [_ runnable]
+      (doto (Thread. ^Runnable runnable "plauna-retention-scheduler")
+        (.setDaemon true)))))
+
+(defn retention-summary-text [{:keys [trashed protected missing elsewhere failed offline no-trash]}]
+  (st/join ", " (remove nil? [(str (or trashed 0) " moved to the trash")
+                             (when (pos? (or protected 0)) (str protected " kept because their flag was removed"))
+                             (when (pos? (or elsewhere 0)) (str elsewhere " kept because they are not in their category's folder"))
+                             (when (pos? (or missing 0)) (str missing " no longer in their folder"))
+                             (when (pos? (or offline 0)) (str offline " waiting for a disconnected account"))
+                             (when (pos? (or no-trash 0)) (str no-trash " kept because the account has no trash folder"))
+                             (when (pos? (or failed 0)) (str failed " failed"))])))
+
+(defn run-retention!
+  "Move every e-mail whose category's retention has run out to the trash of its account. The age is
+   counted from the e-mail's date. When the category also sets a flag color, an e-mail whose flag the
+   user removed in the mail client is kept: taking the flag away is the way to keep one. Plauna keeps
+   the e-mail in its own database as a training example. Returns the summed counts, or nil when a run
+   is already in progress."
+  []
+  (when (compare-and-set! retention-running false true)
+    (try
+      (let [now (quot (System/currentTimeMillis) 1000)
+            expired (into []
+                          (mapcat (fn [{:keys [id name retention_days flag_color]}]
+                                    (when-let [days (app/clean-retention-days retention_days)]
+                                      (let [protect? (some? (flags/valid-color flag_color))]
+                                        (map #(assoc % :protect? protect? :category name)
+                                             (db/expired-emails id (- now (* 86400 (long days)))))))))
+                          (db/get-categories))
+            ;; One dedicated connection per account for the e-mails of every category.
+            totals (per-connection expired client/trash-expired-emails!)]
+        ;; E-mails that are kept stay in the list and are counted on every run: only report real work.
+        (if (some pos? (vals (select-keys totals [:trashed :failed :no-trash])))
+          (t/log! :info ["Retention run:" (retention-summary-text totals)])
+          (t/log! :debug "Retention run: no expired e-mails."))
+        totals)
+      (catch Throwable e
+        (t/log! {:level :error :error e} "The retention run failed.")
+        {:failed 1 :error true})
+      (finally (reset! retention-running false)))))
+
+(defn start-retention-scheduler!
+  "Run run-retention! every retention-interval-hours on a daemon thread. Idempotent."
+  []
+  (locking retention-scheduler
+    (or @retention-scheduler
+        (let [^ScheduledExecutorService executor (Executors/newSingleThreadScheduledExecutor (retention-thread-factory))]
+          (.scheduleWithFixedDelay executor ^Runnable (fn [] (run-retention!))
+                                   (long (* 60 retention-initial-delay-minutes))
+                                   (long (* 3600 retention-interval-hours))
+                                   TimeUnit/SECONDS)
+          (reset! retention-scheduler executor)))))
+
+(defn stop-retention-scheduler! []
+  (locking retention-scheduler
+    (when-let [^ScheduledExecutorService executor @retention-scheduler]
+      (reset! retention-scheduler nil)
+      (.shutdownNow executor))))
+
+(defn start-manual-retention!
+  "Run the retention now on a background thread and report the result as a toast. Returns false when
+   a run is already in progress."
+  []
+  (if @retention-running
+    false
+    (do (async/thread
+          (let [totals (run-retention!)]
+            (cond (nil? totals) (add-to-messages {:type :info :content "A scheduled clean-up was already running; its result is in the log."})
+                  (:error totals) (add-to-messages {:type :alert :content "The clean-up failed. Please see the logs."})
+                  :else (add-to-messages {:type :success :content (str "Clean-up finished: " (retention-summary-text totals) ".")}))))
+        true)))
+
+(defn flag-existing-emails!
+  "Give every stored e-mail of the category its flag color in the mail account, on a background
+   thread, and report the result as a toast."
+  [category]
+  (async/thread
+    (try
+      (let [color (flags/valid-color (:flag_color category))
+            totals (per-connection (map #(assoc % :flag color) (db/categorized-email-locations (:id category)))
+                                   client/apply-flags!)]
+        (add-to-messages {:type :success
+                          :content (str "Flagged the e-mails of " (:name category) ": " (or (:flagged totals) 0) " flagged"
+                                        (when (pos? (or (:missing totals) 0)) (str ", " (:missing totals) " no longer in their folder"))
+                                        (when (pos? (or (:offline totals) 0)) (str ", " (:offline totals) " in a disconnected account"))
+                                        (when (pos? (or (:failed totals) 0)) (str ", " (:failed totals) " failed"))
+                                        ".")}))
+      (catch Throwable e
+        (t/log! {:level :error :error e} ["Flagging the e-mails of" (:name category) "failed"])
+        (add-to-messages {:type :alert :content "Flagging failed. Please see the logs."})))))
+
 (defn categorize-email [email]
   (let [category (analysis/category-for-email email (-> email :metadata :language))
         matched  (analysis/label->category (:name category))]
@@ -759,12 +904,18 @@
                                   (assoc (categorize-email email)
                                          :message-id (-> email :header :message-id)))
                                 uncategorized-emails)]
-        (count
-         (for [trained-email trained-emails
-               ;; Below-threshold results come back with a nil category; skip them instead of
-               ;; overwriting the row with category nil / confidence 0.
-               :when (some? (:id trained-email))]
-           (db/update-metadata-category (:message-id trained-email) (:id trained-email) (:confidence trained-email))))))))
+        (let [categorized (into []
+                                (comp
+                                 ;; Below-threshold results come back with a nil category; skip them instead
+                                 ;; of overwriting the row with category nil / confidence 0.
+                                 (filter #(some? (:id %)))
+                                 (map (fn [trained-email]
+                                        (db/update-metadata-category (:message-id trained-email) (:id trained-email) (:confidence trained-email))
+                                        trained-email)))
+                                trained-emails)]
+          ;; They were uncategorized: a category with a flag marks them like any e-mail it files.
+          (sync-flags! (mapv (fn [e] {:message-id (:message-id e) :old-category-id nil :new-category-id (:id e)}) categorized))
+          (count categorized))))))
 
 (defn mime-type-statistics []
   ;; Header MIME type represents one value per e-mail. Counting body parts here would count multipart
@@ -1337,10 +1488,12 @@
         force? (contains? #{true "true"} (:force params))
         new-category-id (when (seq category) (Integer/parseInt category))]
     (cond
-      ;; Clearing the category never needs an IMAP move.
+      ;; Clearing the category never needs an IMAP move, but Plauna's flag goes with the category.
       (nil? new-category-id)
-      (do (db/update-metadata-category message-id nil 1.0)
-          {:status 204})
+      (let [old-category-id (:category-id (db/email-category-state message-id))]
+        (db/update-metadata-category message-id nil 1.0)
+        (sync-flags! [{:message-id message-id :old-category-id old-category-id :new-category-id nil}])
+        {:status 204})
 
       ;; The user explicitly confirmed that the message is gone. Only update Plauna's metadata.
       force?
@@ -1604,17 +1757,59 @@
      (if-let [problem (app/category-name-problem (:name params))]
        (do (add-to-messages {:type :alert :content problem})
            (redirect "/admin/categories" 303))
-       (do (app/create-new-category! context (st/trim (:name params)) (:destination-folder params) (:color params))
+       (do (app/create-new-category! context (st/trim (:name params)) (:destination-folder params) (:color params)
+                                     {:flag-color (:flag-color params) :retention-days (:retention-days params)})
            (analysis/clear-reference-cache!)
            (redirect "/admin/categories" 303))))
 
+   (comp/POST "/admin/categories/clean-up" {}
+     (add-to-messages (if (start-manual-retention!)
+                        {:type :info :content "Moving expired e-mails to the trash in the background."}
+                        {:type :info :content "A clean-up is already running."}))
+     (redirect "/admin/categories" 303))
+
+   (comp/POST "/admin/categories/:id/flag" {route-params :route-params}
+     (let [category (some-> (parse-long (str (:id route-params))) db/category-by-id)]
+       (cond (nil? category)
+             (add-to-messages {:type :alert :content "Unknown category."})
+             (nil? (flags/valid-color (:flag_color category)))
+             (add-to-messages {:type :alert :content "This category has no flag color."})
+             :else
+             (do (flag-existing-emails! category)
+                 (add-to-messages {:type :info :content (str "Flagging the e-mails of " (:name category) " in the background.")})))
+       (redirect "/admin/categories" 303)))
+
    (comp/POST "/admin/categories/:id" {route-params :route-params params :params}
-     (app/update-category! context (:id route-params) (:name params) (:destination-folder params) (:color params))
+     (let [id (parse-long (str (:id route-params)))
+           old-category (some-> id db/category-by-id)
+           old-color (flags/valid-color (:flag_color old-category))
+           ;; A form rendered before these fields existed (a tab left open across an update) must not
+           ;; erase them.
+           new-color (if (contains? params :flag-color) (:flag-color params) old-color)
+           retention-days (if (contains? params :retention-days) (:retention-days params) (:retention_days old-category))]
+       (app/update-category! context (:id route-params) (:name params) (:destination-folder params) (:color params)
+                             {:flag-color new-color :retention-days retention-days})
+       ;; A category that stops flagging takes its flags away. A new color is not pushed onto existing
+       ;; e-mails automatically: that would re-flag the ones the user unflagged to keep them.
+       (when (and (some? old-color) (nil? (flags/valid-color new-color)))
+         (let [flagged (mapv #(assoc % :flag :clear) (db/categorized-email-locations id))]
+           (when (seq flagged)
+             (async/thread
+               (try (per-connection flagged client/apply-flags!)
+                    (catch Throwable e (t/log! {:level :warn :error e} "Could not remove the flags of the category"))))))))
      (analysis/clear-reference-cache!)
      (redirect "/admin/categories" 303))
 
    (comp/DELETE "/admin/categories/:id" {route-params :route-params}
-     (db/delete-category-by-id (Integer/parseInt (:id route-params)))
+     (let [id (Integer/parseInt (:id route-params))
+           ;; The e-mails lose their category below: take Plauna's flag away with it.
+           flagged (when (flags/valid-color (:flag_color (db/category-by-id id)))
+                     (mapv #(assoc % :flag :clear) (db/categorized-email-locations id)))]
+       (db/delete-category-by-id id)
+       (when (seq flagged)
+         (async/thread
+           (try (per-connection flagged client/apply-flags!)
+                (catch Throwable e (t/log! {:level :warn :error e} "Could not remove the flags of the deleted category"))))))
      (analysis/clear-reference-cache!)
      (redirect "/admin/categories" 303))
 
@@ -1662,7 +1857,8 @@
              process (app/move-email-to-category email-before-update new-category-name context)]
          (if (= :error (:result process))
            (add-to-messages (:message process))
-           (save-metadata-form (:params request))))
+           ;; The move already gave the e-mail the flag of its new category.
+           (save-metadata-form (:params request) false)))
        (save-metadata-form (:params request)))
      (redirect-to-referer request))
 

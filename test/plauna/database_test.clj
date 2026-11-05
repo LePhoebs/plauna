@@ -389,3 +389,46 @@
          (db/mariadb-jdbc-url {:host "db" :port 3306 :name "plauna" :ssl-mode "  "})))
   (is (= "jdbc:mariadb://db:3306/plauna?sslMode=verify-full"
          (db/mariadb-jdbc-url {:host "db" :port 3306 :name "plauna" :ssl-mode " verify-full "}))))
+
+(deftest expired-emails-are-old-located-and-not-yet-trashed
+  (let [cat (ensure-category "retention-cat")
+        other (ensure-category "retention-other")]
+    (db/save-headers [{:mime-type "text/plain" :subject "old" :message-id "ret-old" :date 100 :in-reply-to nil}
+                      {:mime-type "text/plain" :subject "new" :message-id "ret-new" :date 1000 :in-reply-to nil}
+                      {:mime-type "text/plain" :subject "nowhere" :message-id "ret-nowhere" :date 50 :in-reply-to nil}
+                      {:mime-type "text/plain" :subject "other" :message-id "ret-other" :date 10 :in-reply-to nil}])
+    (db/update-metadata-batch [{:message-id "ret-old" :language "eng" :language-confidence 0.9 :category-id cat :category-confidence 0.9 :connection-id "conn-ret"}
+                               {:message-id "ret-new" :language "eng" :language-confidence 0.9 :category-id cat :category-confidence 0.9 :connection-id "conn-ret"}
+                               {:message-id "ret-nowhere" :language "eng" :language-confidence 0.9 :category-id cat :category-confidence 0.9 :connection-id "conn-ret"}
+                               {:message-id "ret-other" :language "eng" :language-confidence 0.9 :category-id other :category-confidence 0.9 :connection-id "conn-ret"}])
+    (db/update-email-folder "ret-old" "INBOX")
+    (db/update-email-folder "ret-new" "INBOX")
+    (db/update-email-folder "ret-other" "INBOX")
+    (is (= [{:message-id "ret-old" :folder "INBOX" :connection-id "conn-ret"}] (db/expired-emails cat 500))
+        "Only e-mails of the category, older than the cutoff and with a known folder")
+    (is (= #{"ret-old" "ret-new"} (set (map :message-id (db/categorized-email-locations cat)))))
+    (db/mark-email-expired! "ret-old" "Trash")
+    (is (= [] (db/expired-emails cat 500)) "A trashed e-mail is not trashed again")
+    (is (= "Trash" (db/email-folder "ret-old")))
+    (is (= #{"ret-new"} (set (map :message-id (db/categorized-email-locations cat)))))))
+
+(deftest categories-keep-their-flag-color-and-retention
+  (db/create-category "flagged-cat" "INBOX" "#112233" "orange" 30)
+  (let [{:keys [id flag_color retention_days destination_folder]} (db/category-by-name "flagged-cat")]
+    (is (= ["orange" 30 "INBOX"] [flag_color retention_days destination_folder]))
+    (db/update-category id nil "#112233" nil nil)
+    (is (= [nil nil] ((juxt :flag_color :retention_days) (db/category-by-id id))))))
+
+(deftest trashed-emails-are-left-out-of-batch-and-folder-moves
+  (let [cat (ensure-category "batch-ret-cat")]
+    (db/save-headers [{:mime-type "text/plain" :subject "a" :message-id "bt-kept" :date 5 :in-reply-to nil}
+                      {:mime-type "text/plain" :subject "b" :message-id "bt-trashed" :date 4 :in-reply-to nil}])
+    (db/update-metadata-batch [{:message-id "bt-kept" :language "eng" :language-confidence 0.9 :category-id cat :category-confidence 0.9 :connection-id "conn-bt"}
+                               {:message-id "bt-trashed" :language "eng" :language-confidence 0.9 :category-id cat :category-confidence 0.9 :connection-id "conn-bt"}])
+    (db/update-email-folder "bt-kept" "Trash")
+    (db/create-parse-batch! {:id "batch-ret" :connection-id "conn-bt" :folder "INBOX" :batch-size 10})
+    (db/record-parse-batch-email! "batch-ret" "bt-kept")
+    (db/record-parse-batch-email! "batch-ret" "bt-trashed")
+    (db/mark-email-expired! "bt-trashed" "Trash")
+    (is (= ["bt-kept"] (db/parse-batch-message-ids "batch-ret")) "Moving the batch must not pull a trashed e-mail back out")
+    (is (= ["bt-kept"] (db/categorized-message-ids-in-folder "conn-bt" "Trash")))))

@@ -909,3 +909,53 @@
     (is (valid? :category-folder-scan-interval "300"))
     (is (not (valid? :category-folder-scan-interval "-5")))
     (is (not (valid? :category-folder-scan-interval "soon")))))
+
+(deftest retention-trashes-expired-emails-per-account-and-protects-by-flag
+  (let [calls (atom [])
+        cutoffs (atom {})
+        now (quot (System/currentTimeMillis) 1000)]
+    (with-redefs [db/get-categories (fn [] [{:id 1 :name "parcels" :retention_days 30 :flag_color "orange"}
+                                            {:id 2 :name "receipts" :retention_days 7 :flag_color nil}
+                                            {:id 3 :name "newsletter" :retention_days nil}])
+                  db/expired-emails (fn [category-id cutoff]
+                                      (swap! cutoffs assoc category-id cutoff)
+                                      (case category-id
+                                        1 [{:message-id "a" :folder "INBOX" :connection-id "c1"}
+                                           {:message-id "b" :folder "INBOX" :connection-id "c2"}]
+                                        2 [{:message-id "c" :folder "INBOX" :connection-id "c1"}]))
+                  client/trash-expired-emails! (fn [connection-id emails]
+                                                 (swap! calls conj [connection-id (mapv (juxt :message-id :protect? :category) emails)])
+                                                 (if (= "c2" connection-id)
+                                                   {:failed (count emails)}
+                                                   {:trashed (count emails)}))]
+      (is (= {:trashed 2 :failed 1} (server/run-retention!)) "A failing account does not stop the others")
+      (is (= #{["c1" [["a" true "parcels"] ["c" false "receipts"]]] ["c2" [["b" true "parcels"]]]} (set @calls))
+          "One call per account for all categories; a category with a flag protects unflagged e-mails")
+      (is (= #{1 2} (set (keys @cutoffs))) "A category without retention is never looked at")
+      (is (<= (- now (* 30 86400) 5) (get @cutoffs 1) (- (+ now 5) (* 30 86400)))))))
+
+(deftest retention-summary-names-what-was-kept
+  (is (= "2 moved to the trash, 1 kept because their flag was removed"
+         (server/retention-summary-text {:trashed 2 :protected 1})))
+  (is (= "0 moved to the trash, 4 kept because the account has no trash folder"
+         (server/retention-summary-text {:no-trash 4}))))
+
+(deftest flags-follow-a-category-change-without-a-move
+  (let [applied (atom [])
+        done (promise)]
+    (with-redefs [db/get-categories (fn [] [{:id 1 :name "parcels" :flag_color "orange"}
+                                            {:id 2 :name "newsletter" :flag_color nil}])
+                  db/email-location (fn [message-id] (when-not (= "unknown" message-id)
+                                                       {:folder "INBOX" :connection-id "c1"}))
+                  client/apply-flags! (fn [connection-id emails]
+                                        (swap! applied conj [connection-id (mapv (juxt :message-id :flag) emails)])
+                                        (deliver done true)
+                                        {:flagged (count emails)})]
+      (server/sync-flags! [{:message-id "cleared" :old-category-id 1 :new-category-id nil}
+                           {:message-id "to-parcels" :old-category-id 2 :new-category-id 1}
+                           {:message-id "unchanged" :old-category-id 1 :new-category-id 1}
+                           {:message-id "unflagged" :old-category-id 2 :new-category-id nil}
+                           {:message-id "unknown" :old-category-id nil :new-category-id 1}])
+      (is (true? (deref done 5000 false)))
+      (is (= [["c1" [["cleared" :clear] ["to-parcels" "orange"]]]] @applied)
+          "Only changed categories that involve a flag, and only e-mails whose location is known"))))

@@ -154,7 +154,7 @@
 (deftest create-a-category
   (let [db-called (atom false)
         client-called (atom false)
-        database (reify int/DB (save-category [_ _ _ _] (swap! db-called (fn [_] true))))
+        database (reify int/DB (save-category [_ _ _ _ _ _] (swap! db-called (fn [_] true))))
         client (reify int/EmailClient
                  (connections [_] {"does not matter" "some-data"})
                  (create-category-directories! [_ _ _] (swap! client-called (fn [_] true))))]
@@ -165,7 +165,7 @@
 
 (deftest create-category-passes-through-a-valid-color
   (let [captured-color (atom :not-called)
-        database (reify int/DB (save-category [_ _ _ color] (reset! captured-color color)))
+        database (reify int/DB (save-category [_ _ _ color _ _] (reset! captured-color color)))
         client (reify int/EmailClient
                  (connections [_] {})
                  (create-category-directories! [_ _ _] nil))]
@@ -175,7 +175,7 @@
 
 (deftest create-category-drops-an-invalid-color
   (let [captured-color (atom :not-called)
-        database (reify int/DB (save-category [_ _ _ color] (reset! captured-color color)))
+        database (reify int/DB (save-category [_ _ _ color _ _] (reset! captured-color color)))
         client (reify int/EmailClient
                  (connections [_] {})
                  (create-category-directories! [_ _ _] nil))]
@@ -187,11 +187,11 @@
 
 (deftest update-category-passes-through-destination-and-color
   (let [captured (atom nil)
-        database (reify int/DB (update-category [_ id destination-folder color] (reset! captured [id destination-folder color])))
+        database (reify int/DB (update-category [_ id destination-folder color _ _] (reset! captured [id destination-folder color])))
         client (reify int/EmailClient
                  (connections [_] {})
                  (create-category-directories! [_ _ _] nil))]
-    (app/update-category! {:db database :client client} "7" "test" "Archive/Test" "#ff0000")
+    (app/update-category! {:db database :client client} "7" "test" "Archive/Test" "#ff0000" {})
     (is (= ["7" "Archive/Test" "#ff0000"] @captured)))
   "update-category! forwards the trimmed destination folder and the validated color")
 
@@ -1339,3 +1339,32 @@
   (is (some? (app/category-name-problem "News*")))
   (is (some? (app/category-name-problem "Tab\there")))
   "Category names become IMAP folder names and must not carry separators, wildcards or control characters")
+
+(deftest retention-days-are-whole-days-within-bounds
+  (is (= 30 (app/clean-retention-days "30")))
+  (is (= 30 (app/clean-retention-days " 30 ")))
+  (is (= 7 (app/clean-retention-days 7)))
+  (is (= 3650 (app/clean-retention-days "3650")))
+  (is (nil? (app/clean-retention-days "")))
+  (is (nil? (app/clean-retention-days nil)))
+  (is (nil? (app/clean-retention-days "0")) "Zero days would trash every e-mail at once")
+  (is (nil? (app/clean-retention-days "-5")))
+  (is (nil? (app/clean-retention-days "3651")))
+  (is (nil? (app/clean-retention-days "2.5")))
+  (is (nil? (app/clean-retention-days "abc"))))
+
+(deftest category-flag-and-retention-are-validated-before-saving
+  (let [captured (atom nil)
+        database (reify int/DB
+                   (save-category [_ _ _ _ flag-color retention-days] (reset! captured [:save flag-color retention-days]))
+                   (update-category [_ _ _ _ flag-color retention-days] (reset! captured [:update flag-color retention-days])))
+        client (reify int/EmailClient
+                 (connections [_] {})
+                 (create-category-directories! [_ _ _] nil))
+        context {:db database :client client}]
+    (app/create-new-category! context "Parcels" "INBOX" nil {:flag-color "orange" :retention-days "30"})
+    (is (= [:save "orange" 30] @captured))
+    (app/update-category! context "3" "Parcels" "INBOX" nil {:flag-color "pink" :retention-days "0"})
+    (is (= [:update nil nil] @captured) "An unknown color means no flag, an invalid retention keeps forever")
+    (app/update-category! context "3" "Parcels" "INBOX" nil {:flag-color "" :retention-days ""})
+    (is (= [:update nil nil] @captured) "Blank fields mean no flag and keeping forever")))

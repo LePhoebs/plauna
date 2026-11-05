@@ -229,7 +229,8 @@
       (start-connection-retries! context)
       (events/start-event-loops event-register)
       (server/start-server context)
-      (server/start-training-scheduler!))))
+      (server/start-training-scheduler!)
+      (server/start-retention-scheduler!))))
 
 (comment
   (server/start-server {:config {:server {:port 8080}}})

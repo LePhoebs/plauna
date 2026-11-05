@@ -40,6 +40,10 @@ You can parse your e-mails from mbox files or directly by connecting to your IMA
 
 - Per-category destination folders: choose exactly which IMAP folder each category's mail is moved to.
 
+- Apple Mail flags per category: mark a category's e-mails with a colored flag - for example to keep parcel notices in the inbox but recognizable at a glance.
+
+- Automatic clean-up per category: move a category's e-mails to the trash a chosen number of days after their date.
+
 - Learning from your mail client: move an e-mail into a category folder in Outlook, Thunderbird or on your phone, and Plauna gives it that category - as if you had changed it in Plauna's own UI, so the next training learns from it. E-mails Plauna did not know yet are saved with that category.
 
 - Responsive web UI that also works on mobile, so you can recategorize e-mails on the go.
@@ -440,6 +444,23 @@ Note that a mail-server filter (e.g. Sieve) delivering new mail directly into a 
 *** Category Colors
 
 Each category has a color, set with a color picker in "Admin" -> "Categories" (both on the "New Category" form and next to each existing category). The category dropdown on the e-mail list and on an e-mail's details page is color-coded with a left border matching the currently selected category, and on the e-mail list the category's color also tints the whole row at low opacity, so you can tell categories apart at a glance without it overpowering the row's text. A category created before this feature, or one for which an invalid color was submitted, falls back to a neutral gray.
+
+*** Flags and Automatic Clean-up
+
+Two more settings per category in "Admin" -> "Categories" cover e-mails that belong in the inbox but are no longer needed after a while, such as shipping notices or account confirmations.
+
+*Flag:* Plauna marks every e-mail it files in the category with an Apple Mail flag of the chosen color. Apple Mail on macOS and iOS shows the color, other mail programs show a plain flag. Plauna sets the IMAP flag =\Flagged= and stores the color in the keywords =$MailFlagBit0= to =$MailFlagBit2=, as Apple Mail itself does. A server that does not keep custom keywords only gets the plain flag. To leave the e-mails in the inbox and only flag them, use =INBOX= as the category's destination folder (see [[*Destination Folders][Destination Folders]]).
+
+- When an e-mail's category changes - in Plauna, also when you clear it, when the trained model categorizes a stored e-mail, or when you move it into a category folder in your mail program - its flag follows: a category with a flag gives the e-mail its color, and leaving a flagged category for one without a flag removes Plauna's flag. Deleting a category, or removing its flag color, removes the flag from its e-mails as well. A flag you set yourself on an e-mail of a category without a flag is left alone.
+- Setting or changing a category's flag color affects only e-mails filed from then on, so e-mails you unflagged to keep them stay unflagged. "Flag existing e-mails" next to the category flags every e-mail Plauna filed in it, including those.
+
+*Days until trash:* Plauna moves the e-mails of the category to the trash folder of their account this many days after their date (the =Date= header). Only e-mails in the folder Plauna files the category into are affected - its destination folder, =INBOX= for a category kept in the inbox. E-mails of the category that Plauna only read elsewhere, for example in an archive or the sent folder, are never touched. It looks for expired e-mails ten minutes after startup and then every six hours; "Move expired e-mails to the trash now" starts a run at once. Leave the field empty to keep the e-mails forever.
+
+- The trash is the folder the server marks as =\Trash=; without that marking, a folder named for example =Trash=, =Deleted Messages= or =Papierkorb=. An account without a trash folder keeps all its e-mails - Plauna never deletes e-mails permanently. They stay in the trash until you or your mail server empty it.
+- An e-mail is kept if you moved it to another folder. If the category also has a flag, removing the flag in your mail program keeps the e-mail too - that is the way to hold on to a single one. Plauna cannot tell an e-mail you unflagged from one that never had a flag (filed before the category got its color, for instance), so those are kept as well until you use "Flag existing e-mails". Conversely, once a category has no flag color any more, unflagged e-mails are no longer protected.
+- Only e-mails whose folder and account Plauna knows are cleaned up, which are the e-mails it received or filed itself.
+- Plauna finds an e-mail in the mailbox by its =Message-ID= header. An e-mail without one cannot be found there, so it is neither flagged later nor moved to the trash - the same limit applies to recategorizing it.
+- Plauna keeps a trashed e-mail in its own database, so it still serves as a training example for the category.
 
 *** Categorize E-mails
 

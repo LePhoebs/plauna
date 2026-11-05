@@ -317,3 +317,15 @@
       (let [html (markup/list-email-contents {:header {:message-id "m" :date 0} :metadata {:category-id 1} :participants [] :body []}
                                              [{:id 1 :name "Bills"}] nil)]
         (is (not (str/includes? html "Model Scores")))))))
+
+(deftest categories-page-offers-flag-colors-and-retention
+  (with-redefs [client/disconnected-connections (fn [] [])]
+    (let [html (markup/categories-page [{:id 1 :name "parcels" :color "#112233" :destination_folder "INBOX" :flag_color "orange" :retention_days 30}
+                                        {:id 2 :name "newsletter" :color nil :destination_folder nil :flag_color nil :retention_days nil}])]
+      (is (str/includes? html "name=\"flag-color\""))
+      (is (str/includes? html "value=\"orange\" selected"))
+      (is (str/includes? html "name=\"retention-days\""))
+      (is (str/includes? html "value=\"30\""))
+      (is (str/includes? html "action=\"/admin/categories/1/flag\"") "A flagged category offers to flag its existing e-mails")
+      (is (not (str/includes? html "action=\"/admin/categories/2/flag\"")))
+      (is (str/includes? html "action=\"/admin/categories/clean-up\"")))))
