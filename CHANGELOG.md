@@ -33,6 +33,8 @@ All notable changes to this project will be documented in this file.
 - Training reads the e-mails in a stable order, so paging cannot skip or repeat e-mails.
 - A database error while resolving a predicted category no longer loses an e-mail being imported.
 - The connection delete dialog was titled "Delete Category".
+- The dialog for an e-mail missing on the mail server was the only German text in the English UI
+  ("E-Mail konnte nicht gefunden werden …", "Ja"/"Nein"); it is English now.
 - The language re-detection wrote back the whole metadata row it had read earlier, so a category
   changed meanwhile was reverted. It now writes only the language. It also got a button under
   "Admin" → "Languages"; before, it was only reachable as a bare POST.

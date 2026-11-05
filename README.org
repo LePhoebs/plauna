@@ -479,7 +479,7 @@ Changes in the list are saved *immediately* when you change a field - there is n
 
 Each field briefly outlines itself to show the result: green when fully saved, amber when the category could not be moved (and was therefore not saved), and red on unexpected failure.
 
-If the IMAP message can no longer be found because it was deleted or moved outside Plauna, a nearby dialog asks "E-Mail konnte nicht gefunden werden. Trotzdem Kategorie ändern?". Choose "Ja" to update only Plauna's stored category or "Nein" to keep the previous value. Other IMAP failures are not overridden by this dialog.
+If the IMAP message can no longer be found because it was deleted or moved outside Plauna, a nearby dialog asks "The e-mail was not found on the mail server. Change its category anyway?". Choose "Yes" to update only Plauna's stored category or "No" to keep the previous value. Other IMAP failures are not overridden by this dialog.
 
 On an e-mail's details page, the "Contents" section has a *Re-fetch from server* button. It re-reads that message from your IMAP server and fills in data that could not be extracted when the e-mail was first read - for example body text that was missed by an earlier parsing bug, and the detected language if it had never been set. Existing content and a language you set yourself are left untouched. The message is located by its Message-ID across your connected accounts, so the account must be connected for this to work.
 
