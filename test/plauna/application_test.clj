@@ -1368,3 +1368,8 @@
     (is (= [:update nil nil] @captured) "An unknown color means no flag, an invalid retention keeps forever")
     (app/update-category! context "3" "Parcels" "INBOX" nil {:flag-color "" :retention-days ""})
     (is (= [:update nil nil] @captured) "Blank fields mean no flag and keeping forever")))
+
+(deftest category-names-must-be-unique-ignoring-case
+  (is (some? (app/category-name-problem "work" ["Work" "Invoices"])) "Work and work would share one IMAP folder")
+  (is (some? (app/category-name-problem " Invoices " ["Work" "Invoices"])))
+  (is (nil? (app/category-name-problem "Parcels" ["Work" "Invoices"]))))

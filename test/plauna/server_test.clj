@@ -959,3 +959,18 @@
       (is (true? (deref done 5000 false)))
       (is (= [["c1" [["cleared" :clear] ["to-parcels" "orange"]]]] @applied)
           "Only changed categories that involve a flag, and only e-mails whose location is known"))))
+
+(deftest redirect-targets-refuse-control-characters
+  (is (= "/fallback" (server/safe-redirect-path "/\t/evil.example" "/fallback")) "Browsers strip the tab: //evil.example")
+  (is (= "/fallback" (server/safe-redirect-path "/\n/evil.example" "/fallback")))
+  (is (= "/emails?page=2" (server/safe-redirect-path "/emails?page=2" "/fallback"))))
+
+(deftest only-one-event-bus-job-runs-at-a-time
+  (let [claim! @#'server/claim-event-bus-job!
+        release! @#'server/release-event-bus-job!]
+    (release!)
+    (try
+      (is (true? (claim! :mbox-import)))
+      (is (= :busy (server/start-language-redetection!)) "A re-detection waits for the running import")
+      (is (false? (claim! :mbox-import)))
+      (finally (release!)))))

@@ -523,3 +523,51 @@
       (is (= [] @applied) "The user may have unflagged it to keep it")
       (is (true? (client/move-messages-by-id-between-category-folders "c1" "<m@x>" nil "parcels" {})))
       (is (= [[{:message-id "<m@x>" :folder "INBOX" :flag "orange"}]] @applied)))))
+
+(deftest a-failed-incoming-move-takes-the-flag-away-again
+  (let [source (folder-with-permanent-flags true)
+        message (Mockito/mock IMAPMessage)
+        calls (atom [])]
+    (with-redefs [client/connection-data-from-id (fn [_] {:config {:folder "INBOX"}})
+                  client/inbox-or-category-folder-name (fn [& _] "Categories/Parcels")
+                  client/category-flag-color (constantly "orange")
+                  client/set-category-flag! (fn [_ _ color] (swap! calls conj color))
+                  client/move-message-to-folder (fn [& _] nil)]
+      (is (nil? (client/move-message "c1" message source "parcels")))
+      (is (= ["orange" :clear] @calls)))
+    (reset! calls [])
+    (with-redefs [client/connection-data-from-id (fn [_] {:config {:folder "INBOX"}})
+                  client/inbox-or-category-folder-name (fn [& _] "INBOX")
+                  client/category-flag-color (constantly "orange")
+                  client/set-category-flag! (fn [_ _ color] (swap! calls conj color))
+                  client/move-message-to-folder (fn [& _] "INBOX")]
+      (is (= "INBOX" (client/move-message "c1" message source "parcels")))
+      (is (= ["orange"] @calls) "A message filed in place keeps its flag"))))
+
+(deftest a-dedicated-store-keeps-only-a-few-folders-open
+  (let [opened (atom [])
+        closed (atom [])
+        store (Mockito/mock Store)]
+    (with-redefs [client/login (fn [& _] store)
+                  client/oauth2? (constantly false)
+                  client/open-folder-in-store (fn [_ name] (swap! opened conj name) (Mockito/mock IMAPFolder))
+                  client/close-folder-without-expunge! (fn [_] (swap! closed conj :closed))]
+      (#'client/with-dedicated-store {}
+       (fn [_ folder-named _]
+         (doseq [name ["A" "B" "C" "D" "A" "E" "F"]] (folder-named name))))
+      (is (= ["A" "B" "C" "D" "E" "F"] @opened) "A folder still open is reused")
+      (is (= 6 (count @closed)) "Two were closed early to stay within the limit, the rest at the end"))))
+
+(deftest oauth-refreshes-are-serialized-and-reused
+  (let [calls (atom 0)]
+    (with-redefs [client/refresh-access-token! (fn [_] (swap! calls inc) (Thread/sleep 50) true)]
+      (let [config {:id (str "oauth-" (random-uuid))}
+            threads (doall (repeatedly 5 #(future (client/refresh-access-token config))))]
+        (run! deref threads)
+        (is (= 1 @calls) "Five concurrent Stores of one account share one refresh")))
+    (with-redefs [client/refresh-access-token! (fn [_] (swap! calls inc) false)]
+      (let [config {:id (str "oauth-" (random-uuid))}]
+        (reset! calls 0)
+        (client/refresh-access-token config)
+        (client/refresh-access-token config)
+        (is (= 2 @calls) "A failed refresh is retried on the next call")))))

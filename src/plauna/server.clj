@@ -133,8 +133,10 @@
    (let [transformed (flatten-map params)
          changes (mapv (fn [x]
                          (let [request (params->update-request x)
-                               old-category-id (when sync-flags? (:category-id (db/email-category-state (:message-id x))))]
+                               old-category-id (:category-id (db/email-category-state (:message-id x)))]
                            (db/update-metadata (:message-id x) (:category-id request) (:category-confidence request) (:language request) (:language-confidence request))
+                           (when (not= old-category-id (:category-id request))
+                             (db/clear-email-expiry! (:message-id x)))
                            {:message-id (:message-id x) :old-category-id old-category-id :new-category-id (:category-id request)}))
                        transformed)]
      (when sync-flags? (sync-flags! changes)))))
@@ -151,7 +153,10 @@
   [target default]
   ;; A backslash is excluded as second character too: browsers normalise \"/\\\\evil.example\" to the
   ;; protocol-relative \"//evil.example\".
+  ;; Control characters are refused as well: browsers strip tabs and newlines while parsing a URL, so
+  ;; "/\t/evil.example" would become "//evil.example".
   (if (and (string? target)
+           (not (re-find #"[\x00-\x1f\x7f]" target))
            (re-matches #"/(?:[^/\\].*)?" target))
     target
     default))
@@ -226,23 +231,49 @@
 
 (defn- auth-provider-fields [params] (select-keys params auth-provider-columns))
 
+(defonce ^:private event-bus-job
+  ;; The mbox import and the language re-detection push work through the shared event bus, each held
+  ;; back by a limiter that counts events by TYPE. Two of them at once would release each other's
+  ;; tokens, flood the bus and can deadlock it - so only one runs at a time.
+  (atom nil))
+
+(defn- claim-event-bus-job!
+  "Claim the event bus for the job described by what; false when another job holds it."
+  [what]
+  (compare-and-set! event-bus-job nil what))
+
+(defn- release-event-bus-job! [] (reset! event-bus-job nil))
+
+(def event-bus-busy-message
+  {:type :info :content "Another mbox import or language re-detection is still running. Please try again when it has finished."})
+
 (defn- start-mbox-import!
   "Parse an uploaded mbox on a background thread and report the outcome as a toast. The multipart
    temp file is moved into Plauna's data folder first: the upload middleware deletes its temp files
-   after a while, which could cut a long import short. The copy is removed when the import ends."
+   after a while, which could cut a long import short. The copy is removed when the import ends.
+   Returns false without doing anything while another event-bus job runs."
   [^java.io.File temp-file original-name]
-  (let [target (io/file (files/file-dir) (str "import-" (UUID/randomUUID) ".mbox"))]
-    (io/make-parents target)
-    (when-not (.renameTo temp-file target)
-      (io/copy temp-file target))
-    (async/thread
+  (if-not (claim-event-bus-job! :mbox-import)
+    false
+    (let [target (io/file (files/file-dir) (str "import-" (UUID/randomUUID) ".mbox"))]
       (try
-        (files/read-emails-from-mbox (io/input-stream target) @messaging/main-chan)
-        (add-to-messages {:type :success :content (str "Finished reading the mbox file " original-name ". Its e-mails are being categorized and saved.")})
+        (io/make-parents target)
+        (when-not (.renameTo temp-file target)
+          (io/copy temp-file target))
         (catch Throwable e
-          (t/log! {:level :error :error e} ["Importing the mbox file" original-name "failed"])
-          (add-to-messages {:type :alert :content (str "Importing the mbox file " original-name " failed. Please see the logs.")}))
-        (finally (io/delete-file target true))))))
+          (release-event-bus-job!)
+          (throw e)))
+      (async/thread
+        (try
+          (files/read-emails-from-mbox (io/input-stream target) @messaging/main-chan)
+          (add-to-messages {:type :success :content (str "Finished reading the mbox file " original-name ". Its e-mails are being categorized and saved.")})
+          (catch Throwable e
+            (t/log! {:level :error :error e} ["Importing the mbox file" original-name "failed"])
+            (add-to-messages {:type :alert :content (str "Importing the mbox file " original-name " failed. Please see the logs.")}))
+          (finally
+            (io/delete-file target true)
+            (release-event-bus-job!))))
+      true)))
 
 (def ^:private redetection-chunk-size 200)
 
@@ -250,29 +281,36 @@
   "Queue a language detection for every stored e-mail without a language and return how many were
    queued. The ids are collected first and each e-mail is queued exactly once, on a background thread:
    paging the 'language IS NULL' set while the detections are still being written asynchronously would
-   queue the same e-mails again and again (and never end when some of them yield no language at all)."
+   queue the same e-mails again and again (and never end when some of them yield no language at all).
+   Returns :busy without doing anything while another event-bus job runs."
   []
-  (let [ids (mapv :message-id (db/query-db {:select [:headers.message-id]
-                                             :from [:headers]
-                                             :left-join [:metadata [:= :headers.message-id :metadata.message-id]]
-                                             :where [:= :metadata.language nil]}))]
-    (when (seq ids)
-      (async/thread
-        (let [limiter (messaging/channel-limiter :enriched-email)]
-          (try
-            (t/log! :info ["Re-detecting the language of" (count ids) "e-mail(s) without one."])
-            (doseq [chunk (partition-all redetection-chunk-size ids)
-                    enriched-email (db/fetch-data {:entity :enriched-email :strict false}
-                                                  {:where [:in :headers.message-id (vec chunk)]})]
-              (async/>!! (:bucket limiter) :token)
-              ;; :metadata-only - the e-mails are stored already; only their metadata row is rewritten.
-              (async/>!! @messaging/main-chan {:type :language-detection-request :options {:metadata-only true} :payload enriched-email}))
-            (add-to-messages {:type :success :content (str "Language detection was queued for " (count ids) " e-mail(s).")})
-            (catch Throwable e
-              (t/log! {:level :error :error e} "Re-detecting languages failed.")
-              (add-to-messages {:type :alert :content "Re-detecting languages failed. Please see the logs."}))
-            (finally (messaging/close-limiter! limiter))))))
-    (count ids)))
+  (if-not (claim-event-bus-job! :language-redetection)
+    :busy
+    (let [ids (try (mapv :message-id (db/query-db {:select [:headers.message-id]
+                                                   :from [:headers]
+                                                   :left-join [:metadata [:= :headers.message-id :metadata.message-id]]
+                                                   :where [:= :metadata.language nil]}))
+                   (catch Throwable e (release-event-bus-job!) (throw e)))]
+      (if (empty? ids)
+        (release-event-bus-job!)
+        (async/thread
+          (let [limiter (messaging/channel-limiter :enriched-email)]
+            (try
+              (t/log! :info ["Re-detecting the language of" (count ids) "e-mail(s) without one."])
+              (doseq [chunk (partition-all redetection-chunk-size ids)
+                      enriched-email (db/fetch-data {:entity :enriched-email :strict false}
+                                                    {:where [:in :headers.message-id (vec chunk)]})]
+                (async/>!! (:bucket limiter) :token)
+                ;; :metadata-only - the e-mails are stored already; only their metadata row is rewritten.
+                (async/>!! @messaging/main-chan {:type :language-detection-request :options {:metadata-only true} :payload enriched-email}))
+              (add-to-messages {:type :success :content (str "Language detection was queued for " (count ids) " e-mail(s).")})
+              (catch Throwable e
+                (t/log! {:level :error :error e} "Re-detecting languages failed.")
+                (add-to-messages {:type :alert :content "Re-detecting languages failed. Please see the logs."}))
+              (finally
+                (messaging/close-limiter! limiter)
+                (release-event-bus-job!))))))
+      (count ids))))
 
 (defn- normalize-prefs [prefs]
   (mapv #(update % :use_in_training (fn [v] (or (true? v) (= 1 v)))) prefs))
@@ -350,7 +388,9 @@
     (doseq [language languages
             ;; Bodies are not loaded with the page: cached tokens make them unnecessary for most e-mails.
             :let [entity-query {:entity :enriched-email :page {:size 200 :page 1} :with-bodies false}
-                  sql-query {:where [:and [:<> :category nil] [:= :language language]]}
+                  ;; A stable order: LIMIT/OFFSET pages without one may skip or repeat e-mails.
+                  sql-query {:where [:and [:<> :category nil] [:= :language language]]
+                             :order-by [[:headers.message-id :asc]]}
                   write-func (fn [emails]
                                (let [tokens (training-tokens-for emails)
                                      lines (analysis/format-training-lines
@@ -842,11 +882,17 @@
                                    TimeUnit/SECONDS)
           (reset! retention-scheduler executor)))))
 
-(defn stop-retention-scheduler! []
+(defn stop-retention-scheduler!
+  "Stop scheduling runs and wait up to 30 seconds for a running one: interrupting it between a move to
+   the trash and recording it would leave the database pointing at the old folder."
+  []
   (locking retention-scheduler
     (when-let [^ScheduledExecutorService executor @retention-scheduler]
       (reset! retention-scheduler nil)
-      (.shutdownNow executor))))
+      (.shutdown executor)
+      (when-not (.awaitTermination executor 30 TimeUnit/SECONDS)
+        (t/log! :warn "The retention run did not finish within 30 seconds; stopping it.")
+        (.shutdownNow executor)))))
 
 (defn start-manual-retention!
   "Run the retention now on a background thread and report the result as a toast. Returns false when
@@ -868,11 +914,13 @@
   (async/thread
     (try
       (let [color (flags/valid-color (:flag_color category))
-            totals (per-connection (map #(assoc % :flag color) (db/categorized-email-locations (:id category)))
+            ;; Only where the category is filed, like the clean-up - not in an archive or the sent folder.
+            totals (per-connection (map #(assoc % :flag color :category (:name category)) (db/categorized-email-locations (:id category)))
                                    client/apply-flags!)]
         (add-to-messages {:type :success
                           :content (str "Flagged the e-mails of " (:name category) ": " (or (:flagged totals) 0) " flagged"
                                         (when (pos? (or (:missing totals) 0)) (str ", " (:missing totals) " no longer in their folder"))
+                                        (when (pos? (or (:elsewhere totals) 0)) (str ", " (:elsewhere totals) " left alone outside the category's folder"))
                                         (when (pos? (or (:offline totals) 0)) (str ", " (:offline totals) " in a disconnected account"))
                                         (when (pos? (or (:failed totals) 0)) (str ", " (:failed totals) " failed"))
                                         ".")}))
@@ -1577,12 +1625,15 @@
    (comp/POST "/admin/database/config" request
      (let [{:keys [host port name user password]} (:params request)
            existing (db-cfg/load-config)
-           cfg {:type     :mariadb
-                :host     host
-                :port     (Integer/parseInt port)
-                :name     name
-                :user     user
-                :password (if (st/blank? password) (:password existing "") password)}]
+           ;; The form edits only the connection; settings made in db-config.edn by hand (:ssl-mode,
+           ;; :startup-timeout-seconds) must survive a save.
+           cfg (merge (or (db-cfg/read-file) {})
+                      {:type     :mariadb
+                       :host     host
+                       :port     (Integer/parseInt port)
+                       :name     name
+                       :user     user
+                       :password (if (st/blank? password) (:password existing "") password)})]
        (db-cfg/save-config! cfg)
        (redirect "/admin/database?saved=1")))
 
@@ -1593,7 +1644,8 @@
                 :port     (Integer/parseInt port)
                 :name     name
                 :user     user
-                :password (if (st/blank? password) (:password existing "") password)}
+                :password (if (st/blank? password) (:password existing "") password)
+                :ssl-mode (:ssl-mode existing)}
            result (db-mig/test-connection! cfg)]
        (render-database-page {:saved-config (dissoc existing :password)
                               :message (if (:ok result)
@@ -1682,8 +1734,9 @@
            ^java.io.File temp-file (when (map? upload) (:tempfile upload))]
        (if (or (nil? temp-file) (not (.exists temp-file)) (zero? (.length temp-file)))
          (redirect-request request {:type :alert :content "Please choose a non-empty mbox file to upload."})
-         (do (start-mbox-import! temp-file (str (:filename upload)))
-             (redirect-request request {:type :success :content (str "Importing the mbox file " (:filename upload) " in the background. Its e-mails appear in the list as they are processed; a message reports when the file has been read completely.")})))))
+         (if (start-mbox-import! temp-file (str (:filename upload)))
+           (redirect-request request {:type :success :content (str "Importing the mbox file " (:filename upload) " in the background. Its e-mails appear in the list as they are processed; a message reports when the file has been read completely.")})
+           (redirect-request request event-bus-busy-message)))))
 
    (comp/GET "/admin/categories" {}
      (let [categories (db/get-categories)]
@@ -1724,12 +1777,17 @@
          ;; scheduleAtFixedRate for new connections, out-of-range thresholds break categorization,
          ;; and an unknown log level breaks logging.
          (redirect-request request {:type :alert :content (str "Invalid value(s) for: " (st/join ", " (map (comp name first) invalid)) ". Nothing was saved.")})
-         (do (doseq [[k v] prefs]
-               (p/update-preference k v))
-             (t/set-min-level! (p/log-level))
-             (when (some #(contains? prefs %) [:automatic-training-time :time-zone])
-               (restart-training-scheduler!))
-             (redirect-request request)))))
+         (let [before-time (p/automatic-training-time)
+               before-zone (p/time-zone)]
+           (doseq [[k v] prefs]
+             (p/update-preference k v))
+           (t/set-min-level! (p/log-level))
+           ;; Both fields are always submitted: restart only when one really changed, because a
+           ;; restart interrupts a running training and may start a catch-up run.
+           (when (or (not= (str before-time) (str (p/automatic-training-time)))
+                     (not= (str before-zone) (str (p/time-zone))))
+             (restart-training-scheduler!))
+           (redirect-request request)))))
 
    (comp/POST "/admin/preferences/model" request
      ;; The switch may train a complete model set, so it runs like a manual training run - but only
@@ -1754,7 +1812,7 @@
        (success-html-with-body (markup/languages-admin-page language-preferences))))
 
    (comp/POST "/admin/categories" {params :params}
-     (if-let [problem (app/category-name-problem (:name params))]
+     (if-let [problem (app/category-name-problem (:name params) (map :name (db/get-categories)))]
        (do (add-to-messages {:type :alert :content problem})
            (redirect "/admin/categories" 303))
        (do (app/create-new-category! context (st/trim (:name params)) (:destination-folder params) (:color params)
@@ -2064,7 +2122,9 @@
 
    (comp/POST "/metadata/languages" request
      (let [queued (start-language-redetection!)]
-       (redirect-request request {:type :info :content (str "Re-detecting the language of " queued " e-mail(s) without one in the background.")})))
+       (redirect-request request (if (= :busy queued)
+                                   event-bus-busy-message
+                                   {:type :info :content (str "Re-detecting the language of " queued " e-mail(s) without one in the background.")}))))
 
    (comp/POST "/repl" request
      (let [operation (get-in request [:params :operation])]

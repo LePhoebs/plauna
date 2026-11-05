@@ -98,10 +98,13 @@
   cfg)
 
 (defn ds
-  "Return the active datasource (HikariCP pool for MariaDB, JDBC URL for SQLite)."
+  "Return the active datasource (HikariCP pool for MariaDB, JDBC URL for SQLite). With MariaDB active
+   but its pool closed (during shutdown) this throws instead of silently writing to the stale SQLite file."
   []
   (or @mariadb-pool
-      (jdbc/get-datasource {:jdbcUrl (sqlite-url)})))
+      (if (= :mariadb @active-db-type)
+        (throw (IllegalStateException. "The MariaDB connection pool is closed."))
+        (jdbc/get-datasource {:jdbcUrl (sqlite-url)}))))
 
 (defn db-type [] @active-db-type)
 
@@ -456,7 +459,16 @@
                                                        :language_confidence)))
                             (honey/format)))))
 
-(defn update-metadata-category [message_id category confidence]
+(defn clear-email-expiry!
+  "Forget that the retention moved an e-mail to the trash. Called when its category changes: from then
+   on it is an e-mail of the new category, which its retention and flag handling must see again."
+  [message-id]
+  (jdbc/execute! (ds) (honey/format {:update :metadata
+                                     :set    {:expired-at nil}
+                                     :where  [:and [:= :message-id message-id] [:<> :expired-at nil]]})))
+
+(defn- update-metadata-category!
+  [message_id category confidence]
   (if (mariadb?)
     (jdbc/execute! (ds)
       ["INSERT INTO metadata (message_id, category, category_modified, category_confidence) VALUES (?, ?, UNIX_TIMESTAMP(), ?) ON DUPLICATE KEY UPDATE category = VALUES(category), category_modified = VALUES(category_modified), category_confidence = VALUES(category_confidence)"
@@ -466,6 +478,13 @@
                             (upsert (-> (on-conflict :message_id)
                                         (do-update-set :category :category_modified :category_confidence)))
                             (honey/format)))))
+
+(defn update-metadata-category
+  "Set the category of a stored e-mail. Every caller changes the category, so a retention mark from
+   the previous category is cleared (see clear-email-expiry!)."
+  [message-id category confidence]
+  (update-metadata-category! message-id category confidence)
+  (clear-email-expiry! message-id))
 
 (defn update-metadata-language [message_id language confidence]
   (if (mariadb?)
@@ -563,7 +582,8 @@
                                                     [[:sum [:case [:<> :category nil] [:inline 1] :else [:inline 0]]] :categorized]
                                                     [[:sum [:case [:= :category nil] [:inline 1] :else [:inline 0]]] :uncategorized]]
                                            :from [:metadata]
-                                           :where [:and [:= :connection-id connection-id] [:<> :folder nil]]
+                                           ;; E-mails the retention moved to the trash are not offered for moving.
+                                           :where [:and [:= :connection-id connection-id] [:<> :folder nil] [:= :expired-at nil]]
                                            :group-by [:folder]
                                            :order-by [[:folder :asc]]})
                        builder-function-kebab)))

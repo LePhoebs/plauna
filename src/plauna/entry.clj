@@ -182,6 +182,7 @@
                 (t/log! :info "Shutdown signal received. Stopping Plauna gracefully.")
                 (doseq [[label teardown]
                         [["automatic training" server/stop-training-scheduler!]
+                         ["retention" server/stop-retention-scheduler!]
                          ["connection retries" stop-connection-retries!]
                          ["web server" server/stop-server]
                          ["IMAP connections" client/disconnect-all]

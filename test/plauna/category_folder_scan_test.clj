@@ -65,7 +65,8 @@
 
 (def ^:private email-client
   (reify int/EmailClient
-    (current-folder-name [_ folder] (.getFullName ^Folder folder))))
+    (current-folder-name [_ folder] (.getFullName ^Folder folder))
+    (apply-flags [_ _ emails] {:flagged (count emails)})))
 
 ;; ── Decision per message ────────────────────────────────────────────────────────
 
@@ -190,3 +191,28 @@
         (is (not (.isCancelled ^java.util.concurrent.Future (get @scans "conn-on"))))))
     ((deref #'client/cancel-category-folder-scan!) "conn-on")
     (is (not (contains? @scans "conn-on")))))
+
+(deftest learning-lets-the-flag-follow-the-folder-category
+  (let [state (atom {:emails {"from-parcels" {:category-id 1 :confidence 0.6 :folder "INBOX" :connection-id "c1"}
+                              "from-plain" {:category-id 3 :confidence 0.6 :folder "INBOX" :connection-id "c1"}}})
+        categories [{:id 1 :name "parcels" :flag_color "orange"}
+                    {:id 2 :name "work" :flag_color nil}
+                    {:id 3 :name "misc" :flag_color nil}
+                    {:id 4 :name "receipts" :flag_color "green"}]
+        applied (atom [])
+        client (reify int/EmailClient
+                 (current-folder-name [_ folder] (.getFullName ^Folder folder))
+                 (apply-flags [_ connection-id emails] (swap! applied conj [connection-id emails]) {}))
+        context {:db (fake-db state categories) :analyzer analyzer :client client}
+        jobs (atom [])
+        learn (fn [message-id category folder-name flag-job!]
+                (app/learn-category-from-folder! context {:connection-id "c1" :folder-name folder-name
+                                                          :category category :message-id message-id :flag-job! flag-job!
+                                                          :read-email #(throw (ex-info "must not read a stored e-mail" {}))}))]
+    (is (= :learned (learn "from-parcels" {:id 2 :name "work"} "Categories/Work" #(swap! jobs conj %))))
+    (is (= [{:message-id "from-parcels" :folder "Categories/Work" :flag :clear}] @jobs)
+        "Leaving a flagged category for an unflagged one takes Plauna's flag away")
+    (is (= [] @applied) "With a collector nothing is applied one by one")
+    (is (= :learned (learn "from-plain" {:id 4 :name "receipts"} "Categories/Receipts" nil)))
+    (is (= [["c1" [{:message-id "from-plain" :folder "Categories/Receipts" :flag "green"}]]] @applied)
+        "Without a collector the flag is applied at once")))

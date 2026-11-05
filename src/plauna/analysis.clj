@@ -456,7 +456,12 @@
                              (catch Exception e
                                (t/log! {:level :warn :error e} ["Categorizing" (-> email :header :message-id) "failed; saving it without a category."])
                                nil))
-        category (label->category (:name category-result))]
+        ;; Resolving the label reads the categories from the database: a failure there must not lose
+        ;; the e-mail either.
+        category (try (label->category (:name category-result))
+                      (catch Exception e
+                        (t/log! {:level :warn :error e} ["Resolving the category of" (-> email :header :message-id) "failed; saving it without a category."])
+                        nil))]
     (core-email/construct-enriched-email email
                                          {:language (:code language-result) :language-confidence (:confidence language-result)}
                                          {:category (:name category) :category-confidence (:confidence category-result) :category-id (:id category)})))
@@ -486,8 +491,21 @@
 
 (defmulti handle-enrichment :type)
 
+(defn- already-stored?
+  "True when the e-mail is in the database already. A failing lookup counts as not stored: saving is
+   an upsert, so the worst case is the old behavior."
+  [message-id]
+  (try (boolean (and (some? message-id) (db/email-exists? message-id)))
+       (catch Exception _ false)))
+
 (defmethod handle-enrichment :parsed-enrichable-email [event]
-  (events/create-event :enriched-email (detect-language-and-categorize-event event) nil event))
+  ;; An mbox can repeat e-mails Plauna already has (the same export twice, a monitored mailbox):
+  ;; categorizing them again would overwrite their stored category - also one set by hand - with the
+  ;; model's guess, and duplicate their attachment rows. The IMAP paths skip stored e-mails the same way.
+  (if (already-stored? (-> event :payload :header :message-id))
+    (do (t/log! :debug ["Skipping the already stored e-mail" (-> event :payload :header :message-id)])
+        nil)
+    (events/create-event :enriched-email (detect-language-and-categorize-event event) nil event)))
 
 (defmethod handle-enrichment :language-detection-request [event]
   (events/create-event :enriched-email (detect-language-event event) nil event))
@@ -505,7 +523,8 @@
     (async/sub publisher :language-detection-request language-detection-request-chan)
     (async/pipeline 4
                     events-channel
-                    (map handle-enrichment)
+                    ;; keep: an already stored e-mail yields nil and is dropped (see handle-enrichment).
+                    (keep handle-enrichment)
                     local-chan
                     true
                     (fn [^Throwable th] (t/log! {:level :error :error th} (.getMessage th))))))

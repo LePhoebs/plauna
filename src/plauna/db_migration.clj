@@ -159,9 +159,10 @@
 
 (defn test-connection!
   "Try to open one connection to the configured MariaDB. Returns {:ok true} or {:ok false :error message}."
-  [{:keys [host port name user password]}]
+  [{:keys [host port name user password ssl-mode]}]
   (try
-    (with-open [ds (mariadb-ds {:host host :port port :name name :user user :password password})]
+    ;; With the configured sslMode: a test without it would pass for a config that fails at startup.
+    (with-open [ds (mariadb-ds {:host host :port port :name name :user user :password password :ssl-mode ssl-mode})]
       (jdbc/execute-one! ds ["SELECT 1"])
       {:ok true})
     (catch Exception e

@@ -6,6 +6,34 @@ All notable changes to this project will be documented in this file.
 
 ### 🐛 Bug Fixes
 
+- Importing an mbox no longer re-categorizes e-mails Plauna has stored already: a second import of the
+  same file used to overwrite every stored category, manual ones included, with the model's guess and
+  duplicated the attachment rows.
+- Only one mbox import or language re-detection runs at a time. Two of them shared the event bus's
+  limiter tokens and could flood and deadlock it until a restart.
+- A new message that arrives over IDLE but cannot be saved or categorized (a locked database, a failing
+  analyzer) is now listed under "Messages That Could Not Be Read" like a read failure, instead of only
+  being logged.
+- Recategorizing an e-mail in the web UI creates a missing destination folder, as filing incoming mail
+  already did, and a failure on one account no longer stops the other accounts from being tried.
+- Saving the MariaDB settings in the UI kept only the connection fields and dropped `:ssl-mode` and
+  `:startup-timeout-seconds` from `db-config.edn`; "Test" now uses the configured SSL mode too.
+- `PLAUNA_DB_TYPE=MariaDB` (or a string `:type` in `db-config.edn`) silently started on SQLite; the type
+  is now read case-insensitively. With MariaDB active, a write after its pool was closed no longer
+  falls back to the old SQLite file.
+- Saving the Preferences page restarted the training scheduler every time - interrupting a running
+  training and possibly starting a catch-up run - although only the training time or time zone matter.
+- Concurrent OAuth token refreshes of one account (health check, scans, bulk reads) are serialized and
+  a fresh token is reused for a minute: a provider that rotates refresh tokens could otherwise reject
+  one of them and Plauna deleted the token, forcing a manual login.
+- A redirect target with a tab or line break (`/\t/evil.example`) is refused; browsers strip those
+  characters and would have followed it off-site.
+- Category names that differ only in case ("Work" and "work") are refused: they share one IMAP folder,
+  and MariaDB answered the second with an error page.
+- Training reads the e-mails in a stable order, so paging cannot skip or repeat e-mails.
+- A database error while resolving a predicted category no longer loses an e-mail being imported.
+- The connection delete dialog was titled "Delete Category".
+
 - Plauna no longer expunges IMAP folders. Closing the monitored folder on disconnect and closing the
   source and target folders of every recategorization used `Folder.close()`, which is `close(true)`:
   every message a mail client had flagged for deletion but not yet expunged was permanently removed

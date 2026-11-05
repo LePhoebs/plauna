@@ -531,14 +531,19 @@
   "Why a category name cannot be used, or nil when it is fine. Category names become IMAP folder names
    ('Categories/<Name>'), so they must not be blank and must not contain the characters IMAP servers
    use as hierarchy separators or LIST wildcards, nor control characters."
-  [category-name]
-  (let [trimmed (some-> category-name str str/trim)]
-    (cond
-      (str/blank? trimmed) "The category name must not be empty."
-      (> (count trimmed) 100) "The category name must not exceed 100 characters."
-      (re-find #"[\p{Cntrl}]" trimmed) "The category name must not contain control characters."
-      (re-find #"[/\\*%\"]" trimmed) "The category name must not contain / \\ * % or double quotes: they have a special meaning in IMAP folder names."
-      :else nil)))
+  ([category-name] (category-name-problem category-name []))
+  ([category-name existing-names]
+   (let [trimmed (some-> category-name str str/trim)]
+     (cond
+       (str/blank? trimmed) "The category name must not be empty."
+       ;; Names that differ only in case share one IMAP folder (Categories/<Name> is capitalized), and
+       ;; MariaDB's unique index rejects them with an error page.
+       (some #(= (str/lower-case trimmed) (str/lower-case (str/trim (str %)))) existing-names)
+       "A category with this name already exists."
+       (> (count trimmed) 100) "The category name must not exceed 100 characters."
+       (re-find #"[\p{Cntrl}]" trimmed) "The category name must not contain control characters."
+       (re-find #"[/\\*%\"]" trimmed) "The category name must not contain / \\ * % or double quotes: they have a special meaning in IMAP folder names."
+       :else nil))))
 
 (def max-retention-days
   "Ten years: anything longer is as good as keeping the e-mails forever, and a typo of a huge number
@@ -680,16 +685,20 @@
 
 (defn- sync-flag!
   "Let the flag of an e-mail that changed category in the mail client follow the new category: the new
-   category's color, or Plauna's flag removed when only the old category had one. Best effort - a
-   failure is logged and the category change stands."
-  [{:keys [db client]} connection-id message-id folder-name old-category-id new-category-id]
+   category's color, or Plauna's flag removed when only the old category had one. The flag job is
+   handed to flag-job! (the folder scan collects them and applies them over one connection) or,
+   without one, applied at once. Best effort - a failure is logged and the category change stands."
+  [{:keys [db client]} flag-job! connection-id message-id folder-name old-category-id new-category-id]
   (try
     (let [colors (category-flag-colors db)
           old-color (get colors old-category-id)
           new-color (get colors new-category-id)
-          flag (flags/flag-change old-color new-color)]
+          flag (flags/flag-change old-color new-color)
+          job {:message-id message-id :folder folder-name :flag flag}]
       (when (and (some? flag) (some? connection-id) (not= old-category-id new-category-id))
-        (int/apply-flags client connection-id [{:message-id message-id :folder folder-name :flag flag}])))
+        (if flag-job!
+          (flag-job! job)
+          (int/apply-flags client connection-id [job]))))
     (catch Exception e
       (t/log! {:level :warn :error e} ["Could not update the flag of" message-id "in" folder-name]))))
 
@@ -701,8 +710,9 @@
    - a stored e-mail that already has that category only gets its location recorded: :confirmed
    - an unknown e-mail is read with read-email (returning {:email :message}), saved with the folder's
      category and left where it is: :saved
-   category is {:id :name}; folder is the open IMAP folder, folder-name its full name."
-  [{:keys [db] :as context} {:keys [connection-id folder folder-name category message-id read-email]}]
+   category is {:id :name}; folder is the open IMAP folder, folder-name its full name. flag-job!
+   (optional) receives the flag change the e-mail needs instead of applying it (see sync-flag!)."
+  [{:keys [db] :as context} {:keys [connection-id folder folder-name category message-id read-email flag-job!]}]
   (let [state (int/fetch-email-category-state db message-id)
         record-location! (fn []
                            (when (not= folder-name (:folder state))
@@ -715,7 +725,7 @@
                                                       {:move? false :assigned-category (:name category) :assigned-category-id (:id category)}
                                                       context)]
         (when (= :processed status)
-          (sync-flag! context connection-id message-id folder-name nil (:id category))
+          (sync-flag! context flag-job! connection-id message-id folder-name nil (:id category))
           (t/log! :info ["Saved the new e-mail" message-id "found in" folder-name "with its category" (:name category)]))
         (if (= :processed status) :saved :confirmed))
 
@@ -725,7 +735,7 @@
       :else
       (do (int/update-email-category db message-id (:id category) 1.0)
           (record-location!)
-          (sync-flag! context connection-id message-id folder-name (:category-id state) (:id category))
+          (sync-flag! context flag-job! connection-id message-id folder-name (:category-id state) (:id category))
           (t/log! :info ["Learned category" (:name category) "for" message-id "from its move into" folder-name])
           :learned))))
 

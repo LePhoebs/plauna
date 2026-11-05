@@ -12,7 +12,9 @@
 (defn config-file-path []
   (str (io/file (files/file-dir) config-filename)))
 
-(defn- read-file []
+(defn read-file
+  "The settings stored in db-config.edn, without the environment overrides, or nil."
+  []
   (let [f (io/file (config-file-path))]
     (when (.exists f)
       (try (edn/read-string (slurp f))
@@ -32,7 +34,9 @@
    plauna.database/default-mariadb-ssl-mode."
   []
   (let [file-cfg  (or (read-file) {})
-        db-type   (or (some-> (env-str "PLAUNA_DB_TYPE") keyword) (:type file-cfg) :sqlite)]
+        ;; "MariaDB" or a string :type in the file must not silently mean SQLite.
+        type-of   (fn [v] (some-> v name clojure.string/trim clojure.string/lower-case keyword))
+        db-type   (or (type-of (env-str "PLAUNA_DB_TYPE")) (type-of (:type file-cfg)) :sqlite)]
     (if (= :mariadb db-type)
       {:type     :mariadb
        :host     (or (env-str "PLAUNA_DB_HOST")     (:host file-cfg)     "localhost")

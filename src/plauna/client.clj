@@ -507,7 +507,10 @@
                                                           {:connection-id connection-id :origin-folder folder :message message :move? true}
                                                           context)]
               (if (= :error (:result process))
-                (t/log! :error ["An error occured while handling incoming message" (:exception process)])
+                ;; handle-incoming-imap-email catches everything (a locked database, a failing
+                ;; analyzer): record it like a read failure, so the message is listed and can be retried.
+                (do (t/log! {:level :error :error (:exception process)} ["An error occured while handling the incoming message in" folder-name "; recording it as a failure."])
+                    (record-monitor-failure! context connection-id folder folder-name message (:exception process)))
                 (t/log! :info ["The email with subject" (-> parsed-email :header :subject) "was handled successfully"])))
             (catch Exception e
               ;; The mail library's event queue swallows listener exceptions silently. Without this catch
@@ -572,6 +575,12 @@
 (defn- move-supported? [^Store store]
   (.hasCapability ^IMAPStore store "MOVE"))
 
+(defn same-folder-name?
+  "True when two full folder names mean the same folder: INBOX is case-insensitive in IMAP, every
+   other folder name is not."
+  [a b]
+  (if (= "INBOX" (s/upper-case (str b))) (= "INBOX" (s/upper-case (str a))) (= a b)))
+
 ;; ── Apple Mail flags ─────────────────────────────────────────────────────────────
 
 (defn- user-keywords-allowed?
@@ -629,6 +638,47 @@
          (catch Exception e
            (t/log! {:level :warn :error e} ["Could not flag" (count messages) "message(s) in" (.getFullName folder)])))))
 
+(defn- flag-by-id-quietly!
+  "Look message-id up in an open folder and apply flag to it; like flag-quietly!, a failure - of the
+   search as well - is only logged."
+  [^IMAPFolder folder message-id flag]
+  (when (some? flag)
+    (try (when-let [found (seq (.search folder (MessageIDTerm. message-id)))]
+           (set-category-flag! folder found flag))
+         (catch Exception e
+           (t/log! {:level :warn :error e} ["Could not flag" message-id "in" (.getFullName folder)])))))
+
+(defn- move-message-to-folder
+  "The move part of move-message: returns the folder name, or nil when the message stayed in place
+   because the move failed. Never throws."
+  [^Message message ^Folder source-folder ^Store store ^String structured-folder]
+  (try
+    (let [target-folder ^IMAPFolder (.getFolder ^Store store ^String structured-folder)]
+      (cond
+        (same-folder-name? (.getFullName source-folder) structured-folder)
+        (do (t/log! :debug ["Target folder" structured-folder "is the same as the source folder. Leaving the message in place."])
+            structured-folder)
+
+        (not (ensure-folder-exists! target-folder))
+        (do (t/log! :warn ["The target folder" structured-folder "does not exist and could not be created. Leaving the message in place."])
+            nil)
+
+        (move-supported? store)
+        (do (t/log! :debug ["Moving message from" source-folder "to" target-folder])
+            (.setPeek ^IMAPMessage message true)
+            (.moveMessages ^IMAPFolder source-folder (into-array Message [message]) target-folder)
+            structured-folder)
+
+        :else
+        (do (t/log! :debug "Server does not support the IMAP MOVE command. Using copy and delete as fallback.")
+            ;; Only report the new folder if the copy+delete actually succeeded, so a failed
+            ;; fallback is never recorded as a completed move.
+            (when (copy-message message source-folder target-folder)
+              structured-folder))))
+    (catch Exception e
+      (t/log! {:level :warn :error e} ["Moving a message from" (.getFullName source-folder) "to" structured-folder "failed. The message stays where it is."])
+      nil)))
+
 (defn move-message
   "Find the proper location for the email and move it there. Returns the name of the folder to which
    the email was moved, or nil when the move did not complete (the message is then still in the
@@ -640,35 +690,18 @@
         ;; the copy fallback cannot operate across two different Stores, and during a bulk parse the source
         ;; lives in a dedicated bulk-read Store rather than the monitor's Store.
         store ^Store (.getStore source-folder)
-        structured-folder (inbox-or-category-folder-name store target-name (-> connection-data :config :folder))]
+        structured-folder (inbox-or-category-folder-name store target-name (-> connection-data :config :folder))
+        color (category-flag-color target-name)]
     ;; Flag first: MOVE and COPY carry the flags along, and a message that stays in place keeps them.
-    (flag-quietly! source-folder [message] (category-flag-color target-name))
-    (try
-      (let [target-folder ^IMAPFolder (.getFolder ^Store store ^String structured-folder)]
-        (cond
-          (= (.getFullName source-folder) structured-folder)
-          (do (t/log! :debug ["Target folder" structured-folder "is the same as the source folder. Leaving the message in place."])
-              structured-folder)
-
-          (not (ensure-folder-exists! target-folder))
-          (do (t/log! :warn ["The target folder" structured-folder "does not exist and could not be created. Leaving the message in place."])
-              nil)
-
-          (move-supported? store)
-          (do (t/log! :debug ["Moving message from" source-folder "to" target-folder])
-              (.setPeek ^IMAPMessage message true)
-              (.moveMessages ^IMAPFolder source-folder (into-array Message [message]) target-folder)
-              structured-folder)
-
-          :else
-          (do (t/log! :debug "Server does not support the IMAP MOVE command. Using copy and delete as fallback.")
-              ;; Only report the new folder if the copy+delete actually succeeded, so a failed
-              ;; fallback is never recorded as a completed move.
-              (when (copy-message message source-folder target-folder)
-                structured-folder))))
-      (catch Exception e
-        (t/log! {:level :warn :error e} ["Moving a message from" (.getFullName source-folder) "to" structured-folder "failed. The message stays where it is."])
-        nil))))
+    ;; Flagging afterwards would mean opening the target folder on this Store, which is the IDLE
+    ;; monitor's during real-time delivery.
+    (flag-quietly! source-folder [message] color)
+    (let [result (move-message-to-folder message source-folder store structured-folder)]
+      ;; A message that could not be filed must not wear the category's flag: the color promises the
+      ;; clean-up, which only looks in the category's folder.
+      (when (and (some? color) (nil? result))
+        (flag-quietly! source-folder [message] :clear))
+      result)))
 
 (defn monitor->map [monitor]
   (if (nil? monitor)
@@ -746,12 +779,17 @@
         (if (move-found-messages! source-folder target-folder found-messages)
           (do (db/update-email-folder message-id target-folder-name)
               (db/update-email-connection message-id connection-id)
-              (when (some? flag)
-                (flag-quietly! target-folder (seq (.search target-folder (MessageIDTerm. message-id))) flag))
+              (flag-by-id-quietly! target-folder message-id flag)
               true)
           false))
       (do (t/log! :info ["No messages found in" source-folder-name "for" message-id])
           :not-found))))
+
+(def max-open-folders
+  "Folders a dedicated Store keeps open at once. Each open folder holds its own IMAP connection, and
+   servers allow only a few per user (Dovecot 10 by default, IDLE monitor included); the least
+   recently used folder is closed to open another."
+  4)
 
 (defn- with-dedicated-store
   "Call (f store folder-named release!) with a short-lived Store of the connection, where
@@ -763,15 +801,23 @@
   (when (oauth2? connection-config) (refresh-access-token connection-config))
   (with-open [^Store store (login connection-config)]
     (let [open-folders (atom {})
-          folder-named (fn ^IMAPFolder [^String folder-name]
-                         (or (get @open-folders folder-name)
-                             (let [folder (open-folder-in-store store folder-name)]
-                               (swap! open-folders assoc folder-name folder)
-                               folder)))
+          ;; Folder names, least recently used first.
+          recency (atom [])
+          touch! (fn [folder-name] (swap! recency #(conj (filterv (complement #{folder-name}) %) folder-name)))
           release! (fn [^String folder-name]
                      (when-let [folder (get @open-folders folder-name)]
                        (swap! open-folders dissoc folder-name)
-                       (attempt-close-step! "closing a folder of a dedicated connection" #(close-folder-without-expunge! folder))))]
+                       (swap! recency #(filterv (complement #{folder-name}) %))
+                       (attempt-close-step! "closing a folder of a dedicated connection" #(close-folder-without-expunge! folder))))
+          folder-named (fn ^IMAPFolder [^String folder-name]
+                         (if-let [folder (get @open-folders folder-name)]
+                           (do (touch! folder-name) folder)
+                           (do (when (>= (count @open-folders) max-open-folders)
+                                 (release! (first @recency)))
+                               (let [folder (open-folder-in-store store folder-name)]
+                                 (swap! open-folders assoc folder-name folder)
+                                 (touch! folder-name)
+                                 folder))))]
       (try
         (f store folder-named release!)
         (finally
@@ -782,11 +828,22 @@
   "Move message-id between two folders using a short-lived Store that is independent of IdleManager
    (see with-dedicated-store: nothing is expunged when the folders close)."
   [connection-config source-folder-name target-folder-name message-id flag]
-  (with-dedicated-store connection-config
-    (fn [_ folder-named _]
-      (let [target-folder (folder-named target-folder-name)
-            source-folder (folder-named source-folder-name)]
-        (move-message-between-open-folders! (:id connection-config) source-folder target-folder source-folder-name target-folder-name message-id flag)))))
+  (try
+    (with-dedicated-store connection-config
+      (fn [^Store store folder-named _]
+        ;; A custom destination may never have been created on this account (it was offline when the
+        ;; category was saved) or was deleted since; the incoming path creates it the same way.
+        (if-not (ensure-folder-exists! (.getFolder store ^String target-folder-name))
+          (do (t/log! :warn ["The target folder" target-folder-name "does not exist and could not be created."]) false)
+          (let [target-folder (folder-named target-folder-name)
+                source-folder (folder-named source-folder-name)]
+            (move-message-between-open-folders! (:id connection-config) source-folder target-folder source-folder-name target-folder-name message-id flag)))))
+    (catch FolderNotFoundException e
+      (t/log! {:level :info :error e} ["The source folder" source-folder-name "of" message-id "does not exist any more."])
+      :not-found)
+    (catch Exception e
+      (t/log! {:level :warn :error e} ["Moving" message-id "from" source-folder-name "to" target-folder-name "failed."])
+      false)))
 
 (defn- resolve-move-folders
   "[source-folder-name target-folder-name] for moving message-id into category target-name on the
@@ -824,7 +881,7 @@
             ;; to keep it.
             flag (when (not= source-name target-name)
                    (flags/flag-change (category-flag-color source-name) (category-flag-color target-name)))]
-        (if (= source-folder-name target-folder-name)
+        (if (same-folder-name? source-folder-name target-folder-name)
           (do (when (some? flag)
                 (apply-flags! id [{:message-id message-id :folder target-folder-name :flag flag}]))
               (record-in-place! id message-id target-folder-name))
@@ -848,28 +905,28 @@
       (let [;; A batch holds thousands of e-mails of a handful of categories: look each color up once.
             flag-color-of (memoize category-flag-color)]
         (with-dedicated-store (:config connection-data)
-          (fn [_ folder-named _]
-            (mapv (fn [{:keys [message-id category]}]
-                    (try
-                      (let [[source-folder-name target-folder-name] (resolve-move-folders connection-data message-id category category)
-                            flag (flag-color-of category)]
-                        (if (= source-folder-name target-folder-name)
-                          (do (when (some? flag)
-                                (let [^IMAPFolder folder (folder-named target-folder-name)]
-                                  (flag-quietly! folder (seq (.search folder (MessageIDTerm. message-id))) flag)))
-                              (record-in-place! id message-id target-folder-name))
-                          (move-message-between-open-folders! id (folder-named source-folder-name) (folder-named target-folder-name)
-                                                              source-folder-name target-folder-name message-id flag)))
-                      (catch Exception e
-                        (t/log! {:level :error :error e} ["Moving" message-id "failed"])
-                        false)))
-                  moves)))))))
+          (fn [^Store store folder-named _]
+            (let [target-exists? (memoize (fn [folder-name] (ensure-folder-exists! (.getFolder store ^String folder-name))))]
+              (mapv (fn [{:keys [message-id category]}]
+                      (try
+                        (let [[source-folder-name target-folder-name] (resolve-move-folders connection-data message-id category category)
+                              flag (flag-color-of category)]
+                          (cond
+                            ;; Already where it belongs: neither moved nor flagged. Its flag is the
+                            ;; user's business by now - they may have taken it away to keep the e-mail.
+                            (same-folder-name? source-folder-name target-folder-name)
+                            (record-in-place! id message-id target-folder-name)
 
-(defn same-folder-name?
-  "True when two full folder names mean the same folder: INBOX is case-insensitive in IMAP, every
-   other folder name is not."
-  [a b]
-  (if (= "INBOX" (s/upper-case (str b))) (= "INBOX" (s/upper-case (str a))) (= a b)))
+                            (not (target-exists? target-folder-name))
+                            false
+
+                            :else
+                            (move-message-between-open-folders! id (folder-named source-folder-name) (folder-named target-folder-name)
+                                                                source-folder-name target-folder-name message-id flag)))
+                        (catch Exception e
+                          (t/log! {:level :error :error e} ["Moving" message-id "failed"])
+                          false)))
+                    moves))))))))
 
 (def trash-folder-names
   "Last folder name segments (lower case) that mean the trash on servers without SPECIAL-USE."
@@ -890,6 +947,8 @@
         named (->> folders
                    (map #(.getFullName ^Folder %))
                    (filter #(contains? trash-folder-names (s/lower-case (or (last (segments %)) ""))))
+                   ;; A category named "Trash" or "Deleted" is never the trash.
+                   (remove #(s/starts-with? % (str parent-folder-name separator)))
                    (sort-by (comp count segments))
                    first)]
     (or marked named)))
@@ -973,16 +1032,21 @@
 
 (defn apply-flags!
   "Set or clear the flags of stored e-mails of one connection ([{:message-id :folder :flag}], :flag a
-   color id or :clear). Returns the counts {:flagged :missing :failed :offline}."
+   color id or :clear). An e-mail that also names its :category is only flagged in the folder Plauna
+   files that category into, like the clean-up (:elsewhere otherwise). Returns the counts {:flagged
+   :missing :elsewhere :failed :offline}."
   [^String id emails]
   (on-connection! id emails
-                  (fn [_ folder-named release!]
-                    (tally emails release!
-                           (fn [{:keys [message-id folder flag]}]
-                             (let [^IMAPFolder source (folder-named folder)]
-                               (if-let [found (seq (.search source (MessageIDTerm. message-id)))]
-                                 (do (set-category-flag! source found flag) :flagged)
-                                 :missing)))))))
+                  (fn [store folder-named release!]
+                    (let [category-folder-of (memoize #(structured-folder-name store %))]
+                      (tally emails release!
+                             (fn [{:keys [message-id folder flag category]}]
+                               (if (and (some? category) (not (same-folder-name? folder (category-folder-of category))))
+                                 :elsewhere
+                                 (let [^IMAPFolder source (folder-named folder)]
+                                   (if-let [found (seq (.search source (MessageIDTerm. message-id)))]
+                                     (do (set-category-flag! source found flag) :flagged)
+                                     :missing)))))))))
 
 (defn- invalid-grant-error?
   "True only when the provider explicitly rejected the refresh token (HTTP 4xx with an
@@ -992,27 +1056,58 @@
     (boolean (and status (<= 400 status 499)
                   (re-find #"invalid_grant" (str body))))))
 
-(defn refresh-access-token [connection-config]
+(defonce ^:private refresh-locks (atom {}))
+
+(defonce ^:private last-refreshes (atom {}))
+
+(def refresh-reuse-millis
+  "A token refreshed this recently is used as it is: health check, scans, retention and bulk reads each
+   open their own Store, and access tokens live for an hour or so."
+  60000)
+
+(declare refresh-access-token!)
+
+(defn refresh-access-token
+  "Refresh the OAuth access token of a connection. Calls for the same connection are serialized, and
+   a refresh younger than refresh-reuse-millis is reused: a provider that rotates refresh tokens and
+   detects reuse would reject the second of two concurrent refreshes with invalid_grant, and Plauna
+   would then delete the token and need a manual login."
+  [connection-config]
+  (let [id (:id connection-config)
+        lock (get (swap! refresh-locks update id #(or % (Object.))) id)]
+    (locking lock
+      (let [last-refresh (get @last-refreshes id)]
+        (when-not (and last-refresh (< (- (System/currentTimeMillis) (long last-refresh)) refresh-reuse-millis))
+          (when (refresh-access-token! connection-config)
+            (swap! last-refreshes assoc id (System/currentTimeMillis))))))))
+
+(defn- refresh-access-token!
+  "One refresh against the provider. Returns true when a new access token was stored."
+  [connection-config]
   (let [provider (db/get-auth-provider (:auth-provider connection-config))
         token-data (db/get-oauth-tokens (:id connection-config))]
     (if (s/blank? (:refresh-token token-data))
       ;; Nothing to refresh with (never authorized, or the token was deleted after an invalid_grant):
       ;; asking the provider with a nil token would only produce a misleading 'transient error'.
-      (t/log! :warn ["Connection" (:user connection-config) "has no stored OAuth refresh token. Log in again from the Connections page."])
+      (do (t/log! :warn ["Connection" (:user connection-config) "has no stored OAuth refresh token. Log in again from the Connections page."])
+          false)
       (let [result (try {:token (oauth/exchange-refresh-token-for-access-token provider (:refresh-token token-data))}
                         (catch Exception e {:error e}))]
         (cond
           (some? (:token result))
-          (db/update-access-token (:id connection-config) (:token result))
+          (do (db/update-access-token (:id connection-config) (:token result))
+              true)
 
           (invalid-grant-error? (:error result))
           (do (t/log! :info ["Refresh token was rejected by the provider (invalid_grant). Deleting the stored token; the user must log in manually again."])
-              (db/delete-access-token (:id connection-config)))
+              (db/delete-access-token (:id connection-config))
+              false)
 
           :else
           ;; Transient failure (network, 5xx, timeout, or empty response): keep the refresh token and retry on the next cycle.
-          (t/log! {:level :error :error (:error result)}
-                  ["Could not refresh the access token due to a transient error. Keeping the stored refresh token to retry later."]))))))
+          (do (t/log! {:level :error :error (:error result)}
+                      ["Could not refresh the access token due to a transient error. Keeping the stored refresh token to retry later."])
+              false))))))
 
 (defn monitor-folder-name [folder-name]
   (if (or (nil? folder-name) (s/blank? folder-name)) "INBOX" folder-name))
@@ -1178,13 +1273,14 @@
 (defn- learn-from-scanned-message!
   "Run one message of a category folder through app/learn-category-from-folder!. A message that cannot
    be read is recorded as a failure of the folder and reported as :errors."
-  [context connection-id ^IMAPFolder folder folder-name category ^IMAPMessage message]
+  [context connection-id ^IMAPFolder folder folder-name category flag-job! ^IMAPMessage message]
   (try
     (set-message-as-peek message)
     (app/learn-category-from-folder! context {:connection-id connection-id
                                               :folder folder
                                               :folder-name folder-name
                                               :category category
+                                              :flag-job! flag-job!
                                               :message-id (message-id-of message)
                                               :read-email (fn [] {:email (message->email message) :message message})})
     (catch Exception e
@@ -1220,20 +1316,27 @@
             (let [messages (.getMessagesByUID folder (inc (long (:last-uid watermark))) last-uid)
                   profile (doto (FetchProfile.)
                             (.add FetchProfile$Item/ENVELOPE)
-                            (.add UIDFolder$FetchProfileItem/UID))]
-              (reduce (fn [summary chunk]
-                        (let [chunk-array (into-array Message chunk)]
-                          (.fetch folder chunk-array profile)
-                          (let [result (reduce (fn [summary message]
-                                                 (update summary (learn-from-scanned-message! context connection-id folder folder-name category message) inc))
-                                               summary
-                                               chunk)]
-                            ;; Failed messages are recorded as failures, so the scan moves past them as well.
-                            (int/save-category-folder-watermark db connection-id folder-name uid-validity
-                                                                (.getUID folder ^Message (last chunk)))
-                            result)))
-                      summary
-                      (partition-all category-folder-scan-chunk-size (remove nil? messages))))))
+                            (.add UIDFolder$FetchProfileItem/UID))
+                  ;; Flag changes are collected and applied over ONE extra connection after the
+                  ;; folder, not one login per e-mail the user dragged in.
+                  flag-jobs (atom [])
+                  flag-job! #(swap! flag-jobs conj %)
+                  result (reduce (fn [summary chunk]
+                                 (let [chunk-array (into-array Message chunk)]
+                                   (.fetch folder chunk-array profile)
+                                   (let [result (reduce (fn [summary message]
+                                                          (update summary (learn-from-scanned-message! context connection-id folder folder-name category flag-job! message) inc))
+                                                        summary
+                                                        chunk)]
+                                     ;; Failed messages are recorded as failures, so the scan moves past them as well.
+                                     (int/save-category-folder-watermark db connection-id folder-name uid-validity
+                                                                         (.getUID folder ^Message (last chunk)))
+                                     result)))
+                               summary
+                               (partition-all category-folder-scan-chunk-size (remove nil? messages)))]
+              (when (seq @flag-jobs)
+                (apply-flags! connection-id @flag-jobs))
+              result)))
         (finally (close-folder-without-expunge! folder))))))
 
 (defn scan-category-folders!

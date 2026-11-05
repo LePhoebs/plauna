@@ -223,3 +223,10 @@
         (analysis/forget-cached-models!)
         (io/delete-file training-file true)
         (io/delete-file model-file true)))))
+
+(deftest an-mbox-email-that-is-already-stored-is-not-categorized-again
+  (with-redefs [plauna.database/email-exists? (fn [message-id] (= "<stored@x>" message-id))
+                analysis/detect-language-and-categorize-event (fn [event] (:payload event))]
+    (is (nil? (analysis/handle-enrichment {:type :parsed-enrichable-email :payload {:header {:message-id "<stored@x>"}}}))
+        "Re-importing must not overwrite the stored category with the model's guess")
+    (is (= :enriched-email (:type (analysis/handle-enrichment {:type :parsed-enrichable-email :payload {:header {:message-id "<new@x>"}}}))))))
