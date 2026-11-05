@@ -267,6 +267,11 @@ All notable changes to this project will be documented in this file.
 
 ### ✨ Features
 
+- "Parse E-mails from Folders" can give the assigned category to e-mails Plauna has stored already
+  ("Also assign the category to e-mails Plauna has stored already"). They were always skipped, so a new
+  category could not learn from e-mails sorted out by hand before - e.g. old ones in the trash. Such an
+  e-mail gets the category like a manual change, its folder is recorded, and it stays in place unless
+  "Move" is ticked; flags are set only in the category's own folder.
 - Apple Mail flags per category: Plauna marks the e-mails it files in a category with a flag of the
   chosen color (`\Flagged` plus the keywords `$MailFlagBit0`-`2`, as Apple Mail stores it; other
   clients show a plain flag). The flag follows every category change - in the web UI, by the trained

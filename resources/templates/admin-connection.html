@@ -132,6 +132,13 @@
           </select>
         </div>
       <div class="form-field">
+        <div class="flex gap-2">
+          <input class="checkbox" id="recategorize-known" name="recategorize-known" type="checkbox">
+          <label for="recategorize-known">Also assign the category to e-mails Plauna has stored already</label>
+        </div>
+        <p class="text-sm opacity-70">Only with a category above. E-mails Plauna knows already (usually skipped) get that category, as if you had changed it by hand, and the folder is recorded as their place - for example to teach a new category with old e-mails from the trash. They stay where they are unless "Move e-mails after categorization" is ticked, which moves them into the category's folder (for a category kept in the inbox: back into the inbox).</p>
+      </div>
+      <div class="form-field">
         <button form="parse" class="btn btn-primary">Parse E-mails</button>
       </div>
     </form>

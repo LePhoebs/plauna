@@ -852,12 +852,12 @@
       ((server/make-routes {}) {:request-method :post :uri "/admin/connections/c1/controls"
                                 :params {:operation "parse" :folder "Archive" :since-days "14" :batch-size "50" :redirect-url "/admin/connections/c1"}
                                 :session {:authenticated true}})
-      (is (= ["c1" "Archive" {:move? false :batch-size 50 :since-days 14 :assigned-category nil}] @started))
+      (is (= ["c1" "Archive" {:move? false :batch-size 50 :since-days 14 :assigned-category nil :recategorize-known? false}] @started))
       (server/empty-global-messages)
       ((server/make-routes {}) {:request-method :post :uri "/admin/connections/c1/controls"
                                 :params {:operation "parse" :folder "Archive" :since-days "" :redirect-url "/admin/connections/c1"}
                                 :session {:authenticated true}})
-      (is (= ["c1" "Archive" {:move? false :batch-size nil :since-days nil :assigned-category nil}] @started)
+      (is (= ["c1" "Archive" {:move? false :batch-size nil :since-days nil :assigned-category nil :recategorize-known? false}] @started)
           "A blank period field keeps the whole-folder behaviour of before")))
   (server/empty-global-messages))
 
@@ -1061,3 +1061,8 @@
         (is (= ["c1"] @deleted) "but its tokens are not sent to the new server")
         (put {:auth-provider "9"})
         (is (= ["c1" "c1"] @deleted) "nor to another provider")))))
+
+(deftest the-parse-summary-names-re-categorized-e-mails
+  (let [message (:content (server/folder-parse-summary-message {:folder "Trash" :processed 0 :skipped 5 :skipped-elsewhere 0 :recategorized 4 :errors 0 :remaining 0}))]
+    (is (str/includes? message "1 already stored e-mail(s) skipped"))
+    (is (str/includes? message "4 already stored e-mail(s) given the chosen category"))))

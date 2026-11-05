@@ -1323,7 +1323,7 @@
   "Turn the summary of a finished folder parse into a toast for the next page load. The remaining count
    tells the user whether another run of the same batch is needed; the link opens the e-mails this run
    saved so their detected categories can be checked right away."
-  [{:keys [folder processed skipped skipped-elsewhere errors remaining batch-size batch-id aborted since-days]}]
+  [{:keys [folder processed skipped skipped-elsewhere errors remaining batch-size batch-id aborted since-days recategorized]}]
   (let [remaining-text (cond
                          (some? aborted) (str " The run was " aborted ". " remaining " e-mail(s) were not examined - check the connection and run the parse again.")
                          (pos? remaining) (str " " remaining " older e-mail(s) were not examined because the batch of " batch-size " was full - run the parse again to continue.")
@@ -1334,10 +1334,12 @@
              :content (str "Finished parsing " folder
                            (when since-days (str " (e-mails received in " (since-days-text since-days) ")"))
                            ": " processed " new e-mail(s) saved and categorized, "
-                           skipped " already stored e-mail(s) skipped"
-                           (when (pos? skipped)
-                             (str " (" (- skipped (or skipped-elsewhere 0)) " saved by earlier runs of this folder and still waiting to be moved, "
+                           (- skipped (or recategorized 0)) " already stored e-mail(s) skipped"
+                           (when (pos? (- skipped (or recategorized 0)))
+                             (str " (" (- skipped (or skipped-elsewhere 0) (or recategorized 0)) " saved by earlier runs of this folder and still waiting to be moved, "
                                   (or skipped-elsewhere 0) " duplicate(s) of e-mails stored from other folders)"))
+                           (when (pos? (or recategorized 0))
+                             (str ", " recategorized " already stored e-mail(s) given the chosen category"))
                            (when (pos? errors) (str ", " errors " could not be read (see the logs)"))
                            "." remaining-text)}
       (and (some? batch-id) (pos? processed)) (assoc :link (batch-emails-url batch-id)
@@ -1374,7 +1376,7 @@
    is stored when the background thread finishes and surfaced as a toast with a review link.
    Throws when the connection is not active or the folder cannot be opened - the route turns that
    into an alert."
-  [context id folder {:keys [move? batch-size assigned-category since-days]}]
+  [context id folder {:keys [move? batch-size assigned-category since-days recategorize-known?]}]
   (let [conn-data (client/connection-data-from-id id)]
     (when (or (nil? conn-data) (not (client/connected? conn-data)))
       (throw (ex-info "The connection is not active. Connect first, then parse." {:type :inactive-connection})))
@@ -1385,7 +1387,9 @@
                           :batch-size batch-size
                           :since-days since-days
                           :assigned-category (:name assigned-category)
-                          :assigned-category-id (:id assigned-category)}
+                          :assigned-category-id (:id assigned-category)
+                          ;; Only meaningful with a category: without one there is nothing to assign.
+                          :recategorize-known? (and (boolean recategorize-known?) (some? assigned-category))}
                          folder-parse-summary-message
                          (fn [_ options] (app/read-emails-from-folder conn-data folder options context)))))
 
@@ -1414,7 +1418,8 @@
                           {:move? (some? (:move params))
                            :batch-size (parse-batch-size (:batch-size params))
                            :since-days (parse-since-days (:since-days params))
-                           :assigned-category (when-not (st/blank? (:assigned-category params)) (db/category-by-id (:assigned-category params)))})))
+                           :assigned-category (when-not (st/blank? (:assigned-category params)) (db/category-by-id (:assigned-category params)))
+                           :recategorize-known? (some? (:recategorize-known params))})))
 
 (defn- rescan-control-response
   "The one-click 're-scan recent e-mails': the watched folder of the live connection, restricted to the

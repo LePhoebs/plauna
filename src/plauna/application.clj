@@ -873,6 +873,31 @@
       (resolve-parse-failures-safely! db connection-id folder-name uid message-id (:known-failures options)))
     status))
 
+(defn- recategorize-known-email!
+  "A parse run with an assigned category and :recategorize-known? gives that category to an e-mail Plauna
+   has stored already - e.g. old e-mails in the trash that should teach the model a new category. Like a
+   manual change: confidence 1, the retention starts now, the location becomes the folder it was found
+   in. With move? it goes to the category's folder (and gets its flag there); otherwise it stays where it
+   is, and its flag is set only when that is the category's own folder (see :flag-jobs, applied after
+   the run). Returns :recategorized, or nil when it has that category already."
+  [client n folder-name folder options {:keys [db] :as context} connection-id message-id]
+  (let [category-id (:assigned-category-id options)
+        category (:assigned-category options)
+        state (int/fetch-email-category-state db message-id)]
+    (when (not= category-id (:category-id state))
+      (int/update-email-category db message-id category-id 1.0)
+      (when (some? connection-id) (int/update-email-connection db message-id connection-id))
+      (if (:move? options)
+        ;; move-message records where the e-mail ends up, and the client flags it on the way.
+        (move-message true folder connection-id (int/nth-email-from-folder client n folder) category context)
+        (do (int/update-email-folder db message-id folder-name)
+            (when-let [flag (let [colors (category-flag-colors db)]
+                              (flags/flag-change (get colors (:category-id state)) (get colors category-id)))]
+              (some-> (:flag-jobs options)
+                      (swap! conj {:message-id message-id :folder folder-name :flag flag :category category})))))
+      (t/log! :info ["Gave the stored e-mail" message-id "in" folder-name "the category" category])
+      :recategorized)))
+
 (defn- process-nth-email-from-folder
   "Process message number n of a folder opened for bulk reading. Returns :processed, :skipped or :error.
    The Message-ID is read on its own first: an already stored message is recognised from that one
@@ -882,7 +907,10 @@
     (try
       (let [known-message-id (int/nth-message-id-from-folder client n folder)]
         (if (and (some? known-message-id) (int/email-exists? db known-message-id))
-          (let [location (try (int/fetch-email-location db known-message-id) (catch Throwable _ nil))
+          (or
+           (when (and (:recategorize-known? options) (some? (:assigned-category-id options)))
+             (recategorize-known-email! client n folder-name folder options context connection-id known-message-id))
+           (let [location (try (int/fetch-email-location db known-message-id) (catch Throwable _ nil))
                 ;; Stored from THIS folder by an earlier run (still here until moved), or a duplicate of an
                 ;; e-mail that was stored from another folder or account.
                 outcome (if (= folder-name (:folder location)) :skipped-here :skipped-elsewhere)]
@@ -890,7 +918,7 @@
             (when (and (:relocate? options) (= :skipped-elsewhere outcome))
               (relocate-known-email! context known-message-id connection-id folder-name))
             (resolve-parse-failures-safely! db connection-id folder-name nil known-message-id (:known-failures options))
-            outcome)
+            outcome))
           (let [email-message (int/nth-email-from-folder client n folder)
                 {:keys [status]} (incoming-email-workflow email-message connection-id folder options context)]
             (finish-processed-email! db email-message status connection-id folder-name nil options))))
@@ -1075,14 +1103,16 @@
                              (prefetch-identities-safely! client folder chunk)
                              (set chunk)))
               outcome (process-nth-email-from-folder client n folder-name folder options context bulk)
-              counter (case outcome :processed :processed (:skipped :skipped-here :skipped-elsewhere) :skipped :errors)]
+              ;; A re-categorized known e-mail is still a known one: it does not count towards the batch.
+              counter (case outcome :processed :processed (:skipped :skipped-here :skipped-elsewhere :recategorized) :skipped :errors)]
           (recur (rest remaining-numbers)
                  prefetched
                  (if (= :errors counter) (inc consecutive-errors) 0)
                  (-> summary
                      (update counter inc)
                      (update :examined inc)
-                     (cond-> (= :skipped-elsewhere outcome) (update :skipped-elsewhere inc)))))))))
+                     (cond-> (= :skipped-elsewhere outcome) (update :skipped-elsewhere inc))
+                     (cond-> (= :recategorized outcome) (update :recategorized (fnil inc 0))))))))))
 
 (defn- since-date
   "The calendar day a :since-days run reaches back to: that many days before today in the configured zone."
@@ -1136,7 +1166,10 @@
         message-count (:message-count bulk)
         batch-size (:batch-size options)
         since-days (:since-days options)
-        options (assoc options :known-failures (known-failures db (:connection-id bulk) folder-name))
+        options (cond-> (assoc options :known-failures (known-failures db (:connection-id bulk) folder-name))
+                  ;; Flags of re-categorized e-mails that stay in place: applied over one connection after
+                  ;; the run instead of one login per e-mail.
+                  (:recategorize-known? options) (assoc :flag-jobs (atom [])))
         on-complete (or (:on-complete options) (fn [_] nil))
         ;; Searching can fail (e.g. the connection dropped): the dedicated Store opened above must not leak.
         sequence-numbers (try (sequence-numbers-to-read client bulk options context)
@@ -1163,7 +1196,11 @@
                                           (process-folder-messages! client folder-name folder options context bulk
                                                                     sequence-numbers summary)
                                           (finally
-                                            (int/close-folder-for-bulk-read client bulk)))]
+                                            (int/close-folder-for-bulk-read client bulk)
+                                            (when-let [jobs (some-> (:flag-jobs options) deref seq)]
+                                              (try (int/apply-flags client (:connection-id bulk) (vec jobs))
+                                                   (catch Exception e
+                                                     (t/log! {:level :warn :error e} ["Could not set the flags of the re-categorized e-mails in" folder-name]))))))]
                              (t/log! :info ["Finished parsing" folder-name "-" (:processed result) "new," (:skipped result) "already stored,"
                                             (:errors result) "failed," (:remaining result) "not examined" (or (:aborted result) "")])
                              result))))

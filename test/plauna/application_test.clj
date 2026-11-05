@@ -1416,3 +1416,33 @@
   (let [recorded (atom [])]
     (#'app/relocate-known-email! (relocation-context recorded nil) "<moved@x>" "c1" "INBOX")
     (is (= [] @recorded) "Unknown (disconnected): nothing is changed")))
+
+(defn- recategorize-db [writes]
+  (reify int/DB
+    (fetch-email-category-state [_ _] {:category-id 1 :folder "INBOX" :connection-id "c1"})
+    (update-email-category [_ message-id category-id confidence] (swap! writes conj [:category message-id category-id confidence]))
+    (update-email-connection [_ message-id connection-id] (swap! writes conj [:connection message-id connection-id]))
+    (update-email-folder [_ message-id folder] (swap! writes conj [:folder message-id folder]))
+    (fetch-categories [_] [{:id 1 :name "Mail" :flag_color nil} {:id 7 :name "Temporary" :flag_color "orange"}])))
+
+(deftest a-parse-can-give-known-e-mails-the-chosen-category
+  (let [writes (atom [])
+        flag-jobs (atom [])
+        client (reify int/EmailClient
+                 (nth-email-from-folder [_ _ _] (throw (ex-info "Without move nothing is downloaded" {}))))
+        outcome (#'app/recategorize-known-email! client 5 "Trash" :trash-folder
+                                                  {:assigned-category "Temporary" :assigned-category-id 7 :move? false :flag-jobs flag-jobs}
+                                                  {:db (recategorize-db writes)} "c1" "<old@x>")]
+    (is (= :recategorized outcome))
+    (is (= [[:category "<old@x>" 7 1.0] [:connection "<old@x>" "c1"] [:folder "<old@x>" "Trash"]] @writes)
+        "Like a manual change, with the folder it was found in as its place")
+    (is (= [{:message-id "<old@x>" :folder "Trash" :flag "orange" :category "Temporary"}] @flag-jobs)
+        "The flag job names the category, so it is only set in the category's own folder - not in the trash")))
+
+(deftest a-known-e-mail-with-the-chosen-category-is-skipped-as-before
+  (let [writes (atom [])
+        outcome (#'app/recategorize-known-email! nil 5 "Trash" :trash-folder
+                                                  {:assigned-category "Mail" :assigned-category-id 1}
+                                                  {:db (recategorize-db writes)} "c1" "<old@x>")]
+    (is (nil? outcome))
+    (is (= [] @writes))))
