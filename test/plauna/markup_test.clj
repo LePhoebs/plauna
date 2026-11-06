@@ -297,7 +297,7 @@
       (is (str/includes? html "\"count\":5"))))
   "A chart never shows the same label twice")
 
-(deftest uncategorized-email-page-shows-the-model-scores
+(deftest email-page-shows-the-model-scores
   (with-redefs [client/disconnected-connections (fn [] [])]
     (let [email {:header {:message-id "m" :subject "Hello" :date 0}
                  :metadata {:category-id nil}
@@ -313,10 +313,21 @@
       (let [html (markup/list-email-contents {:header {:message-id "m" :date 0} :metadata {} :participants [] :body []}
                                              [{:id nil :name "n/a"}] nil)]
         (is (str/includes? html "No prediction"))))
-    (testing "a categorized e-mail shows no model scores"
-      (let [html (markup/list-email-contents {:header {:message-id "m" :date 0} :metadata {:category-id 1} :participants [] :body []}
-                                             [{:id 1 :name "Bills"}] nil)]
-        (is (not (str/includes? html "Model Scores")))))))
+    (testing "a categorized e-mail shows the model scores too, its own category in bold"
+      (let [html (markup/list-email-contents {:header {:message-id "m" :date 0} :metadata {:category-id 2} :participants [] :body []}
+                                             [{:id 1 :name "Bills"} {:id 2 :name "Friends"}]
+                                             [{:id 1 :name "Bills" :color nil :confidence 0.6}
+                                              {:id 2 :name "Friends" :color nil :confidence 0.4}])]
+        (is (str/includes? html "Model Scores"))
+        (is (str/includes? html "60.00 %"))
+        (is (re-find #"font-semibold\"><span[^>]*></span><span>Friends</span>" html))
+        (is (not (re-find #"font-semibold\"><span[^>]*></span><span>Bills</span>" html)))
+        (is (str/includes? html "The assigned category is in bold"))))
+    (testing "an uncategorized e-mail gets no hint about a bold category"
+      (let [html (markup/list-email-contents {:header {:message-id "m" :date 0} :metadata {:category-id nil} :participants [] :body []}
+                                             [{:id nil :name "n/a"}] [{:id 1 :name "Bills" :color nil :confidence 0.4}])]
+        (is (not (str/includes? html "font-semibold\"><span")))
+        (is (not (str/includes? html "The assigned category is in bold")))))))
 
 (deftest categories-page-offers-flag-colors-and-retention
   (with-redefs [client/disconnected-connections (fn [] [])]

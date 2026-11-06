@@ -139,7 +139,7 @@
      (render "emails.html" (merge {:emails emails-with-java-date :page page-info :header "Emails" :messages (mapv type->toast-role messages) :active-nav :emails} filter-options)))))
 
 (defn list-email-contents
-  "category-scores: the model's most likely categories of an uncategorized e-mail ([{:id :name :color
+  "category-scores: the model's most likely categories of the e-mail ([{:id :name :color
    :confidence}]), or nil when there is none to show."
   ([email-data categories]
    (list-email-contents email-data categories nil))

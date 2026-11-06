@@ -50,20 +50,18 @@
       {% endfor %}
     </select></td></tr>
     <tr><td><strong>Category Confidence: </strong></td><td>{{email.metadata.category-confidence|confidence-percent}}</td></tr>
-    {% if not email.metadata.category-id %}
     <tr><td class="align-top"><strong>Model Scores: </strong></td><td>
       {% if category-scores|not-empty %}
       <ul class="text-sm">
         {% for score in category-scores %}
-        <li class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded-full" style="background-color: {{score.color|category-color}};"></span><span>{{score.name}}</span><span class="opacity-70">{{score.confidence|confidence-percent}}</span></li>
+        <li class="flex items-center gap-2{% if score.id = email.metadata.category-id %} font-semibold{% endif %}"><span class="inline-block w-3 h-3 rounded-full" style="background-color: {{score.color|category-color}};"></span><span>{{score.name}}</span><span class="opacity-70">{{score.confidence|confidence-percent}}</span></li>
         {% endfor %}
       </ul>
-      <p class="text-xs opacity-70 mt-1">What the current model computes for this e-mail. Plauna assigns a category on its own only above the categorization threshold.</p>
+      <p class="text-xs opacity-70 mt-1">What the current model computes for this e-mail now. Plauna assigns a category on its own only above the categorization threshold.{% if email.metadata.category-id %} The assigned category is in bold; it can differ from the model's top score, for example when it was set by hand or the model has been retrained since.{% endif %}</p>
       {% else %}
       <span class="text-sm opacity-70">No prediction: the language is not activated for training or has no model yet.</span>
       {% endif %}
     </td></tr>
-    {% endif %}
   <tr><td><label for="move">Move email after update</label>
   <input class="checkbox" name="move" type="checkbox" data-tooltip-target="tooltip-checkbox" data-tooltip-placement="right" checked>
   <div id="tooltip-checkbox" role="tooltip" class="absolute z-10 invisible inline-block px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg shadow-xs opacity-0 tooltip dark:bg-gray-700">

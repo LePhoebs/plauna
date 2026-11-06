@@ -2182,14 +2182,14 @@
        (if-let [email (enriched-email-by-message-id decoded-id)]
          (let [email-data (add-sanitized-text-to-enriched-email email)
                categories (conj (db/get-categories) {:id nil :name "n/a"})
-               ;; Only for an uncategorized e-mail: what the model would have said below the threshold.
-               category-scores (when (nil? (-> email :metadata :category-id))
-                                 (try (some->> (analysis/category-scores-for-email email (-> email :metadata :language))
-                                               (take 5)
-                                               vec)
-                                      (catch Exception e
-                                        (t/log! {:level :warn :error e} ["Could not compute the category scores of" decoded-id])
-                                        nil)))]
+               ;; What the current model computes for the e-mail, also below the threshold and also when it
+               ;; already has a category.
+               category-scores (try (some->> (analysis/category-scores-for-email email (-> email :metadata :language))
+                                             (take 5)
+                                             vec)
+                                    (catch Exception e
+                                      (t/log! {:level :warn :error e} ["Could not compute the category scores of" decoded-id])
+                                      nil))]
            (success-html-with-body (result-with-messages (markup/list-email-contents email-data categories category-scores) global-messages)))
          (not-found-response "This e-mail is not stored (any more)."))
        (bad-request-response "Invalid e-mail id.")))

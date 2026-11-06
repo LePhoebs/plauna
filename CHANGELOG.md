@@ -330,8 +330,9 @@ All notable changes to this project will be documented in this file.
   that fails does not hold up the others. Plauna never deletes permanently and keeps the e-mail in its
   database as a training example (`metadata.expired_at`); moving a parse batch or folder to category
   folders leaves trashed e-mails in the trash.
-- The details page of an uncategorized e-mail lists the model's five most likely categories with
-  their probabilities, also below the categorization threshold.
+- The details page of an e-mail lists the model's five most likely categories with their
+  probabilities, also below the categorization threshold. For a categorized e-mail the assigned
+  category is shown in bold, so the page also shows how sure the model is about the alternatives.
 
 - Plauna learns from e-mails you move into a category folder in your mail client. Every account's
   category folders are scanned periodically (setting `category-folder-scan-interval`, default 300

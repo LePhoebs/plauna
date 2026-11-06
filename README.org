@@ -70,7 +70,7 @@ You can parse your e-mails from mbox files or directly by connecting to your IMA
 
 - Language and category confidence values displayed as percentages with two decimal places.
 
-- For an e-mail without a category, its detail page lists the model's five most likely categories with their probabilities - the scores that stayed below the categorization threshold.
+- The detail page of every e-mail lists the model's five most likely categories with their probabilities, also below the categorization threshold; for a categorized e-mail its assigned category is shown in bold.
 
 
 * What Plauna is NOT
@@ -193,7 +193,7 @@ Plauna also keeps a few internal values in this file (the session signing key, t
 
 Plauna keeps Naive Bayes and MaxEnt model files side by side. When you select a different model under "Admin" → "Preferences", Plauna opens a confirmation dialog. For the first switch, keep the option to use the current category assignments enabled and enter =Start training= exactly. Plauna then treats the current assignments as correct training examples. The previous model remains active until training of the complete target model succeeds; a failed switch therefore does not leave categorization without a usable model.
 
-Both newly trained algorithms use namespaced features for the sender's address and domain, the From address and domain, the subject and up to 500 normalized body tokens. The sender is the =Sender= header (a mailing service's address for many newsletters), else the From address; e-mails stored before Plauna kept both simply lack the From features. Words are split at every kind of space, no-break spaces included, the same way for training and prediction. The displayed category confidence is the selected model's combined probability across those features, not three separate confidence values. On the detail page of an uncategorized e-mail, "Model Scores" shows what the current model computes for it when the page is opened: the five most likely categories and their probabilities, regardless of the threshold. Nothing of this is stored. A category or language changed manually is stored with 100% confidence because it represents an explicit user decision rather than a model prediction.
+Both newly trained algorithms use namespaced features for the sender's address and domain, the From address and domain, the subject and up to 500 normalized body tokens. The sender is the =Sender= header (a mailing service's address for many newsletters), else the From address; e-mails stored before Plauna kept both simply lack the From features. Words are split at every kind of space, no-break spaces included, the same way for training and prediction. The displayed category confidence is the selected model's combined probability across those features, not three separate confidence values. On the detail page of an e-mail, "Model Scores" shows what the current model computes for it when the page is opened: the five most likely categories and their probabilities, regardless of the threshold. For a categorized e-mail the assigned category is shown in bold; it can differ from the top score, for example after a manual change or a retraining. Nothing of this is stored. A category or language changed manually is stored with 100% confidence because it represents an explicit user decision rather than a model prediction.
 
 If you are upgrading from an earlier version that stored preferences in the database, Plauna migrates them into =settings.json= automatically on the first startup after the upgrade.
 
