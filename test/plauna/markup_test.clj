@@ -172,6 +172,22 @@
       (is (not (str/includes? html "\"format\":{\"type\":\"csv\"")))))
   "Charts use small JSON value arrays directly and size themselves to their cards")
 
+(deftest email-list-offers-a-bulk-category-change-for-selected-e-mails
+  (with-redefs [client/disconnected-connections (fn [] [])]
+    (let [email {:header {:message-id "bulk-m" :subject "Hello" :date 0}
+                 :metadata {:category-id 1} :participants []}
+          options {:categories [{:id 1 :name "Bills"} {:id nil :name "n/a"}] :category-filter-options []
+                   :subjects [] :senders [] :recipients []}
+          html (markup/list-emails [email] {:filter "all" :size 20 :page 1 :total-pages 1} options)
+          empty-html (markup/list-emails [] {:filter "all" :size 20 :page 1 :total-pages 0} options)]
+      (is (str/includes? html "id=\"bulk-category-bar\""))
+      (is (str/includes? html "id=\"email-select-all\""))
+      (is (= 1 (count (re-seq #"email-select-checkbox\" autocomplete" html)))
+          "One checkbox per e-mail row")
+      (is (str/includes? html "<option value=\"1\">Bills</option>"))
+      (is (str/includes? html "<option value=\"\">n/a</option>") "n/a clears the category, like the row dropdown")
+      (is (not (str/includes? empty-html "id=\"bulk-category-bar\"")) "No bar without e-mails"))))
+
 (deftest email-list-marks-a-cut-off-sender-checklist-for-the-server-search
   (with-redefs [client/disconnected-connections (fn [] [])]
     (let [render (fn [truncated?]

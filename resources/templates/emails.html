@@ -111,13 +111,31 @@
 
 {% include "emails-pagination.html" %}
 
+<!-- Bulk category change: the checkboxes in the first column pick e-mails of this page, and each one
+     goes through the same request as its own category dropdown (move on the mail server included). -->
+{% if emails|not-empty %}
+<div id="bulk-category-bar" class="flex flex-wrap items-center gap-2 my-2">
+  <span id="bulk-category-count" class="text-sm">Select e-mails to change their category together.</span>
+  <select id="bulk-category-select" class="select select-sm w-40" aria-label="Category for the selected e-mails" disabled>
+    <option value="__choose" selected disabled>Category…</option>
+    {% for category in categories %}
+    <option value="{{category.id}}">{{category.name}}</option>
+    {% endfor %}
+  </select>
+  <button type="button" id="bulk-category-apply" class="btn btn-primary btn-sm" disabled>Assign</button>
+  <button type="button" id="bulk-category-clear" class="btn btn-ghost btn-sm" disabled>Clear selection</button>
+  <span id="bulk-category-status" class="text-sm" role="status" aria-live="polite"></span>
+</div>
+{% endif %}
+
 <!-- The table renders even with zero results: hiding it along with the filter bar would make an
      active filter invisible and drop it from the next submit. -->
 <div class="w-full overflow-x-auto">
-  <table class="table table-zebra table-fixed">
+  <table class="table table-zebra table-fixed max-lg:[&_th]:px-2 max-lg:[&_td]:px-2">
     <thead class="table-header-group">
       <tr class="table-row">
-        <th class="table-cell text-left w-28"><strong>Date</strong></th>
+        <th class="table-cell w-9 px-2"><input type="checkbox" class="checkbox checkbox-sm" id="email-select-all" autocomplete="off" aria-label="Select every e-mail on this page" title="Select every e-mail on this page"></th>
+        <th class="table-cell text-left w-24 lg:w-28"><strong>Date</strong></th>
         <th class="table-cell text-left">
           <details class="dropdown">
             <summary class="inline-flex items-center gap-1 cursor-pointer list-none {% if page.subject-filter-active? %}text-primary{% endif %}">
@@ -219,7 +237,7 @@
         </th>
         <th class="hidden lg:table-cell text-left lg:w-20"><strong>Language</strong></th>
         <th class="hidden lg:table-cell text-left lg:w-24"><strong>Confidence</strong></th>
-        <th class="text-left w-36">
+        <th class="text-left w-32 sm:w-36">
           <details class="dropdown">
             <summary class="inline-flex items-center gap-1 cursor-pointer list-none {% if page.category-filter-active? %}text-primary{% endif %}">
               <strong>Category</strong>
@@ -257,6 +275,7 @@
     <tbody>
       {% for email in emails %}
       <tr class="table-row">
+        <td class="table-cell px-2"><input type="checkbox" class="checkbox checkbox-sm email-select-checkbox" autocomplete="off" aria-label="Select this e-mail"></td>
         <td class="table-cell"><a href="/emails/{{email.header.message-id|base64-encode}}">{{email.header.date|date:"dd.MM.yyyy"}}</a></td>
         <td class="table-cell wrap-anywhere" style="text-wrap-mode: wrap;"><a href="/emails/{{email.header.message-id|base64-encode}}">{{email.header.subject}}</a></td>
         <td class="hidden lg:table-cell wrap-anywhere" style="text-wrap-mode: wrap;"><a href="/emails/{{email.header.message-id|base64-encode}}">{{email.participants|concat-senders}}</a></td>
@@ -443,6 +462,145 @@
     applyCategoryColor(select);
     saveCategoryChange(select, false);
   }
+
+  // Bulk category change for the e-mails ticked in the first column. Every e-mail goes through the
+  // same /metadata/category request as its own dropdown, one after the other (each one is an IMAP
+  // move), and its row shows the outcome. E-mails the mail server does not have are collected and
+  // asked about once at the end, instead of one dialog per e-mail.
+  (function () {
+    var bar = document.getElementById('bulk-category-bar');
+    if (!bar) { return; }
+    var selectAll = document.getElementById('email-select-all');
+    var countLabel = document.getElementById('bulk-category-count');
+    var categorySelect = document.getElementById('bulk-category-select');
+    var applyButton = document.getElementById('bulk-category-apply');
+    var clearButton = document.getElementById('bulk-category-clear');
+    var statusLabel = document.getElementById('bulk-category-status');
+    var running = false;
+    var lastClicked = null;
+
+    function boxes() { return Array.prototype.slice.call(document.querySelectorAll('.email-select-checkbox')); }
+    function selectedBoxes() { return boxes().filter(function (box) { return box.checked; }); }
+    function rowSelect(box) { return box.closest('tr').querySelector('.category-select'); }
+
+    function update() {
+      var all = boxes();
+      var count = selectedBoxes().length;
+      selectAll.checked = all.length > 0 && count === all.length;
+      selectAll.indeterminate = count > 0 && count < all.length;
+      selectAll.disabled = running;
+      all.forEach(function (box) { box.disabled = running; });
+      countLabel.textContent = count === 0 ? 'Select e-mails to change their category together.'
+        : (count === 1 ? '1 e-mail selected' : count + ' e-mails selected');
+      categorySelect.disabled = running || count === 0;
+      applyButton.disabled = running || count === 0 || categorySelect.value === '__choose';
+      clearButton.disabled = running || count === 0;
+    }
+
+    function postCategory(messageId, category, force) {
+      var fields = {'message-id': messageId, 'category': category};
+      if (force) { fields.force = 'true'; }
+      return fetch('/metadata/category', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: new URLSearchParams(fields)
+      }).then(function (res) { return res.status; }, function () { return 0; });
+    }
+
+    function markAssigned(box, select, category) {
+      select.value = category;
+      select.dataset.savedValue = category;
+      applyCategoryColor(select);
+      flash(select, '#16a34a');
+      box.checked = false;
+    }
+
+    function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
+
+    async function assign() {
+      var category = categorySelect.value;
+      if (category === '__choose') { return; }
+      var categoryName = categorySelect.options[categorySelect.selectedIndex].text;
+      var picked = selectedBoxes();
+      var counts = {assigned: 0, unchanged: 0, failed: 0, missing: 0};
+      var missing = [];
+      running = true;
+      update();
+      for (var i = 0; i < picked.length; i++) {
+        var box = picked[i];
+        var select = rowSelect(box);
+        statusLabel.textContent = 'Assigning ' + (i + 1) + ' of ' + picked.length + '…';
+        if (select.dataset.savedValue === category) { counts.unchanged++; box.checked = false; continue; }
+        select.disabled = true;
+        var status = await postCategory(select.dataset.messageId, category, false);
+        if (status === 204) {
+          markAssigned(box, select, category);
+          counts.assigned++;
+        } else if (status === 404) {
+          missing.push(box);
+          continue;
+        } else {
+          // 200: the move failed and the category was kept; anything else is an error.
+          flash(select, status === 200 ? '#d97706' : '#dc2626');
+          counts.failed++;
+        }
+        select.disabled = false;
+      }
+      if (missing.length > 0) {
+        statusLabel.textContent = '';
+        var changeAnyway = window.confirm(plural(missing.length, 'e-mail') + ' of the selection ' + (missing.length === 1 ? 'was' : 'were') +
+          ' not found on the mail server. Change only Plauna\'s category to "' + categoryName + '" anyway?');
+        for (var j = 0; j < missing.length; j++) {
+          var missingBox = missing[j];
+          var missingSelect = rowSelect(missingBox);
+          if (changeAnyway && await postCategory(missingSelect.dataset.messageId, category, true) === 204) {
+            markAssigned(missingBox, missingSelect, category);
+            counts.assigned++;
+          } else {
+            if (changeAnyway) { flash(missingSelect, '#dc2626'); counts.failed++; } else { counts.missing++; }
+          }
+          missingSelect.disabled = false;
+        }
+      }
+      var parts = [plural(counts.assigned, 'e-mail') + ' assigned to "' + categoryName + '".'];
+      if (counts.unchanged) { parts.push(plural(counts.unchanged, 'e-mail') + ' already had this category.'); }
+      if (counts.missing) { parts.push(plural(counts.missing, 'e-mail') + ' not found on the mail server and left unchanged.'); }
+      if (counts.failed) { parts.push(plural(counts.failed, 'e-mail') + ' could not be changed and stay selected.'); }
+      statusLabel.textContent = parts.join(' ');
+      running = false;
+      update();
+    }
+
+    document.querySelector('table').addEventListener('click', function (event) {
+      var box = event.target;
+      if (!box.classList || !box.classList.contains('email-select-checkbox')) { return; }
+      // Shift-click ticks or unticks every e-mail between the previous click and this one.
+      var all = boxes();
+      if (event.shiftKey && lastClicked && lastClicked !== box) {
+        var from = all.indexOf(lastClicked);
+        var to = all.indexOf(box);
+        if (from !== -1 && to !== -1) {
+          all.slice(Math.min(from, to), Math.max(from, to) + 1).forEach(function (other) { other.checked = box.checked; });
+        }
+      }
+      lastClicked = box;
+      statusLabel.textContent = '';
+      update();
+    });
+    selectAll.addEventListener('change', function () {
+      boxes().forEach(function (box) { box.checked = selectAll.checked; });
+      statusLabel.textContent = '';
+      update();
+    });
+    clearButton.addEventListener('click', function () {
+      boxes().forEach(function (box) { box.checked = false; });
+      statusLabel.textContent = '';
+      update();
+    });
+    categorySelect.addEventListener('change', update);
+    applyButton.addEventListener('click', assign);
+    update();
+  })();
 
   // Save an e-mail's language when its language field changes.
   function updateLanguage(input) {
