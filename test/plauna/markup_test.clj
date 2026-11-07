@@ -507,3 +507,9 @@
     (let [message {:type :success :key :category.saved}]
       (is (str/includes? (markup/model-page {:model-scores {}} [message]) "The category was saved."))
       (is (str/includes? (markup/category-page {:category {:id 1 :name "X"} :tab "emails" :emails []} [message]) "The category was saved.")))))
+
+(deftest account-update-sends-the-account-form-not-the-first-form-of-the-page
+  ;; The sidebar's language switch is the first form of every page since the new shell.
+  (let [template (slurp "resources/templates/admin-connection.html")]
+    (is (str/includes? template "const form = document.getElementById('update');"))
+    (is (not (str/includes? template "document.querySelector('form')")))))

@@ -345,7 +345,7 @@
 
 
         document.getElementById('update-button').addEventListener('click', (e) => {
-          const form = document.querySelector('form'); 
+          const form = document.getElementById('update');
           const body = new FormData();
           for (let element of form.elements) {
             if (element.checked) {
