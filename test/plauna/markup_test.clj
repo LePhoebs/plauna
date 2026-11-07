@@ -172,6 +172,29 @@
       (is (not (str/includes? html "\"format\":{\"type\":\"csv\"")))))
   "Charts use small JSON value arrays directly and size themselves to their cards")
 
+(deftest email-list-renders-the-suggestion-filter
+  (with-redefs [client/disconnected-connections (fn [] [])]
+    (let [options {:categories [{:id 3 :name "Temporary"} {:id nil :name "n/a"}] :category-filter-options []
+                   :subjects [] :senders [] :recipients []}
+          render (fn [page model-scores]
+                   (markup/list-emails [] (merge {:filter "all" :size 20 :page 2 :total-pages 3} page)
+                                       (assoc options :model-scores model-scores)))
+          model (render {:suggest-category 3 :suggest-by "model" :suggest-min 40
+                         :any-filter-active? true :suggestion-active? true
+                         :suggestion-filter-label "Suggested for Temporary (model ≥ 40 %)"}
+                        {:at-text "07.11.2026 14:03" :emails 120 :stale? true :running? false})
+          sender (render {:suggest-by "sender"} {:running? true})]
+      (is (str/includes? model "<option value=\"3\" selected>Temporary</option>"))
+      (is (not (str/includes? model "<option value=\"\">n/a</option>")) "n/a cannot be suggested")
+      (is (str/includes? model "<option value=\"model\" selected>Model</option>"))
+      (is (str/includes? model "name=\"suggest-min\" min=\"1\" max=\"99\" class=\"input w-20\" value=\"40\""))
+      (is (str/includes? model "Scores from 07.11.2026 14:03 (120 e-mails) – the model was trained since."))
+      (is (str/includes? model "Suggested for Temporary (model ≥ 40 %)"))
+      (is (str/includes? model "<input type=\"hidden\" name=\"suggest-by\" value=\"model\" />") "Pagination keeps the filter")
+      (is (str/includes? sender "id=\"suggest-min-field\" class=\"flex items-center gap-1 text-sm\" hidden"))
+      (is (str/includes? sender "data-running=\"true\""))
+      (is (str/includes? sender "Scoring the e-mails…")))))
+
 (deftest email-list-offers-a-bulk-category-change-for-selected-e-mails
   (with-redefs [client/disconnected-connections (fn [] [])]
     (let [email {:header {:message-id "bulk-m" :subject "Hello" :date 0}

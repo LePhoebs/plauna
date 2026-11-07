@@ -27,7 +27,7 @@
    "auth_providers" "headers" "connections" "bodies" "communications"
    "metadata" "oauth_tokens" "parse_batches" "parse_batch_emails" "parse_failures"
    "category_folder_watermarks"
-   "training_tokens"])
+   "training_tokens" "category_scores"])
 
 (def insert-batch-rows 200)
 

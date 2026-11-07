@@ -525,6 +525,23 @@
                            (assoc (select-keys category [:id :name :color]) :confidence confidence))))
                  (category-scores-for-tokens tokens model-file))))))))
 
+(defn category-scores-for-tokens-text
+  "The model's probability for each existing category, as [{:id :confidence}], for an e-mail of the
+   given language whose classification features are tokens-text (see training-tokens-text, the form the
+   training_tokens table caches). nil when there is no prediction: no or a non-activated language, no
+   model, or an old train-<language>.bin model, which expects other features than the cached ones."
+  [tokens-text language-code]
+  (when (and (some? language-code) (not (st/blank? tokens-text))
+             (some #(= language-code %) (activated-languages)))
+    (let [model-file ^File (files/model-file language-code (p/categorization-model))]
+      (when (and (.exists model-file) (not= (.getName model-file) (str "train-" language-code ".bin")))
+        (let [label-format (model-label-format model-file)]
+          (into []
+                (keep (fn [{:keys [name confidence]}]
+                        (when-let [category (label->category name label-format)]
+                          {:id (:id category) :confidence confidence})))
+                (category-scores-for-tokens (st/split tokens-text #" ") model-file)))))))
+
 (defn detect-language-and-categorize-email
   "Detect the language of an e-mail and, for an activated language with a model, its category. The
    HTML body is cleaned once for both. A failure in either step yields an e-mail without that piece

@@ -369,11 +369,11 @@
             (assoc email :body (map core-email/construct-body-part (get bodies (-> email :header :message-id)))))
           emails)))
 
-(defn- training-tokens-for
+(defn- cached-classification-tokens
   "The classification tokens of a page of e-mails as {message-id tokens}: from the training_tokens
    cache where present, otherwise computed now (in parallel, this is the expensive text cleaning) and
-   cached for every later run."
-  [emails]
+   cached for every later run. on-computed receives the number of e-mails analysed for the first time."
+  [emails on-computed]
   (let [message-id #(-> % :header :message-id)
         cached (db/fetch-training-tokens-for (mapv message-id emails) analysis/training-tokens-version)
         missing (remove #(contains? cached (message-id %)) emails)
@@ -382,8 +382,11 @@
                                   (attach-bodies missing))))]
     (when (seq computed)
       (db/save-training-tokens! computed analysis/training-tokens-version)
-      (swap! training-progress update :tokens-computed (fnil + 0) (count computed)))
+      (on-computed (count computed)))
     (merge cached computed)))
+
+(defn- training-tokens-for [emails]
+  (cached-classification-tokens emails #(swap! training-progress update :tokens-computed (fnil + 0) %)))
 
 (defn write-all-categorized-emails-to-training-files []
   (files/delete-files-with-type :train)
@@ -543,6 +546,85 @@
     (when (or (nil? result) (= :info (:type result)))
       (p/record-successful-training! (Instant/now)))
     result))
+
+;; ── Model scores ───────────────────────────────────────────────────────────────────
+;; The e-mail list's suggestion filter can look for e-mails the model would put into a category. That
+;; needs the model's probabilities for every stored e-mail, which a background run computes and stores
+;; (category_scores) - scoring thousands of e-mails takes too long for a request.
+
+(defonce scoring-progress (atom {:status :idle}))
+
+(defn scoring-running? [] (= :running (:status @scoring-progress)))
+
+(defn- score-page!
+  "Score one page of e-mails with the current models and store the result; returns how many e-mails
+   got scores (those of a language without a model get none)."
+  [emails]
+  (let [tokens (cached-classification-tokens emails #(swap! scoring-progress update :tokens-computed (fnil + 0) %))
+        rows (for [email emails
+                   :let [message-id (-> email :header :message-id)
+                         scores (analysis/category-scores-for-tokens-text (get tokens message-id) (-> email :metadata :language))]
+                   score scores]
+               [message-id (:id score) (double (:confidence score))])
+        scored (count (distinct (map first rows)))]
+    (db/save-category-scores! rows)
+    (swap! scoring-progress #(-> % (update :done (fnil + 0) (count emails)) (update :scored (fnil + 0) scored)))
+    scored))
+
+(defn score-all-emails!
+  "Replace the stored model scores with those of the current models for every e-mail with a detected
+   language. Records when it finished, for the e-mail list."
+  []
+  (db/delete-all-category-scores!)
+  (let [entity-query {:entity :enriched-email :page {:size 200 :page 1} :with-bodies false}
+        ;; A stable order: LIMIT/OFFSET pages without one may skip or repeat e-mails.
+        sql-query {:where [:<> :language nil] :order-by [[:headers.message-id :asc]]}
+        total (:total (db/fetch-data (assoc entity-query :page {:size 1 :page 1}) sql-query))]
+    (swap! scoring-progress assoc :total (or total 0))
+    (core-email/iterate-over-all-pages db/fetch-data score-page! entity-query sql-query false)
+    (let [scored (:scored @scoring-progress 0)]
+      (p/record-model-scores! (Instant/now) scored)
+      scored)))
+
+(defn start-scoring-job!
+  "Score every e-mail on a background thread. false when a scoring run is already in progress."
+  []
+  (let [[before _] (swap-vals! scoring-progress
+                               (fn [state]
+                                 (if (= :running (:status state))
+                                   state
+                                   {:status :running :started-at (System/currentTimeMillis) :done 0 :scored 0 :total 0 :tokens-computed 0})))]
+    (if (= :running (:status before))
+      false
+      (do (async/thread
+            (let [result (try
+                           (let [scored (score-all-emails!)]
+                             {:type :success :content (str "Model scores are ready for " scored " e-mail(s). Pick \"Model\" in \"Suggest for Category\" to use them.")})
+                           (catch Throwable e
+                             (t/log! {:level :error :error e} "Scoring the e-mails with the model failed.")
+                             {:type :alert :content "Scoring the e-mails with the model failed. Please check the logs."}))]
+              (swap! scoring-progress assoc :status :finished :finished-at (System/currentTimeMillis) :result result)
+              ;; Also shown on the next page load: the list reloads itself when the run is over.
+              (add-to-messages result)))
+          true))))
+
+(defn model-scores-summary
+  "What the e-mail list says about the stored model scores: when they were computed (in the configured
+   time zone), for how many e-mails, whether a training ran since (then they are from an older model)
+   and whether a scoring run is in progress."
+  []
+  (let [{:keys [at emails]} (p/model-scores-info)
+        trained-at (p/last-successful-training-at)]
+    {:at-text (some-> at (.atZone (p/zone-id)) (.format (java.time.format.DateTimeFormatter/ofPattern "dd.MM.yyyy HH:mm")))
+     :emails emails
+     :stale? (boolean (and at trained-at (.isAfter ^Instant trained-at ^Instant at)))
+     :running? (scoring-running?)}))
+
+(defn scoring-status
+  "The e-mail list's JSON view of the current (or last) scoring run."
+  []
+  (let [{:keys [status done total result]} @scoring-progress]
+    {:status status :done (or done 0) :total (or total 0) :result (:content result) :result-type (:type result)}))
 
 (def ^:private training-phase-order [:starting :collecting :training :writing])
 
@@ -1073,7 +1155,10 @@
                       :category-ids-none {:default nil :type-fn identity}
                       :date-from {:default nil :type-fn identity}
                       :date-to {:default nil :type-fn identity}
-                      :batch {:default nil :type-fn identity}})
+                      :batch {:default nil :type-fn identity}
+                      :suggest-category {:default nil :type-fn identity}
+                      :suggest-by {:default nil :type-fn identity}
+                      :suggest-min {:default nil :type-fn identity}})
 
 (defn template->request-parameters [template]
   (fn [rp] (reduce (fn [acc [k v]] (if (contains? rp k)
@@ -1647,6 +1732,7 @@
     (some #(= "running" (:status %)) (vals @batch-moves)) (conj "a move to category folders")
     @retention-running (conj "a clean-up")
     (= :running (:status @training-progress)) (conj "a training run")
+    (scoring-running?) (conj "a model scoring run")
     (client/category-folder-scan-running?) (conj "a category folder scan")))
 
 (def maintenance-wait-millis
@@ -2144,8 +2230,20 @@
            options (cond-> (:optional result)
                      ;; Only for a batch that exists: the id comes from the URL, and a crafted one such as
                      ;; "../../admin/..." would turn the button into a POST to any route of Plauna.
-                     (and (some? batch-id) (some? (db/parse-batch batch-id))) (assoc :batch-move-url (batch-move-url batch-id)))]
+                     (and (some? batch-id) (some? (db/parse-batch batch-id))) (assoc :batch-move-url (batch-move-url batch-id))
+                     true (assoc :model-scores (model-scores-summary)))]
        (success-html-with-body (result-with-messages (markup/list-emails (:data result) (:parameters result) options) global-messages))))
+
+   ;; "Score e-mails now" of the suggestion filter: computes the model scores in the background.
+   (comp/POST "/emails/score" request
+     (when-not (start-scoring-job!)
+       (add-to-messages {:type :info :content "The e-mails are already being scored. Please wait for that run to finish."}))
+     (redirect-to-referer request))
+
+   (comp/GET "/emails/score/status" _
+     {:status 200
+      :headers {"Content-Type" "application/json; charset=UTF-8" "Cache-Control" "no-store"}
+      :body (generate-string (scoring-status))})
 
    ;; The search box of a cut-off Subject/From/To checklist: the values that did not fit into the page.
    ;; Declared before /emails/:id, which would otherwise take "filter-options" for a message id.

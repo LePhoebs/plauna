@@ -3,6 +3,10 @@
             [clojure.core.async :as async]
             [next.jdbc]
             [plauna.database :as db]
+            [plauna.application :as app]
+            [plauna.analysis :as analysis]
+            [plauna.preferences :as preferences]
+            [plauna.server :as server]
             [taoensso.telemere :as t]
             [plauna.files :as files]))
 
@@ -519,3 +523,85 @@
 (deftest huge-text-parts-are-cut-to-fit-mariadb
   (is (= db/max-body-content-chars
          (count (:content (db/fit-body-row {:content (apply str (repeat (inc db/max-body-content-chars) "x"))}))))))
+
+(deftest suggestion-filter-finds-e-mails-from-senders-of-a-category
+  ;; The list's "Suggest for Category" filter on the real SQL: e-mails outside the category whose
+  ;; sender address (or domain) also wrote e-mails that are in it.
+  (let [temporary (ensure-category "suggest-temporary")
+        work (ensure-category "suggest-work")
+        mail (fn [id] {:mime-type "text/plain" :subject (str "Suggest " id) :message-id id :date 1000 :in-reply-to nil})
+        ids ["sg-in-1" "sg-in-2" "sg-same" "sg-same-upper" "sg-domain" "sg-other"]]
+    (db/save-headers (mapv mail ids))
+    (db/save-contacts [{:contact-key "sg-news" :name "Shop" :address "news@shop-suggest.example"}
+                        {:contact-key "sg-news-upper" :name "SHOP NEWS" :address "NEWS@Shop-Suggest.example"}
+                        {:contact-key "sg-billing" :name "Billing" :address "billing@shop-suggest.example"}
+                        {:contact-key "sg-friend" :name "Friend" :address "friend@else-suggest.example"}])
+    (db/save-communications [{:message-id "sg-in-1" :contact-key "sg-news" :type :sender}
+                              {:message-id "sg-in-2" :contact-key "sg-news" :type :from}
+                              {:message-id "sg-same" :contact-key "sg-news" :type :sender}
+                              {:message-id "sg-same-upper" :contact-key "sg-news-upper" :type :from}
+                              {:message-id "sg-domain" :contact-key "sg-billing" :type :sender}
+                              {:message-id "sg-other" :contact-key "sg-friend" :type :sender}
+                              ;; Only as a recipient: the sender filter must not count it.
+                              {:message-id "sg-other" :contact-key "sg-news" :type :receiver}])
+    (db/update-metadata-category "sg-in-1" temporary 1.0)
+    (db/update-metadata-category "sg-in-2" temporary 0.6)
+    (db/update-metadata-category "sg-domain" work 1.0)
+    (let [listed (fn [method]
+                   (->> (app/fetch-emails {:db (db/->SqliteDB) :time-zone "UTC"}
+                                          {:filter "all" :page 1 :size 100 :suggest-category (str temporary) :suggest-by method})
+                        :data
+                        (map #(-> % :header :message-id))
+                        (filter (set ids))
+                        set))]
+      (is (= #{"sg-same" "sg-same-upper"} (listed "sender"))
+          "Same sender address, ignoring case and display name; e-mails already in the category are left out")
+      (is (= #{"sg-same" "sg-same-upper" "sg-domain"} (listed "domain"))
+          "The same domain also finds another sender of it, even from another category"))))
+
+(deftest model-suggestion-filter-uses-the-stored-scores-most-likely-first
+  (let [temporary (ensure-category "model-suggest-temporary")
+        other (ensure-category "model-suggest-other")
+        mail (fn [id date] {:mime-type "text/plain" :subject (str "Model " id) :message-id id :date date :in-reply-to nil})
+        ids ["ms-high" "ms-mid" "ms-low" "ms-in" "ms-unscored"]]
+    (db/save-headers [(mail "ms-high" 100) (mail "ms-mid" 300) (mail "ms-low" 200) (mail "ms-in" 400) (mail "ms-unscored" 500)])
+    (db/update-metadata-category "ms-in" temporary 1.0)
+    (db/update-metadata-category "ms-mid" other 0.7)
+    (db/save-category-scores! [["ms-high" temporary 0.9] ["ms-high" other 0.1]
+                               ["ms-mid" temporary 0.6] ["ms-mid" other 0.4]
+                               ["ms-low" temporary 0.2] ["ms-low" other 0.8]
+                               ["ms-in" temporary 0.95]])
+    (db/save-category-scores! [["ms-mid" temporary 0.65]])
+    (is (= {temporary 0.65 other 0.4} (db/category-scores-of "ms-mid")) "Saving again replaces a score")
+    (let [listed (fn [min-percent]
+                   (->> (app/fetch-emails {:db (db/->SqliteDB) :time-zone "UTC"}
+                                          {:filter "all" :page 1 :size 100 :suggest-category (str temporary)
+                                           :suggest-by "model" :suggest-min min-percent})
+                        :data
+                        (map #(-> % :header :message-id))
+                        (filter (set ids))))]
+      (is (= ["ms-high" "ms-mid"] (listed "50"))
+          "Scores from 50 % on, most likely first; the e-mail already in the category is left out")
+      (is (= ["ms-high" "ms-mid" "ms-low"] (listed "10")))
+      (is (= ["ms-high" "ms-mid"] (listed "nonsense")) "An invalid minimum falls back to 50 %"))
+    (db/delete-all-category-scores!)
+    (is (= {} (db/category-scores-of "ms-high")))))
+
+(deftest scoring-run-replaces-the-stored-scores-of-e-mails-with-a-language
+  (let [temporary (ensure-category "scoring-run-temporary")
+        recorded (atom nil)
+        mail (fn [id] {:mime-type "text/plain" :subject (str "Scoring " id) :message-id id :date 0 :in-reply-to nil})]
+    (db/save-headers [(mail "sr-de") (mail "sr-none")])
+    (db/update-metadata-language "sr-de" "de" 1.0)
+    (db/save-category-scores! [["sr-none" temporary 0.5]])
+    (with-redefs [analysis/category-scores-for-tokens-text (fn [tokens language]
+                                                             (when (= "de" language)
+                                                               [{:id temporary :confidence (if (string? tokens) 0.75 0.0)}]))
+                  preferences/record-model-scores! (fn [_ n] (reset! recorded n))]
+      (reset! server/scoring-progress {:status :running :done 0 :scored 0 :total 0})
+      (let [scored (server/score-all-emails!)]
+        (is (pos? scored))
+        (is (= scored @recorded) "The run records how many e-mails got scores")
+        (is (= {temporary 0.75} (db/category-scores-of "sr-de")) "Scored from its (cached) classification tokens")
+        (is (= {} (db/category-scores-of "sr-none")) "Scores of an earlier run are dropped")
+        (is (= (:total @server/scoring-progress) (:done @server/scoring-progress)) "The progress reaches the total")))))

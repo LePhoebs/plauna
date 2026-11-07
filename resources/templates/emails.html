@@ -9,6 +9,9 @@
 
 {% block content %}
 
+<!-- Outside #page-form: forms cannot be nested. Its button sits in the suggestion filter. -->
+<form id="score-form" action="/emails/score" method="post"></form>
+
 <div class="flex flex-col lg:flex-row gap-4">
   <div class="card grow place-items-center">
     <h3>Filter</h3>
@@ -33,7 +36,7 @@
         <fieldset class="fieldset">
           <legend class="fieldset-legend">Search Body</legend>
           <input type="text" name="search-text" id="body-search-input" class="input" placeholder='Words or "exact phrase"...' value="{{page.search-text}}" />
-          <p class="label">All words are required. Word prefixes and quoted phrases are supported.</p>
+          <p class="label whitespace-normal">All words are required. Word prefixes and quoted phrases are supported.</p>
         </fieldset>
         <fieldset class="fieldset">
           <legend class="fieldset-legend">Date Range</legend>
@@ -43,6 +46,35 @@
           </div>
           <input type="hidden" name="date-from" id="date-from-input" value="{{page.date-from}}" />
           <input type="hidden" name="date-to" id="date-to-input" value="{{page.date-to}}" />
+        </fieldset>
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">Suggest for Category</legend>
+          <div class="flex flex-wrap items-center gap-1">
+            <select class="select w-40" name="suggest-category" id="suggest-category-input" aria-label="Category to suggest e-mails for">
+              <option value="">Off</option>
+              {% for category in categories %}{% if category.id %}
+              <option value="{{category.id}}" {% if page.suggest-category = category.id %}selected{% endif %}>{{category.name}}</option>
+              {% endif %}{% endfor %}
+            </select>
+            <select class="select w-44" name="suggest-by" id="suggest-by-input" aria-label="How to find suggestions">
+              <option value="sender" {% if page.suggest-by = "sender" %}selected{% endif %}>Same sender</option>
+              <option value="domain" {% if page.suggest-by = "domain" %}selected{% endif %}>Same sender domain</option>
+              <option value="model" {% if page.suggest-by = "model" %}selected{% endif %}>Model</option>
+            </select>
+            <label id="suggest-min-field" class="flex items-center gap-1 text-sm" {% ifunequal page.suggest-by "model" %}hidden{% endifunequal %}>
+              at least
+              <input type="number" name="suggest-min" min="1" max="99" class="input w-20" value="{{page.suggest-min}}" aria-label="Minimum model probability in percent">
+              %
+            </label>
+          </div>
+          <p class="label whitespace-normal" id="suggest-help-senders" {% if page.suggest-by = "model" %}hidden{% endif %}>E-mails outside the category from senders that already have e-mails in it.</p>
+          <div class="label whitespace-normal flex-wrap gap-x-2" id="suggest-help-model" {% ifunequal page.suggest-by "model" %}hidden{% endifunequal %}>
+            <span>E-mails outside the category that the model puts into it, most likely first.</span>
+            <span id="model-scores-state" data-running="{% if model-scores.running? %}true{% else %}false{% endif %}">
+              {% if model-scores.running? %}Scoring the e-mails…{% else %}{% if model-scores.at-text %}Scores from {{model-scores.at-text}} ({{model-scores.emails}} e-mails){% if model-scores.stale? %} – the model was trained since{% endif %}.{% else %}No e-mails have been scored yet.{% endif %}{% endif %}
+            </span>
+            <button type="submit" form="score-form" class="btn btn-xs" {% if model-scores.running? %}disabled{% endif %}>Score e-mails now</button>
+          </div>
         </fieldset>
       </div>
       <button class="btn btn-primary" type="submit">Apply</button>
@@ -74,6 +106,11 @@
     <button class="btn btn-outline btn-xs" type="submit" title="For a batch that was parsed without 'Move e-mails after categorization'">Move batch to category folders</button>
   </form>
   {% endif %}
+  {% endif %}
+  {% if page.suggestion-active? %}
+  <button type="button" class="badge badge-primary gap-1" onclick="clearAppliedFilter('suggestion')" title="Remove suggestion filter">
+    {{page.suggestion-filter-label}} <span aria-hidden="true">×</span>
+  </button>
   {% endif %}
   {% if page.search-active? %}
   <button type="button" class="badge badge-primary gap-1" onclick="clearAppliedFilter('search')" title="Remove body search">
@@ -771,6 +808,8 @@
   function clearAppliedFilter(filter) {
     if (filter === 'metadata') {
       document.getElementById('metadata-filter-input').value = 'all';
+    } else if (filter === 'suggestion') {
+      document.getElementById('suggest-category-input').value = '';
     } else if (filter === 'search') {
       document.getElementById('body-search-input').value = '';
     } else if (filter === 'batch') {
@@ -789,6 +828,36 @@
    ['to-filter-select-all', 'to-filter-checkbox', 'to-checklist'],
    ['category-filter-select-all', 'category-filter-checkbox', 'category-checklist']]
     .forEach(function (config) { updateSelectAllState(config[0], config[1], config[2]); });
+
+  // Suggestion filter: the minimum probability and the scoring controls belong to the model method only.
+  (function () {
+    var method = document.getElementById('suggest-by-input');
+    function sync() {
+      var model = method.value === 'model';
+      document.getElementById('suggest-min-field').hidden = !model;
+      document.getElementById('suggest-help-model').hidden = !model;
+      document.getElementById('suggest-help-senders').hidden = model;
+    }
+    method.addEventListener('change', sync);
+    sync();
+    // A running scoring run: show its progress and reload when it is over, so the filter uses the new scores.
+    var state = document.getElementById('model-scores-state');
+    if (state.dataset.running !== 'true') { return; }
+    function poll() {
+      fetch('/emails/score/status', {credentials: 'same-origin', headers: {'Accept': 'application/json'}})
+        .then(function (response) { return response.json(); })
+        .then(function (status) {
+          if (status.status === 'running') {
+            state.textContent = 'Scoring the e-mails… ' + status.done + ' of ' + status.total + '.';
+            setTimeout(poll, 2000);
+          } else {
+            window.location.reload();
+          }
+        })
+        .catch(function () { setTimeout(poll, 5000); });
+    }
+    poll();
+  })();
 
   // Date range filter: a single flatpickr calendar drives the two hidden date-from/date-to fields
   // that #page-form actually submits.

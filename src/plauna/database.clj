@@ -841,6 +841,27 @@
   [message-id]
   (jdbc/execute! (ds) (honey/format {:delete-from :training-tokens :where [:= :message-id message-id]})))
 
+(defn delete-all-category-scores!
+  "Forget every stored model score (a new scoring run starts from scratch)."
+  []
+  (jdbc/execute! (ds) ["DELETE FROM category_scores"]))
+
+(defn save-category-scores!
+  "Store model scores, rows of [message-id category-id confidence]; an existing row is replaced."
+  [rows]
+  (when (seq rows)
+    (let [insert (builder/for-insert-multi :category_scores [:message_id :category_id :confidence] (vec rows) {})]
+      (jdbc/execute! (ds)
+                     (if (mariadb?)
+                       (conj (rest insert) (str (first insert) " ON DUPLICATE KEY UPDATE confidence = VALUES(confidence)"))
+                       (conj (rest insert) (string/replace-first (first insert) #"^INSERT" "INSERT OR REPLACE")))))))
+
+(defn category-scores-of
+  "The stored model scores of one e-mail as {category-id confidence}."
+  [message-id]
+  (into {} (map (juxt :category_id :confidence))
+        (jdbc/execute! (ds) ["SELECT category_id, confidence FROM category_scores WHERE message_id = ?" message-id] builder-function)))
+
 (defn- existing-parse-failure
   "The entry a repeated failure belongs to: the same UID, or - when the UID could not be read - the
    same sequence number among the entries without UID. Without this fallback a folder whose store

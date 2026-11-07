@@ -299,6 +299,90 @@
                               :from [:parse-batch-emails]
                               :where [:= :parse-batch-emails.batch-id batch-id]}]))
 
+(def ^:private suggestion-sender-types
+  "The participant types that count as an e-mail's sender for the suggestion filter (see
+   sender-keys->where: legacy rows may store the type with a leading colon)."
+  ["sender" ":sender" "from"])
+
+(def suggestion-methods
+  "How the suggestion filter finds e-mails that may belong into a category: \"sender\" - a sender
+   address that already has e-mails in the category; \"domain\" - the same for the sender's domain;
+   \"model\" - the stored model score for the category (see the category_scores table) reaches the
+   minimum probability."
+  #{"sender" "domain" "model"})
+
+(def default-suggestion-min-percent 50)
+
+(defn suggestion-parameters
+  "The suggestion filter's parameters, cleaned: {:category-id :method :min-percent}, or nil when it is
+   off (no or an invalid category id). An unknown method falls back to \"sender\"; the minimum
+   probability of the model method is a whole percentage from 1 to 99 (default 50)."
+  [parameters]
+  (when-let [category-id (some-> (:suggest-category parameters) str str/trim parse-long)]
+    (let [min-percent (some-> (:suggest-min parameters) str str/trim parse-long)]
+      {:category-id category-id
+       :method (if (contains? suggestion-methods (:suggest-by parameters)) (:suggest-by parameters) "sender")
+       :min-percent (if (and min-percent (<= 1 min-percent 99)) min-percent default-suggestion-min-percent)})))
+
+(defn- suggestion-score
+  "The stored model score of the current e-mail (headers.message_id) for category-id, as a subquery to
+   sort by. The id is inlined, not bound: the list's count query drops the ORDER BY clause (see
+   db/convert-to-count) but would keep a bound parameter of it. It is a parsed number, so inlining is
+   safe."
+  [category-id]
+  {:select [:suggest-score.confidence]
+   :from [[:category-scores :suggest-score]]
+   :where [:and [:= :suggest-score.message-id :headers.message-id] [:= :suggest-score.category-id [:inline (long category-id)]]]})
+
+(defn- suggestion->where
+  "E-mails that are NOT in the suggestion's category but whose sender address (method \"sender\") or
+   sender domain (\"domain\") also occurs on an e-mail that is. Addresses are compared ignoring case,
+   and by address rather than contact key: a contact key includes the display name, so the same
+   address with another name would not match. Fully qualified, aliased names only - the database
+   layer rewrites bare keys like :message-id or :category (see db/key-lookup)."
+  [{:keys [category-id method min-percent]}]
+  (cond
+    (nil? category-id) nil
+
+    (= method "model")
+    [:and
+     [:or [:= :metadata.category nil] [:<> :metadata.category category-id]]
+     [:in :headers.message-id {:select [:suggest-scores.message-id]
+                               :from [[:category-scores :suggest-scores]]
+                               :where [:and [:= :suggest-scores.category-id category-id]
+                                       [:>= :suggest-scores.confidence (/ (double min-percent) 100.0)]]}]]
+
+    :else
+    (let [address-key (fn [column]
+                        (if (= method "domain")
+                          [:substr [:lower column] [:+ [:instr column "@"] 1]]
+                          [:lower column]))
+          category-senders {:select-distinct [[(address-key :suggest-contacts-in.address) :suggest-address]]
+                            :from [[:communications :suggest-comms-in]]
+                            :join [[:contacts :suggest-contacts-in] [:= :suggest-contacts-in.contact-key :suggest-comms-in.contact-key]
+                                   [:metadata :suggest-metadata-in] [:= :suggest-metadata-in.message-id :suggest-comms-in.message-id]]
+                            :where [:and
+                                    [:in :suggest-comms-in.type suggestion-sender-types]
+                                    [:= :suggest-metadata-in.category category-id]
+                                    [:like :suggest-contacts-in.address "%@%"]]}]
+      [:and
+       [:or [:= :metadata.category nil] [:<> :metadata.category category-id]]
+       [:in :headers.message-id {:select [:suggest-comms.message-id]
+                                 :from [[:communications :suggest-comms]]
+                                 :join [[:contacts :suggest-contacts] [:= :suggest-contacts.contact-key :suggest-comms.contact-key]]
+                                 :where [:and
+                                         [:in :suggest-comms.type suggestion-sender-types]
+                                         [:in (address-key :suggest-contacts.address) category-senders]]}]])))
+
+(defn- suggestion-filter-label
+  "Chip text for an active suggestion filter."
+  [categories {:keys [category-id method min-percent]}]
+  (str "Suggested for " (or (:name (first (filter #(= category-id (:id %)) categories))) (str "category " category-id))
+       (case method
+         "domain" " (same sender domain)"
+         "model" (str " (model ≥ " min-percent " %)")
+         " (same sender)")))
+
 (defn- batch-filter-label
   "Chip text for an active batch filter; falls back to the bare id when the run is unknown."
   [db batch-id]
@@ -441,6 +525,7 @@
      [date-filter
       (batch->where (:batch parameters))
       (filter->where (:filter parameters))
+      (suggestion->where (suggestion-parameters parameters))
       content-where
       (when-not (= excluding :subject) (subject-values->where subject-selection))
       (when-not (= excluding :from) (sender-keys->where from-selection date-filter-active?))
@@ -570,15 +655,20 @@
         senders (column-values :from)
         recipients (column-values :to)
         batch-where (batch->where (:batch parameters))
+        suggestion (suggestion-parameters parameters)
         where (combine-wheres [date-filter
                                batch-where
                                (filter->where (:filter parameters))
+                               (suggestion->where suggestion)
                                content-where
                                (subject-values->where subject-selection)
                                (sender-keys->where from-selection date-filter-active?)
                                (recipient-keys->where to-selection date-filter-active?)
                                (category-ids->where category-selection)])
-        customization-clause (cond-> {:order-by [[:date :desc]]}
+        ;; Model suggestions come most likely first: the list is meant to be reviewed from the top.
+        customization-clause (cond-> {:order-by (if (= "model" (:method suggestion))
+                                                  [[(suggestion-score (:category-id suggestion)) :desc] [:date :desc]]
+                                                  [[:date :desc]])}
                                where (assoc :where where))
         page-req (page/page-request (:page parameters) (:size parameters))
         ;; :with-bodies false — the list renders no body content, so don't materialize
@@ -591,12 +681,18 @@
           search-active? (not (str/blank? (:search-text parameters)))
           date-active? (some? date-filter)
           batch-active? (some? batch-where)
+          suggestion-active? (some? suggestion)
           metadata-active? (contains? #{"enriched-only" "without-category"} (:filter parameters))]
       {:data (:data result)
        :parameters {:filter (:filter parameters)
                   :batch (when batch-active? (:batch parameters))
                   :batch-active? batch-active?
                   :batch-filter-label (when batch-active? (batch-filter-label db (:batch parameters)))
+                  :suggest-category (:category-id suggestion)
+                  :suggest-by (or (:method suggestion) "sender")
+                  :suggest-min (or (:min-percent suggestion) default-suggestion-min-percent)
+                  :suggestion-active? suggestion-active?
+                  :suggestion-filter-label (when suggestion-active? (suggestion-filter-label cat-list suggestion))
                   :total-pages (page/calculate-pages-total (:total result) (:size page-req))
                   :size (:size page-req)
                   :page (:page result)
@@ -631,7 +727,7 @@
                   :search-active? search-active?
                   :date-active? date-active?
                   :metadata-active? metadata-active?
-                  :any-filter-active? (boolean (or search-active? date-active? metadata-active? batch-active?
+                  :any-filter-active? (boolean (or search-active? date-active? metadata-active? batch-active? suggestion-active?
                                                    subject-active? from-active? to-active? category-active?))}
        :optional {:categories cat-list :category-filter-options category-filter-options
                   :subjects (:items subjects) :senders (:items senders) :recipients (:items recipients)

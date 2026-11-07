@@ -101,3 +101,13 @@
 
 (defn record-successful-training! [instant]
   (settings/update-setting! :last-successful-training-at (str instant)))
+
+(defn model-scores-info
+  "When the e-mails were last scored with the model (see the e-mail list's suggestion filter) and how
+   many got scores: {:at Instant-or-nil :emails n-or-nil}."
+  []
+  {:at (some-> (settings/fetch-setting :model-scores-at) str java.time.Instant/parse)
+   :emails (settings/fetch-setting :model-scores-emails)})
+
+(defn record-model-scores! [instant scored-emails]
+  (settings/update-settings! {:model-scores-at (str instant) :model-scores-emails scored-emails}))

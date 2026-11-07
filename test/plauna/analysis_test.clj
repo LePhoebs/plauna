@@ -323,3 +323,7 @@
       (finally
         (analysis/forget-cached-models!)
         (run! #(io/delete-file % true) (reverse (file-seq dir)))))))
+
+(deftest stored-scores-need-a-language-and-tokens
+  (is (nil? (analysis/category-scores-for-tokens-text "subject:hello" nil)) "No language, no model to ask")
+  (is (nil? (analysis/category-scores-for-tokens-text "  " "de")) "No tokens, nothing to score"))
