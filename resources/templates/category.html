@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="max-w-4xl flex flex-col gap-5">
+<div class="max-w-5xl flex flex-col gap-5">
   <nav class="text-xs text-base-content/60" aria-label="{% t category.breadcrumb %}">
     <a class="link link-hover" href="/categories">{% t nav.categories %}</a> / {{category.name}}
   </nav>
@@ -10,10 +10,7 @@
     <div class="flex flex-wrap items-center gap-3">
       <span class="inline-block size-3.5 rounded-full shrink-0" style="background-color: {{category.color|category-color}};"></span>
       <h1 class="text-2xl font-bold">{{category.name}}</h1>
-      <div class="flex flex-wrap gap-2 sm:ml-auto">
-        <a class="btn btn-sm" href="/emails?size=50&amp;category-ids={{category.id}}">{% t category.show-emails %}</a>
-        <a class="btn btn-sm btn-ghost" href="/categories#category-{{category.id}}">{% t category.edit-settings %}</a>
-      </div>
+      <a class="btn btn-sm sm:ml-auto" href="/emails?size=50&amp;category-ids={{category.id}}">{% t category.show-emails %}</a>
     </div>
     <ul class="flex flex-wrap gap-x-5 gap-y-1 text-base-content/70">
       <li>{% t category.email-count email-count %}</li>
@@ -21,56 +18,189 @@
       <li>{% if category.retention_days %}{% t category.retention category.retention_days %}{% else %}{% t category.keep-forever %}{% endif %}</li>
       {% if category.flag_hex %}<li><span style="color: {{category.flag_hex}};" aria-hidden="true">⚑</span> {% t category.flag category.flag_label %}</li>{% endif %}
     </ul>
+    <div role="tablist" class="tabs tabs-border" aria-label="{% t category.tabs %}">
+      <a role="tab" href="/categories/{{category.id}}" class="tab {% if tab = "suggestions" %}tab-active{% endif %}" aria-selected="{% if tab = "suggestions" %}true{% else %}false{% endif %}">{% t category.tab-suggestions %}</a>
+      <a role="tab" href="/categories/{{category.id}}?tab=emails" class="tab {% if tab = "emails" %}tab-active{% endif %}" aria-selected="{% if tab = "emails" %}true{% else %}false{% endif %}">{% t category.tab-emails %}</a>
+      <a role="tab" href="/categories/{{category.id}}?tab=settings" class="tab {% if tab = "settings" %}tab-active{% endif %}" aria-selected="{% if tab = "settings" %}true{% else %}false{% endif %}">{% t category.tab-settings %}</a>
+    </div>
   </header>
 
-  <section class="card bg-base-100 border border-base-300" aria-labelledby="suggest-title">
-    <div class="card-body gap-4">
-      <div class="flex flex-col gap-1">
-        <h2 class="card-title" id="suggest-title">{% t suggest.title %}</h2>
-        <p class="text-base-content/70">{% t suggest.intro category.name %}</p>
-      </div>
+  {% if tab = "suggestions" %}
+  <section class="flex flex-col gap-4" aria-labelledby="suggest-title">
+    <div class="flex flex-col gap-1">
+      <h2 class="text-lg font-semibold" id="suggest-title">{% t suggest.title %}</h2>
+      <p class="text-base-content/70 max-w-prose">{% t suggest.intro category.name %}</p>
+    </div>
 
-      <div class="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="{% t suggest.method %}">
-        <a href="/categories/{{category.id}}?by=sender" role="radio" aria-checked="{% if method = "sender" %}true{% else %}false{% endif %}"
-           class="rounded-box border p-3 flex flex-col gap-1 {% if method = "sender" %}border-primary bg-primary/5{% else %}border-base-300 hover:bg-base-200{% endif %}">
-          <span class="flex items-baseline justify-between gap-2"><b>{% t suggest.sender %}</b><span class="text-lg font-semibold">{{counts.sender}}</span></span>
-          <span class="text-xs text-base-content/70">{% t suggest.sender-help %}</span>
-        </a>
-        <a href="/categories/{{category.id}}?by=domain" role="radio" aria-checked="{% if method = "domain" %}true{% else %}false{% endif %}"
-           class="rounded-box border p-3 flex flex-col gap-1 {% if method = "domain" %}border-primary bg-primary/5{% else %}border-base-300 hover:bg-base-200{% endif %}">
-          <span class="flex items-baseline justify-between gap-2"><b>{% t suggest.domain %}</b><span class="text-lg font-semibold">{{counts.domain}}</span></span>
-          <span class="text-xs text-base-content/70">{% t suggest.domain-help %}</span>
-        </a>
-        <a href="/categories/{{category.id}}?by=model&amp;min={{min-percent}}" role="radio" aria-checked="{% if method = "model" %}true{% else %}false{% endif %}"
-           class="rounded-box border p-3 flex flex-col gap-1 {% if method = "model" %}border-primary bg-primary/5{% else %}border-base-300 hover:bg-base-200{% endif %}">
-          <span class="flex items-baseline justify-between gap-2"><b>{% t suggest.model %}</b><span class="text-lg font-semibold">{{counts.model}}</span></span>
-          <span class="text-xs text-base-content/70">{% t suggest.model-help min-percent %}</span>
-        </a>
-      </div>
+    <div class="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="{% t suggest.method %}">
+      <a href="/categories/{{category.id}}?by=sender" role="radio" aria-checked="{% if method = "sender" %}true{% else %}false{% endif %}"
+         class="rounded-box border p-3 flex flex-col gap-1 bg-base-100 {% if method = "sender" %}border-primary ring-1 ring-primary{% else %}border-base-300 hover:bg-base-200{% endif %}">
+        <span class="flex items-baseline justify-between gap-2"><b>{% t suggest.sender %}</b><span class="text-lg font-semibold">{{counts.sender}}</span></span>
+        <span class="text-xs text-base-content/70">{% t suggest.sender-help %}</span>
+      </a>
+      <a href="/categories/{{category.id}}?by=domain" role="radio" aria-checked="{% if method = "domain" %}true{% else %}false{% endif %}"
+         class="rounded-box border p-3 flex flex-col gap-1 bg-base-100 {% if method = "domain" %}border-primary ring-1 ring-primary{% else %}border-base-300 hover:bg-base-200{% endif %}">
+        <span class="flex items-baseline justify-between gap-2"><b>{% t suggest.domain %}</b><span class="text-lg font-semibold">{{counts.domain}}</span></span>
+        <span class="text-xs text-base-content/70">{% t suggest.domain-help %}</span>
+      </a>
+      <a href="/categories/{{category.id}}?by=model&amp;min={{min-percent}}" role="radio" aria-checked="{% if method = "model" %}true{% else %}false{% endif %}"
+         class="rounded-box border p-3 flex flex-col gap-1 bg-base-100 {% if method = "model" %}border-primary ring-1 ring-primary{% else %}border-base-300 hover:bg-base-200{% endif %}">
+        <span class="flex items-baseline justify-between gap-2"><b>{% t suggest.model %}</b><span class="text-lg font-semibold">{{counts.model}}</span></span>
+        <span class="text-xs text-base-content/70">{% t suggest.model-help min-percent %}</span>
+      </a>
+    </div>
 
-      {% if method = "model" %}
-      <div class="flex flex-wrap items-end justify-between gap-4 rounded-box bg-base-200 p-3">
-        <form method="get" action="/categories/{{category.id}}" class="flex items-end gap-2">
-          <input type="hidden" name="by" value="model">
-          <label class="flex flex-col gap-1" for="suggest-min">
-            <span class="text-xs">{% t suggest.min-label %}</span>
-            <span class="flex items-center gap-1"><input id="suggest-min" type="number" name="min" min="1" max="99" value="{{min-percent}}" class="input input-sm w-20"> %</span>
-          </label>
-          <button class="btn btn-sm" type="submit">{% t suggest.apply %}</button>
-        </form>
-        {% include "scoring-status.html" %}
-      </div>
-      {% endif %}
+    {% if method = "model" %}
+    <div class="flex flex-wrap items-end justify-between gap-4 rounded-box bg-base-100 border border-base-300 p-3">
+      <form method="get" action="/categories/{{category.id}}" class="flex items-end gap-2">
+        <input type="hidden" name="by" value="model">
+        <label class="flex flex-col gap-1" for="suggest-min">
+          <span class="text-xs">{% t suggest.min-label %}</span>
+          <span class="flex items-center gap-1"><input id="suggest-min" type="number" name="min" min="1" max="99" value="{{min-percent}}" class="input input-sm w-20"> %</span>
+        </label>
+        <button class="btn btn-sm" type="submit">{% t suggest.apply %}</button>
+      </form>
+      {% include "scoring-status.html" %}
+    </div>
+    {% endif %}
 
-      <div class="flex flex-wrap items-center gap-3">
-        {% if selected-count > 0 %}
-        <a class="btn btn-primary" href="{{review-url}}">{% t suggest.review selected-count %}</a>
-        {% else %}
-        <button class="btn btn-primary" type="button" disabled>{% t suggest.review selected-count %}</button>
-        {% endif %}
-        <span class="text-xs text-base-content/70 max-w-prose">{% t suggest.review-help category.name %}</span>
+    {% if groups|not-empty %}
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <p class="text-sm text-base-content/70">{% t suggest.found selected-count group-count %}{% if capped? %} {% t suggest.capped shown-count %}{% endif %}</p>
+      <a class="btn btn-sm btn-ghost" href="{{review-url}}">{% t suggest.review-in-list %}</a>
+    </div>
+
+    <div id="category-texts" hidden
+         data-category="{{category.id}}"
+         data-assigning="{% t list.assigning "{0}" "{1}" %}"
+         data-done="{% t suggest.group-done "{0}" %}"
+         data-unchanged="{% t list.unchanged "{0}" %}"
+         data-missing="{% t list.missing "{0}" %}"
+         data-failed="{% t suggest.group-failed "{0}" %}"
+         data-missing-confirm="{% t list.missing-confirm "{0}" "{1}" %}"
+         data-category-name="{{category.name}}"></div>
+
+    <ul class="flex flex-col gap-2">
+      {% for group in groups %}
+      <li class="suggestion-group rounded-box border border-base-300 bg-base-100">
+        <div class="flex flex-wrap items-center gap-3 p-3">
+          <div class="min-w-0 flex-1">
+            <p class="truncate"><b>{% if group.name %}{{group.name}}{% else %}{{group.key}}{% endif %}</b>{% if group.name %} <span class="text-xs text-base-content/60">{{group.key}}</span>{% endif %}</p>
+            <p class="text-xs text-base-content/60">
+              <span class="group-count" data-label="{% t suggest.group-count "{0}" %}">{% t suggest.group-count group.count %}</span>{% if group.max-percent %} · {% ifequal group.min-percent group.max-percent %}{{group.max-percent}}{% else %}{{group.min-percent}}–{{group.max-percent}}{% endifequal %}{% endif %}
+            </p>
+          </div>
+          <button type="button" class="btn btn-sm btn-primary assign-group" data-label="{% t suggest.assign-all "{0}" %}">{% t suggest.assign-all group.count %}</button>
+          <p class="group-status text-xs basis-full empty:hidden" role="status" aria-live="polite"></p>
+        </div>
+        <details class="border-t border-base-300">
+          <summary class="cursor-pointer px-3 py-2 text-xs text-base-content/70 select-none">{% t suggest.review-group %}</summary>
+          <ul class="divide-y divide-base-300 text-sm">
+            {% for email in group.emails %}
+            <li class="suggestion-email grid grid-cols-[1.75rem_minmax(0,1fr)_auto] items-center gap-2 px-3 py-1.5" data-message-id="{{email.message-id}}">
+              <input type="checkbox" class="checkbox checkbox-xs suggestion-pick" autocomplete="off" checked aria-label="{% t list.select-email %}">
+              <a class="truncate link link-hover" href="/emails/{{email.message-id|base64-encode}}">{% if email.subject %}{{email.subject}}{% else %}<span class="italic text-base-content/50">{% t list.no-subject %}</span>{% endif %}</a>
+              <span class="text-xs text-base-content/60 whitespace-nowrap">{% if email.percent %}{{email.percent}} · {% endif %}{{email.date-text}}</span>
+            </li>
+            {% endfor %}
+          </ul>
+          <div class="px-3 py-2 border-t border-base-300">
+            <button type="button" class="btn btn-xs assign-picked">{% t suggest.assign-picked %}</button>
+          </div>
+        </details>
+      </li>
+      {% endfor %}
+    </ul>
+    <script src="/js/assign.js"></script>
+    {% else %}
+    <p class="rounded-box bg-base-100 border border-base-300 p-4 text-base-content/70">{% if method = "model" %}{% t suggest.none-model %}{% else %}{% t suggest.none %}{% endif %}</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if tab = "emails" %}
+  <section class="flex flex-col gap-3" aria-label="{% t category.tab-emails %}">
+    {% if emails|not-empty %}
+    <ul class="rounded-box border border-base-300 bg-base-100 divide-y divide-base-300">
+      {% for email in emails %}
+      <li class="grid grid-cols-[minmax(0,12rem)_minmax(0,1fr)_auto] max-sm:grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 px-3 py-2">
+        <a class="truncate font-semibold" href="/emails/{{email.header.message-id|base64-encode}}">{{email.sender-name}}</a>
+        <a class="truncate max-sm:col-span-2 max-sm:row-start-2" href="/emails/{{email.header.message-id|base64-encode}}">{% if email.header.subject %}{{email.header.subject}}{% else %}<span class="italic text-base-content/50">{% t list.no-subject %}</span>{% endif %}</a>
+        <span class="text-xs text-base-content/60 whitespace-nowrap max-sm:row-start-1 max-sm:col-start-2">{% if email.model-percent %}{{email.model-percent}} · {% endif %}{{email.date-text}}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    <div><a class="btn btn-sm" href="/emails?size=50&amp;category-ids={{category.id}}">{% t category.all-emails email-count %}</a></div>
+    {% else %}
+    <p class="rounded-box bg-base-100 border border-base-300 p-4 text-base-content/70">{% t category.no-emails %}</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if tab = "settings" %}
+  <section class="flex flex-col gap-4 max-w-2xl" aria-labelledby="settings-title">
+    <h2 class="text-lg font-semibold" id="settings-title">{% t category.tab-settings %}</h2>
+    <form action="/admin/categories/{{category.id}}" method="POST" class="card bg-base-100 border border-base-300">
+      <div class="card-body gap-4">
+        <input type="hidden" name="name" value="{{category.name}}">
+        <label class="flex items-center gap-3" for="category-color">
+          <input id="category-color" type="color" class="input p-1 w-14" name="color" value="{{category.color|category-color}}">
+          <span>{% t category.color %}</span>
+        </label>
+        <label class="flex flex-col gap-1" for="category-folder">
+          <span class="font-semibold">{% t category.destination %}</span>
+          <input id="category-folder" class="input w-full" name="destination-folder" value="{{category.destination_folder}}" placeholder="Categories/{{category.name}}">
+          <span class="text-xs text-base-content/70">{% t category.destination-help %}</span>
+        </label>
+        <label class="flex flex-col gap-1" for="category-flag">
+          <span class="font-semibold">{% t category.flag-label %}</span>
+          <select id="category-flag" class="select w-full sm:w-56" name="flag-color">
+            <option value="" {% if not category.flag_color %}selected{% endif %}>{% t category.no-flag %}</option>
+            {% for flag in flag-colors %}
+            <option value="{{flag.id}}" {% if category.flag_color = flag.id %}selected{% endif %}>⚑ {{flag.label}}</option>
+            {% endfor %}
+          </select>
+          <span class="text-xs text-base-content/70">{% t category.flag-help %}</span>
+        </label>
+        <label class="flex flex-col gap-1" for="category-retention">
+          <span class="font-semibold">{% t category.retention-label %}</span>
+          <input id="category-retention" class="input w-full sm:w-56" type="number" min="1" max="3650" name="retention-days" value="{% if category.retention_days %}{{category.retention_days}}{% endif %}" placeholder="{% t category.keep-forever %}">
+          <span class="text-xs text-base-content/70">{% t category.retention-help %}</span>
+        </label>
+        <div><button class="btn btn-primary" type="submit">{% t email.save %}</button></div>
+      </div>
+    </form>
+
+    {% if category.flag_color %}
+    <form action="/admin/categories/{{category.id}}/flag" method="POST" class="flex flex-wrap items-center gap-3">
+      <button class="btn btn-sm" type="submit">{% t category.flag-existing %}</button>
+      <span class="text-xs text-base-content/70 max-w-prose">{% t category.flag-existing-help %}</span>
+    </form>
+    {% endif %}
+
+    <div class="flex flex-wrap items-center gap-3 border-t border-base-300 pt-4">
+      <label class="btn btn-sm btn-ghost text-error" for="delete-category-modal">{% t category.delete %}</label>
+      <span class="text-xs text-base-content/70 max-w-prose">{% t category.delete-help %}</span>
+      <input class="modal-toggle" id="delete-category-modal" type="checkbox" />
+      <div class="modal">
+        <label class="modal-overlay" for="delete-category-modal"></label>
+        <div class="modal-box flex flex-col gap-4">
+          <h3 class="text-lg font-semibold">{% t category.delete-title category.name %}</h3>
+          <p>{% t category.delete-help %}</p>
+          <div class="flex gap-3">
+            <button id="delete-category-button" class="btn btn-error">{% t email.delete-confirm %}</button>
+            <label for="delete-category-modal" class="btn">{% t list.cancel %}</label>
+          </div>
+        </div>
       </div>
     </div>
+    <script>
+      document.getElementById('delete-category-button').addEventListener('click', function () {
+        fetch('/admin/categories/{{category.id}}', {method: 'DELETE'})
+          .then(plaunaThen(function () { window.location.href = '/categories'; }));
+      });
+    </script>
   </section>
+  {% endif %}
 </div>
 {% endblock %}

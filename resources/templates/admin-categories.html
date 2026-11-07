@@ -1,87 +1,62 @@
 {% extends "base.html" %}
-
 {% block content %}
+<div class="max-w-5xl flex flex-col gap-5">
+  <header class="flex flex-wrap items-end justify-between gap-3">
+    <div class="flex flex-col gap-1">
+      <h1 class="text-2xl font-bold">{% t nav.categories %}</h1>
+      <p class="text-base-content/70 max-w-prose">{% t categories.intro %}</p>
+    </div>
+    <label for="new-category-toggle" class="btn btn-primary btn-sm">{% t categories.new %}</label>
+  </header>
 
-<div class="flex w-full overflow-x-auto">
-  <table class="table-zebra table">
-    <tbody>
-      <tr><th>Color</th><th>Category Name</th><th>Settings</th><th>Delete</th></tr>
-      {% for category in categories %}
-      <tr id="category-{{category.id}}">
-        <td>
-          <span class="inline-block w-4 h-4 rounded-full align-middle" style="background-color: {{category.color|category-color}};"></span>
-        </td>
-        <td>
-          <a class="link link-hover font-semibold" href="/categories/{{category.id}}">{{category.name}}</a>
-          {% if category.flag_hex %}<span class="ml-1" style="color: {{category.flag_hex}};" title="Flagged {{category.flag_color}}">⚑</span>{% endif %}
-          {% if category.retention_days %}<span class="badge badge-ghost badge-sm ml-1" title="Moved to the trash {{category.retention_days}} days after getting the category">{{category.retention_days}} d</span>{% endif %}
-        </td>
-        <td>
-          <form action="/admin/categories/{{category.id}}" method="POST" class="flex gap-2 items-center flex-wrap">
-            <input type="hidden" name="name" value="{{category.name}}">
-            <input type="color" class="input p-1 w-12" name="color" value="{{category.color|category-color}}" title="Category color">
-            <input class="input" name="destination-folder" value="{{category.destination_folder}}" placeholder="default: Categories/{{category.name}}" title="Destination folder">
-            <select class="select w-36" name="flag-color" title="Apple Mail flag">
-              <option value="" {% if not category.flag_color %}selected{% endif %}>No flag</option>
-              {% for flag in flag-colors %}
-              <option value="{{flag.id}}" {% if category.flag_color = flag.id %}selected{% endif %}>⚑ {{flag.label}}</option>
-              {% endfor %}
-            </select>
-            <input class="input w-36" type="number" min="1" max="3650" name="retention-days" value="{% if category.retention_days %}{{category.retention_days}}{% endif %}" placeholder="Keep forever" title="Days until the e-mails go to the trash">
-            <button class="btn btn-primary" type="submit">Save</button>
-          </form>
-          {% if category.flag_color %}
-          <form action="/admin/categories/{{category.id}}/flag" method="POST" class="mt-2">
-            <button class="btn btn-ghost btn-sm" type="submit" title="Set the flag on the e-mails of this category in its folder">Flag existing e-mails</button>
-          </form>
-          {% endif %}
-        </td>
-        <td>
-          <label class="btn btn-ghost" for="modal-{{category.id}}">X</label>
-          <input class="modal-toggle" id="modal-{{category.id}}" type="checkbox" />
-          <div class="modal">
-	        <label class="modal-overlay" for="modal-{{category.id}}"></label>
-	        <div class="modal-box flex flex-col gap-5">
-		      <h2 class="text-xl">Delete Category: {{category.name}}</h2>
-		      <span>Are you sure you want to delete this category?</span>
-		      <div class="flex gap-3">
-			    <button id="delete-button-{{category.id}}" class="btn btn-error">Delete</button>
-		        <label for="modal-{{category.id}}" class="btn">Cancel</label>
-		      </div>
-              <script>
-                document.getElementById('delete-button-{{category.id}}').addEventListener('click', (e) => {
-                    fetch('/admin/categories/{{category.id}}', {method: 'DELETE'})
-                        .then(plaunaThen(() => window.location.href = '/categories'))});
-              </script>
-	        </div>
-          </div>
-        </td>
-      </tr>
-    {% endfor %}
-  </tbody>
-</table>
-</div>
-<div class="text-sm text-gray-600 mt-2 flex flex-col gap-2">
-<p>Set a destination folder to move emails of a category to a custom IMAP folder (e.g. <code>Archive/Newsletters</code>) instead of the default <code>Categories/&lt;Name&gt;</code>. Use your mail server's folder hierarchy separator. Leave blank to keep the default. If the destination is the same folder the mail is already in (e.g. <code>INBOX</code>), the mail is left in place instead of being moved. Existing emails are not moved.</p>
-<p><strong>Flag:</strong> Plauna marks every e-mail it files in the category with an Apple Mail flag of this color (other mail programs show a plain flag). To keep e-mails in the inbox and only flag them, use <code>INBOX</code> as the destination folder. When an e-mail is recategorized, its flag follows the new category; deleting the category or removing its flag color removes the flags. A new flag color only applies to e-mails filed from then on. "Flag existing e-mails" flags every e-mail of the category in the category's folder - including ones you unflagged to keep them.</p>
-<p><strong>Days until trash:</strong> Plauna moves the e-mails of the category to the trash folder of their account this many days after they got the category - on arrival, or when you filed them later. Only e-mails in the category's own folder (its destination, or <code>INBOX</code>) are affected, never an archive or the sent folder. It checks every six hours. An e-mail is kept if you moved it to another folder or, when the category has a flag, if it has no flag - remove the flag to keep one. Plauna keeps the e-mail in its own database as a training example. Leave the field empty to keep the e-mails forever.</p>
-</div>
-<form action="/admin/categories/clean-up" method="POST" class="mt-4">
-  <button class="btn btn-outline btn-sm" type="submit">Move expired e-mails to the trash now</button>
-</form>
-<h3 class="uppercase text-lg my-8">New Category</h3>
-<form action="/admin/categories" method="POST" class="flex gap-2 items-center flex-wrap">
-  <input type="color" class="input p-1 w-12" name="color" value="#3b82f6" title="Category color">
-  <input class="input" name="name" value="" placeholder="Category name">
-  <input class="input" name="destination-folder" value="" placeholder="Destination folder (optional)">
-  <select class="select w-36" name="flag-color" title="Apple Mail flag">
-    <option value="" selected>No flag</option>
-    {% for flag in flag-colors %}
-    <option value="{{flag.id}}">⚑ {{flag.label}}</option>
-    {% endfor %}
-  </select>
-  <input class="input w-36" type="number" min="1" max="3650" name="retention-days" value="" placeholder="Keep forever" title="Days until the e-mails go to the trash">
-  <button class="btn btn-primary mx-4" type="submit">Add category</button>
-</form>
+  <input type="checkbox" id="new-category-toggle" class="peer hidden">
+  <section class="card bg-base-100 border border-base-300 hidden peer-checked:block" aria-labelledby="new-category-title">
+    <form action="/admin/categories" method="POST" class="card-body gap-3">
+      <h2 class="card-title text-base" id="new-category-title">{% t categories.new %}</h2>
+      <div class="flex flex-wrap items-end gap-3">
+        <label class="flex flex-col gap-1" for="new-category-color"><span class="text-xs">{% t category.color %}</span>
+          <input id="new-category-color" type="color" class="input p-1 w-14" name="color" value="#3b82f6"></label>
+        <label class="flex flex-col gap-1 grow min-w-48" for="new-category-name"><span class="text-xs">{% t categories.name %}</span>
+          <input id="new-category-name" class="input w-full" name="name" value="" required></label>
+        <label class="flex flex-col gap-1 grow min-w-48" for="new-category-folder"><span class="text-xs">{% t category.destination %}</span>
+          <input id="new-category-folder" class="input w-full" name="destination-folder" value="" placeholder="{% t categories.folder-placeholder %}"></label>
+        <label class="flex flex-col gap-1" for="new-category-flag"><span class="text-xs">{% t category.flag-label %}</span>
+          <select id="new-category-flag" class="select w-40" name="flag-color">
+            <option value="" selected>{% t category.no-flag %}</option>
+            {% for flag in flag-colors %}<option value="{{flag.id}}">⚑ {{flag.label}}</option>{% endfor %}
+          </select></label>
+        <label class="flex flex-col gap-1" for="new-category-retention"><span class="text-xs">{% t category.retention-label %}</span>
+          <input id="new-category-retention" class="input w-40" type="number" min="1" max="3650" name="retention-days" value="" placeholder="{% t category.keep-forever %}"></label>
+      </div>
+      <p class="text-xs text-base-content/70">{% t categories.name-help %}</p>
+      <div><button class="btn btn-primary btn-sm" type="submit">{% t categories.create %}</button></div>
+    </form>
+  </section>
 
+  {% if categories|not-empty %}
+  <ul class="rounded-box border border-base-300 bg-base-100 divide-y divide-base-300">
+    {% for category in categories %}
+    <li id="category-{{category.id}}" class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3">
+      <span class="inline-block size-3 rounded-full shrink-0" style="background-color: {{category.color|category-color}};"></span>
+      <a class="font-semibold link link-hover" href="/categories/{{category.id}}">{{category.name}}</a>
+      <span class="text-xs text-base-content/70">{% t category.email-count category.email_count %}</span>
+      <span class="text-xs text-base-content/70">{% if category.destination_folder %}{% t category.folder category.destination_folder %}{% else %}{% t category.folder-default category.name %}{% endif %}</span>
+      {% if category.retention_days %}<span class="badge badge-ghost badge-sm" title="{% t category.retention category.retention_days %}">{{category.retention_days}} d</span>{% endif %}
+      {% if category.flag_hex %}<span style="color: {{category.flag_hex}};" title="{% t category.flag category.flag_color %}">⚑</span>{% endif %}
+      <span class="flex gap-1 ml-auto">
+        <a class="btn btn-ghost btn-xs" href="/categories/{{category.id}}">{% t category.tab-suggestions %}</a>
+        <a class="btn btn-ghost btn-xs" href="/categories/{{category.id}}?tab=settings">{% t category.tab-settings %}</a>
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="rounded-box bg-base-100 border border-base-300 p-4 text-base-content/70">{% t categories.none %}</p>
+  {% endif %}
+
+  <form action="/admin/categories/clean-up" method="POST" class="flex flex-wrap items-center gap-3">
+    <button class="btn btn-outline btn-sm" type="submit">{% t categories.clean-up %}</button>
+    <span class="text-xs text-base-content/70 max-w-prose">{% t categories.clean-up-help %}</span>
+  </form>
+</div>
 {% endblock %}

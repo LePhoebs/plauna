@@ -1197,3 +1197,14 @@
             (is (re-find #"1 e-mail\(s\) could not be saved.*<lost@x>" text))
             (is (re-find #"Start the migration again" text) "The way on is named"))))
       (finally (reset! flag false) (reset! job nil)))))
+
+(deftest category-page-renders-every-tab-with-pending-messages
+  (with-redefs [app/category-email-count (fn [_ _] 3)
+                app/recent-category-emails (fn [_ _ _] [])
+                app/suggestion-counts (fn [_ _ _] {"sender" 0 "domain" 0 "model" 0})
+                server/model-scores-summary (fn [] {})
+                plauna.client/disconnected-connections (fn [] [])]
+    (doseq [tab ["suggestions" "emails" "settings"]]
+      (let [html (server/category-page {} {:id 1 :name "Temporary"} {:tab tab} [{:type :success :content "Saved it."}])]
+        (is (str/includes? html "Temporary") tab)
+        (is (str/includes? html "Saved it.") tab)))))

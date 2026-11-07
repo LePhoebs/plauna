@@ -1516,3 +1516,21 @@
         (is (= 3 (:remaining summary)))
         (is (zero? @read) "No e-mail is read, so nothing more is written"))
       (finally (reset! stopped false)))))
+
+(deftest suggestions-are-grouped-by-sender-or-domain
+  (let [email (fn [id address name] {:header {:message-id id :subject id :date 0}
+                                     :participants [{:type :sender :address "bounce@relay.example"}
+                                                    {:type :from :address address :name name}]})
+        emails [(email "a" "News@Shop.example" "Shop") (email "b" "news@shop.example" nil)
+                (email "c" "billing@shop.example" "Billing") (email "d" "friend@else.example" "Friend")]]
+    (let [groups (app/group-suggestions emails "sender" nil)]
+      (is (= ["news@shop.example" "billing@shop.example" "friend@else.example"] (mapv :key groups))
+          "By From address, ignoring case, the largest group first")
+      (is (= "Shop" (:name (first groups))))
+      (is (= ["a" "b"] (mapv :message-id (:emails (first groups))))))
+    (is (= [["shop.example" 3] ["else.example" 1]]
+           (mapv (juxt :key :count) (app/group-suggestions emails "domain" nil))))
+    (let [groups (app/group-suggestions emails "model" {"a" 0.6 "b" 0.9 "d" 0.95})]
+      (is (= "friend@else.example" (:key (first groups))) "The group with the most likely e-mail first")
+      (is (= ["b" "a"] (mapv :message-id (:emails (second groups)))) "Most likely first within a group")
+      (is (= [0.6 0.9] ((juxt :min-confidence :max-confidence) (second groups)))))))

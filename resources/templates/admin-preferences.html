@@ -1,118 +1,44 @@
 {% extends "base.html" %}
 
 {% block content %}
+<div class="max-w-3xl flex flex-col gap-5">
+  <nav class="text-xs text-base-content/60" aria-label="{% t category.breadcrumb %}">
+    <a class="link link-hover" href="/admin">{% t nav.system %}</a> / {% t system.preferences %}
+  </nav>
+  <header class="flex flex-col gap-1">
+    <h1 class="text-2xl font-bold">{% t system.preferences %}</h1>
+    <p class="text-base-content/70 max-w-prose">{% t general.intro %}</p>
+  </header>
 
-<form action="/admin/preferences" method="POST">
-  <div class="grid gap-4 mb-6 md:grid-cols-2">
-    <input type="hidden" name="redirect-url" value="/admin/preferences"</input>
-    <div>
-      <label class="block mb-2 text-sm font-medium text-gray-900"  for="language-detection-threshold">Language Detection Threshold</label>
-      <input class="input" name="language-detection-threshold" value="{{language-detection-threshold}}">
-    </div>
-    <div>
-      <label class="block mb-2 text-sm font-medium text-gray-900" for="categorization-threshold">Categorization Threshold</label>
-      <input class="input" name="categorization-threshold" value="{{categorization-threshold}}">
-    </div>
-    <div>
-      <label class="block mb-2 text-sm font-medium text-gray-900" for="categorization-threshold">Log Level</label>
-      <select class="select" name="log-level">
-            {% for option in log-level-options %}
-            <option value="{{option.key}}" {% if option.key = log-level %} selected="true" {% endif %}>{{option.name}}</option>
-            {% endfor %}
-        </select>
-    </div>
-    <div>
-      <label class="block mb-2 text-sm font-medium text-gray-900" for="categorization-threshold">IMAP Client Watcher Health Check Interval</label>
-      <input class="input" name="client-health-check-interval" value="{{client-health-check-interval}}">
-    </div>
-    <div>
-      <label class="block mb-2 text-sm font-medium text-gray-900" for="category-folder-scan-interval">Category Folder Scan Interval</label>
-      <input class="input" name="category-folder-scan-interval" type="number" min="0" value="{{category-folder-scan-interval}}">
-      <div class="text-xs text-gray-500 mt-1">Seconds between two checks for e-mails you moved into a category folder in your mail client; they take that category. 0 turns it off.</div>
-    </div>
-    <div>
-      <label class="block mb-2 text-sm font-medium text-gray-900" for="automatic-training-time">Daily Training Time</label>
-      <input class="input" name="automatic-training-time" type="time" value="{{automatic-training-time}}" required>
-    </div>
-    <div>
-      <label class="block mb-2 text-sm font-medium text-gray-900" for="time-zone">Time Zone</label>
-      <input class="input" name="time-zone" value="{{time-zone}}" placeholder="Europe/Berlin" required>
-      <div class="text-xs text-gray-500 mt-1">Used for daily training, displayed e-mail dates and date filters.</div>
-    </div>
-  </div>
-  <button class="btn btn-primary" type="send">Save</button>
-</form>
-
-<div class="divider my-8"></div>
-
-<form id="categorization-model-form" action="/admin/preferences/model" method="POST" class="max-w-xl">
-  <input type="hidden" name="redirect-url" value="/admin/preferences">
-  <label class="block mb-2 text-sm font-medium text-gray-900" for="categorization-model">Categorization Model</label>
-  <select id="categorization-model" class="select w-full" name="model" onchange="confirmCategorizationModelChange()">
-    {% for option in categorization-model-options %}
-    <option value="{{option.id}}" {% if option.id = categorization-model %}selected{% endif %}>{{option.name}}</option>
-    {% endfor %}
-  </select>
-  <div class="text-xs text-gray-500 mt-1">
-    MaxEnt combines sender, sender domain, subject and a bounded part of the message body. Changing
-    the model does not modify existing category assignments.
-  </div>
-
-  <dialog id="categorization-model-dialog" class="modal" data-current-model="{{categorization-model}}">
-    <div class="modal-box">
-      <h3 class="text-lg font-bold">Switch categorization model?</h3>
-      <p class="py-3">
-        Plauna can use all currently categorized e-mails in the languages enabled for training as
-        correct training examples for the new model. Existing category assignments will not be changed.
-      </p>
-      <label class="label cursor-pointer justify-start gap-3">
-        <input class="checkbox" type="checkbox" name="use-current-categories" value="true" checked>
-        <span>Use current category assignments for training</span>
+  <form action="/admin/preferences" method="POST" class="card bg-base-100 border border-base-300">
+    <div class="card-body gap-4">
+      <input type="hidden" name="redirect-url" value="/admin/preferences">
+      <label class="flex flex-col gap-1" for="time-zone">
+        <span class="font-semibold">{% t general.time-zone %}</span>
+        <input id="time-zone" class="input w-full sm:w-72" name="time-zone" value="{{time-zone}}" placeholder="Europe/Berlin" required>
+        <span class="text-xs text-base-content/70">{% t general.time-zone-help %}</span>
       </label>
-      <div class="mt-4">
-        <label class="label-text block" for="model-switch-confirmation">
-          Enter “Start training” to confirm:
-        </label>
-        <input id="model-switch-confirmation" class="input input-bordered mt-1 w-full" name="confirmation"
-               type="text" autocomplete="off" oninput="validateModelSwitchConfirmation()">
-      </div>
-      <div class="modal-action flex-wrap">
-        <button class="btn btn-ghost" type="button" onclick="cancelCategorizationModelChange()">Cancel</button>
-        <button id="model-switch-submit" class="btn btn-primary" type="submit" disabled>Switch model</button>
-      </div>
+      <label class="flex flex-col gap-1" for="category-folder-scan-interval">
+        <span class="font-semibold">{% t general.folder-scan %}</span>
+        <input id="category-folder-scan-interval" class="input w-full sm:w-40" name="category-folder-scan-interval" type="number" min="0" value="{{category-folder-scan-interval}}">
+        <span class="text-xs text-base-content/70">{% t general.folder-scan-help %}</span>
+      </label>
+      <label class="flex flex-col gap-1" for="client-health-check-interval">
+        <span class="font-semibold">{% t general.health-check %}</span>
+        <input id="client-health-check-interval" class="input w-full sm:w-40" name="client-health-check-interval" value="{{client-health-check-interval}}">
+        <span class="text-xs text-base-content/70">{% t general.health-check-help %}</span>
+      </label>
+      <label class="flex flex-col gap-1" for="log-level">
+        <span class="font-semibold">{% t general.log-level %}</span>
+        <select id="log-level" class="select w-full sm:w-40" name="log-level">
+          {% for option in log-level-options %}
+          <option value="{{option.key}}" {% if option.key = log-level %}selected="true"{% endif %}>{{option.name}}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div><button class="btn btn-primary" type="submit">{% t email.save %}</button></div>
     </div>
-    <button type="button" class="modal-backdrop" onclick="cancelCategorizationModelChange()">close</button>
-  </dialog>
-</form>
-
-<script>
-  const modelDialog = document.getElementById('categorization-model-dialog');
-  const modelSelect = document.getElementById('categorization-model');
-  const confirmationInput = document.getElementById('model-switch-confirmation');
-  const modelSubmit = document.getElementById('model-switch-submit');
-
-  function confirmCategorizationModelChange() {
-    if (modelSelect.value === modelDialog.dataset.currentModel) return;
-    confirmationInput.value = '';
-    modelSubmit.disabled = true;
-    modelDialog.showModal();
-    confirmationInput.focus();
-  }
-
-  function validateModelSwitchConfirmation() {
-    modelSubmit.disabled = confirmationInput.value !== 'Start training';
-  }
-
-  function cancelCategorizationModelChange() {
-    modelSelect.value = modelDialog.dataset.currentModel;
-    confirmationInput.value = '';
-    modelSubmit.disabled = true;
-    modelDialog.close();
-  }
-
-  modelDialog.addEventListener('cancel', (event) => {
-    event.preventDefault();
-    cancelCategorizationModelChange();
-  });
-</script>
+  </form>
+  <p class="text-xs text-base-content/70">{% t general.model-moved %} <a class="link" href="/model">{% t nav.model %}</a></p>
+</div>
 {% endblock %}

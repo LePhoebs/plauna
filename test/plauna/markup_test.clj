@@ -17,27 +17,33 @@
   (is (= "0.00 %" (markup/confidence->percent 0)))
   (is (= "—" (markup/confidence->percent nil))))
 
-(deftest preferences-page-renders-the-daily-training-time-and-time-zone
+(deftest general-settings-keep-the-time-zone-and-intervals
   (with-redefs [client/disconnected-connections (fn [] [])]
-    (let [html (markup/preferences-page {:automatic-training-time "03:30"
-                                         :time-zone "Europe/Berlin"
-                                         :categorization-model "naive-bayes"
-                                         :categorization-model-options [{:id "naive-bayes" :name "Naive Bayes"}
-                                                                        {:id "maxent" :name "Maximum Entropy (MaxEnt)"}]
-                                         :log-level-options []})]
-      (is (str/includes? html "name=\"automatic-training-time\" type=\"time\" value=\"03:30\""))
+    (let [html (markup/preferences-page {:time-zone "Europe/Berlin" :category-folder-scan-interval 300
+                                         :client-health-check-interval 60 :log-level :info
+                                         :log-level-options [{:key :info :name "Info"}]})]
       (is (str/includes? html "name=\"time-zone\" value=\"Europe/Berlin\""))
+      (is (str/includes? html "name=\"category-folder-scan-interval\" type=\"number\" min=\"0\" value=\"300\""))
+      (is (not (str/includes? html "categorization-threshold")) "Thresholds moved to the Model page")
+      (is (str/includes? html "href=\"/model\"")))))
+
+(deftest model-page-holds-languages-thresholds-schedule-and-the-model-switch
+  (with-redefs [client/disconnected-connections (fn [] [])]
+    (let [html (markup/model-page {:training-time "03:30" :model-type "naive-bayes"
+                                   :model-options [{:id "naive-bayes" :name "Naive Bayes"} {:id "maxent" :name "Maximum Entropy (MaxEnt)"}]
+                                   :language-preferences [{:id 1 :language "deu" :use_in_training true} {:id 2 :language "eng" :use_in_training false}]
+                                   :categorization-threshold 0.65 :language-detection-threshold 0.8
+                                   :model-scores {}})]
+      (is (str/includes? html "name=\"automatic-training-time\" type=\"time\" value=\"03:30\""))
+      (is (str/includes? html "id=\"language-deu\" checked"))
+      (is (not (str/includes? html "id=\"language-eng\" checked")))
+      (is (str/includes? html "name=\"categorization-threshold\" value=\"0.65\""))
       (is (str/includes? html "action=\"/admin/preferences/model\""))
       (is (str/includes? html "value=\"naive-bayes\" selected"))
-      (is (str/includes? html "value=\"maxent\""))
-      (is (str/includes? html "Switch categorization model?"))
-      (is (str/includes? html "Use current category assignments for training"))
-      (is (str/includes? html "Start training"))
-      (is (str/includes? html "class=\"label-text block\" for=\"model-switch-confirmation\""))
-      (is (str/includes? html "class=\"input input-bordered mt-1 w-full\""))
-      (is (str/includes? html "class=\"modal-action flex-wrap\""))
-      (is (not (str/includes? html "class=\"form-control mt-4\"")))
-      (is (str/includes? html "confirmationInput.value !== 'Start training'")))))
+      (is (str/includes? html "Switch the categorization model?"))
+      (is (str/includes? html "Enter “Start training” to confirm:"))
+      (is (str/includes? html "confirmationInput.value !== 'Start training'"))
+      (is (str/includes? html "action=\"/metadata/languages\"")))))
 
 (deftest disconnected-banner-is-hidden-when-no-connections-are-disconnected
   (with-redefs [client/disconnected-connections (fn [] [])]
@@ -209,12 +215,11 @@
       (is (str/includes? sender "Folder: INBOX"))
       (is (str/includes? sender "To the trash after 30 days"))
       (is (str/includes? sender "aria-checked=\"true\""))
-      (is (str/includes? sender "Review e-mails (37)"))
-      (is (str/includes? sender "href=\"/emails?size=50&amp;suggest-category=3&amp;suggest-by=sender&amp;suggest-min=60\""))
+      (is (str/includes? sender "This method finds no e-mails outside the category.") "No groups were passed")
       (is (not (str/includes? sender "Score e-mails now")) "Scoring only shows for the model method")
       (is (str/includes? model "name=\"min\" min=\"1\" max=\"99\" value=\"60\""))
       (is (str/includes? model "Scores from 07.11.2026 14:03 (120 e-mails). The model was trained since"))
-      (is (re-find #"<button class=\"btn btn-primary\" type=\"button\" disabled>Review e-mails \(0\)</button>" model))
+      (is (str/includes? model "The model suggests no e-mails at this probability."))
       (is (str/includes? model "menu-active") "The category is highlighted in the sidebar"))))
 
 (deftest model-page-offers-training-and-scoring
@@ -430,17 +435,44 @@
         (is (not (str/includes? html "font-semibold\"><span")))
         (is (not (str/includes? html "The assigned category is in bold")))))))
 
-(deftest categories-page-offers-flag-colors-and-retention
+(deftest categories-overview-lists-the-categories-and-a-new-category-form
   (with-redefs [client/disconnected-connections (fn [] [])]
-    (let [html (markup/categories-page [{:id 1 :name "parcels" :color "#112233" :destination_folder "INBOX" :flag_color "orange" :retention_days 30}
-                                        {:id 2 :name "newsletter" :color nil :destination_folder nil :flag_color nil :retention_days nil}])]
-      (is (str/includes? html "name=\"flag-color\""))
-      (is (str/includes? html "value=\"orange\" selected"))
-      (is (str/includes? html "name=\"retention-days\""))
-      (is (str/includes? html "value=\"30\""))
-      (is (str/includes? html "action=\"/admin/categories/1/flag\"") "A flagged category offers to flag its existing e-mails")
-      (is (not (str/includes? html "action=\"/admin/categories/2/flag\"")))
+    (let [html (markup/categories-page [{:id 1 :name "parcels" :color "#112233" :destination_folder "INBOX" :flag_color "orange" :retention_days 30 :email_count 12}
+                                        {:id 2 :name "newsletter" :color nil :destination_folder nil :flag_color nil :retention_days nil :email_count 0}])]
+      (is (str/includes? html "href=\"/categories/1?tab=settings\""))
+      (is (str/includes? html "E-mails: 12"))
+      (is (str/includes? html "Folder: INBOX"))
+      (is (str/includes? html "action=\"/admin/categories\""))
       (is (str/includes? html "action=\"/admin/categories/clean-up\"")))))
+
+(deftest category-settings-offer-flag-colors-retention-and-delete
+  (with-redefs [client/disconnected-connections (fn [] [])]
+    (let [render (fn [category] (markup/category-page {:tab "settings" :email-count 3 :category category
+                                                        :flag-colors [{:id "orange" :label "Orange" :hex "#ff9500"}]}))
+          flagged (render {:id 1 :name "parcels" :color "#112233" :destination_folder "INBOX" :flag_color "orange" :retention_days 30})
+          plain (render {:id 2 :name "newsletter" :color nil :destination_folder nil :flag_color nil :retention_days nil})]
+      (is (str/includes? flagged "name=\"flag-color\""))
+      (is (str/includes? flagged "value=\"orange\" selected"))
+      (is (str/includes? flagged "name=\"retention-days\" value=\"30\""))
+      (is (str/includes? flagged "action=\"/admin/categories/1/flag\"") "A flagged category offers to flag its existing e-mails")
+      (is (not (str/includes? plain "action=\"/admin/categories/2/flag\"")))
+      (is (str/includes? plain "fetch('/admin/categories/2', {method: 'DELETE'})")))))
+
+(deftest category-suggestions-are-grouped-by-sender
+  (with-redefs [client/disconnected-connections (fn [] [])]
+    (let [html (markup/category-page {:category {:id 3 :name "Temporary"} :email-count 1 :method "model" :min-percent 60
+                                      :counts {:sender 2 :domain 2 :model 2} :selected-count 2
+                                      :groups [{:key "news@shop.example" :name "Shop" :count 2 :min-confidence 0.7 :max-confidence 0.95
+                                                :emails [{:message-id "a" :subject "Your code" :date 0 :confidence 0.95}
+                                                         {:message-id "b" :subject "Shipped" :date 0 :confidence 0.7}]}]
+                                      :model-scores {}})]
+      (is (str/includes? html "Suggested e-mails: 2 from 1 senders."))
+      (is (str/includes? html "<b>Shop</b>"))
+      (is (str/includes? html "70 %–95 %"))
+      (is (str/includes? html "Assign all 2"))
+      (is (str/includes? html "data-message-id=\"a\""))
+      (is (str/includes? html "95 % ·"))
+      (is (str/includes? html "/js/assign.js")))))
 
 (deftest list-dates-are-short-for-recent-e-mails
   (let [today (java.time.LocalDate/of 2026 11 7)]
@@ -467,3 +499,11 @@
       (is (str/includes? html "1–3 of 3"))
       (is (re-find #"data-view=\"model-assigned\" aria-pressed=\"true\"" html) "The active view is marked")
       (is (not (str/includes? html "updateLanguage(")) "The language column moved to the detail page"))))
+
+(deftest new-pages-show-pending-messages
+  ;; result-with-messages passes pending toasts as an extra argument; a page without that arity
+  ;; failed with an ArityException whenever a message was waiting.
+  (with-redefs [client/disconnected-connections (fn [] [])]
+    (let [message {:type :success :key :category.saved}]
+      (is (str/includes? (markup/model-page {:model-scores {}} [message]) "The category was saved."))
+      (is (str/includes? (markup/category-page {:category {:id 1 :name "X"} :tab "emails" :emails []} [message]) "The category was saved.")))))

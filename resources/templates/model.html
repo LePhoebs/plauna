@@ -1,21 +1,19 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="max-w-4xl flex flex-col gap-5">
+<div class="max-w-5xl flex flex-col gap-5">
   <header class="flex flex-col gap-1">
     <h1 class="text-2xl font-bold">{% t nav.model %}</h1>
     <p class="text-base-content/70 max-w-prose">{% t model.intro %}</p>
   </header>
 
-  <div class="grid gap-4 md:grid-cols-2">
+  <div class="grid gap-4 md:grid-cols-2 items-start">
     <section class="card bg-base-100 border border-base-300" aria-labelledby="training-title">
       <div class="card-body gap-3">
         <h2 class="card-title" id="training-title">{% t model.training %}</h2>
         <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
           <dt class="text-base-content/70">{% t model.last-training %}</dt>
           <dd>{% if last-training %}{{last-training}}{% else %}{% t model.never %}{% endif %}</dd>
-          <dt class="text-base-content/70">{% t model.daily %}</dt>
-          <dd>{% if training-time %}{{training-time}}{% else %}{% t model.no-schedule %}{% endif %}</dd>
           <dt class="text-base-content/70">{% t model.type %}</dt>
           <dd>{{model-type}}</dd>
         </dl>
@@ -27,6 +25,14 @@
           <form action="/training" method="post"><button class="btn btn-primary btn-sm" type="submit">{% t model.train-now %}</button></form>
           {% endif %}
         </div>
+        <form action="/admin/preferences" method="POST" class="flex flex-wrap items-end gap-2 border-t border-base-300 pt-3">
+          <input type="hidden" name="redirect-url" value="/model">
+          <label class="flex flex-col gap-1" for="automatic-training-time">
+            <span class="text-xs text-base-content/70">{% t model.daily %}</span>
+            <input id="automatic-training-time" class="input input-sm w-32" name="automatic-training-time" type="time" value="{{training-time}}" required>
+          </label>
+          <button class="btn btn-sm" type="submit">{% t email.save %}</button>
+        </form>
       </div>
     </section>
 
@@ -38,19 +44,121 @@
       </div>
     </section>
 
-    <section class="card bg-base-100 border border-base-300 md:col-span-2" aria-labelledby="model-settings-title">
+    <section class="card bg-base-100 border border-base-300" id="languages" aria-labelledby="languages-title">
       <div class="card-body gap-3">
-        <h2 class="card-title" id="model-settings-title">{% t model.settings %}</h2>
-        <ul class="flex flex-col divide-y divide-base-300">
-          <li class="py-2 flex flex-wrap items-baseline justify-between gap-2">
-            <span><a class="link link-hover font-semibold" href="/admin/languages">{% t model.languages %}</a><br><span class="text-xs text-base-content/70">{% t model.languages-help %}</span></span>
-          </li>
-          <li class="py-2 flex flex-wrap items-baseline justify-between gap-2">
-            <span><a class="link link-hover font-semibold" href="/admin/preferences">{% t model.thresholds %}</a><br><span class="text-xs text-base-content/70">{% t model.thresholds-help %}</span></span>
-          </li>
-        </ul>
+        <h2 class="card-title" id="languages-title">{% t model.languages %}</h2>
+        <p class="text-xs text-base-content/70">{% t model.languages-help %}</p>
+        {% if language-preferences|not-empty %}
+        <form action="/admin/languages" id="language-form" method="post" class="flex flex-col gap-3">
+          {% for preference in language-preferences %}
+          <input hidden="true" name="id" type="text" value="{{preference.id}}">
+          <input hidden="true" name="language" type="text" value="{{preference.language}}">
+          {% endfor %}
+          <div class="flex flex-wrap gap-x-5 gap-y-2">
+            {% for preference in language-preferences %}
+            <label class="flex items-center gap-2" for="language-{{preference.language}}">
+              <input id="language-{{preference.language}}" {% if preference.use_in_training %}checked{% endif %} class="checkbox checkbox-sm" name="use" type="checkbox" value="{{preference.language}}">
+              <span class="font-mono">{{preference.language}}</span>
+            </label>
+            {% endfor %}
+          </div>
+          <div><button class="btn btn-sm" type="submit">{% t email.save %}</button></div>
+        </form>
+        {% else %}
+        <p class="text-sm text-base-content/70">{% t model.no-languages %}</p>
+        {% endif %}
+        <form action="/metadata/languages" method="post" class="flex flex-wrap items-center gap-2 border-t border-base-300 pt-3">
+          <input type="hidden" name="redirect-url" value="/model" />
+          <button class="btn btn-sm btn-ghost border border-base-300" type="submit">{% t model.redetect %}</button>
+          <span class="text-xs text-base-content/70">{% t model.redetect-help %}</span>
+        </form>
+      </div>
+    </section>
+
+    <section class="card bg-base-100 border border-base-300" aria-labelledby="thresholds-title">
+      <div class="card-body gap-3">
+        <h2 class="card-title" id="thresholds-title">{% t model.thresholds %}</h2>
+        <form action="/admin/preferences" method="POST" class="flex flex-col gap-3">
+          <input type="hidden" name="redirect-url" value="/model">
+          <label class="flex flex-col gap-1" for="categorization-threshold">
+            <span class="font-semibold">{% t model.categorization-threshold %}</span>
+            <input id="categorization-threshold" class="input input-sm w-32" name="categorization-threshold" value="{{categorization-threshold}}">
+            <span class="text-xs text-base-content/70">{% t model.categorization-threshold-help %}</span>
+          </label>
+          <label class="flex flex-col gap-1" for="language-detection-threshold">
+            <span class="font-semibold">{% t model.language-threshold %}</span>
+            <input id="language-detection-threshold" class="input input-sm w-32" name="language-detection-threshold" value="{{language-detection-threshold}}">
+            <span class="text-xs text-base-content/70">{% t model.language-threshold-help %}</span>
+          </label>
+          <div><button class="btn btn-sm" type="submit">{% t email.save %}</button></div>
+        </form>
+
+        <form id="categorization-model-form" action="/admin/preferences/model" method="POST" class="flex flex-col gap-1 border-t border-base-300 pt-3">
+          <input type="hidden" name="redirect-url" value="/model">
+          <label class="font-semibold" for="categorization-model">{% t model.type %}</label>
+          <select id="categorization-model" class="select select-sm w-full sm:w-64" name="model" onchange="confirmCategorizationModelChange()">
+            {% for option in model-options %}
+            <option value="{{option.id}}" {% if option.id = model-type %}selected{% endif %}>{{option.name}}</option>
+            {% endfor %}
+          </select>
+          <span class="text-xs text-base-content/70">{% t model.type-help %}</span>
+
+          <dialog id="categorization-model-dialog" class="modal" data-current-model="{{model-type}}">
+            <div class="modal-box">
+              <h3 class="text-lg font-bold">{% t model.switch-title %}</h3>
+              <p class="py-3">{% t model.switch-text %}</p>
+              <label class="label cursor-pointer justify-start gap-3">
+                <input class="checkbox" type="checkbox" name="use-current-categories" value="true" checked>
+                <span>{% t model.switch-use-current %}</span>
+              </label>
+              <div class="mt-4">
+                <label class="label-text block" for="model-switch-confirmation">{% t model.switch-confirm %}</label>
+                <input id="model-switch-confirmation" class="input input-bordered mt-1 w-full" name="confirmation"
+                       type="text" autocomplete="off" oninput="validateModelSwitchConfirmation()">
+              </div>
+              <div class="modal-action flex-wrap">
+                <button class="btn btn-ghost" type="button" onclick="cancelCategorizationModelChange()">{% t list.cancel %}</button>
+                <button id="model-switch-submit" class="btn btn-primary" type="submit" disabled>{% t model.switch %}</button>
+              </div>
+            </div>
+            <button type="button" class="modal-backdrop" onclick="cancelCategorizationModelChange()">{% t toast.close %}</button>
+          </dialog>
+        </form>
       </div>
     </section>
   </div>
 </div>
+
+<script>
+  // Switching the model trains a complete model set, so it asks for the confirmation phrase (which the
+  // server checks again; it stays the English "Start training" in every language).
+  const modelDialog = document.getElementById('categorization-model-dialog');
+  const modelSelect = document.getElementById('categorization-model');
+  const confirmationInput = document.getElementById('model-switch-confirmation');
+  const modelSubmit = document.getElementById('model-switch-submit');
+
+  function confirmCategorizationModelChange() {
+    if (modelSelect.value === modelDialog.dataset.currentModel) return;
+    confirmationInput.value = '';
+    modelSubmit.disabled = true;
+    modelDialog.showModal();
+    confirmationInput.focus();
+  }
+
+  function validateModelSwitchConfirmation() {
+    modelSubmit.disabled = confirmationInput.value !== 'Start training';
+  }
+
+  function cancelCategorizationModelChange() {
+    modelSelect.value = modelDialog.dataset.currentModel;
+    confirmationInput.value = '';
+    modelSubmit.disabled = true;
+    modelDialog.close();
+  }
+
+  modelDialog.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    cancelCategorizationModelChange();
+  });
+</script>
 {% endblock %}

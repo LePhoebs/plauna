@@ -409,6 +409,68 @@
   [context category-id]
   (count-emails (:db context) [:= :metadata.category category-id]))
 
+(def max-suggestion-candidates
+  "How many suggested e-mails a category page groups at most (the most likely, else the newest)."
+  500)
+
+(defn suggestion-candidates
+  "The e-mails a suggestion method finds for the category, without bodies: for the model method the
+   most likely first, otherwise the newest first. At most max-suggestion-candidates."
+  [context category-id method min-percent]
+  (let [{:keys [method] :as suggestion} (suggestion-parameters {:suggest-category (str category-id) :suggest-by method
+                                                                :suggest-min (str min-percent)})]
+    (:data (int/fetch-emails (:db context)
+                             {:entity :enriched-email :strict false :with-bodies false
+                              :page (page/page-request 1 max-suggestion-candidates)}
+                             {:where (suggestion->where suggestion)
+                              :order-by (if (= method "model")
+                                          [[(suggestion-score category-id) :desc] [:date :desc]]
+                                          [[:date :desc]])}))))
+
+(defn- suggestion-sender
+  "The address a suggested e-mail is grouped by: its From address, else its envelope sender."
+  [email]
+  (let [contacts (:participants email)
+        contact (or (first (filter #(contains? #{:from "from" ":from"} (:type %)) contacts))
+                    (first (filter #(contains? #{:sender "sender" ":sender"} (:type %)) contacts)))]
+    contact))
+
+(defn group-suggestions
+  "Group suggested e-mails by sender address (by the part after the @ for the domain method), the
+   largest group first - for the model method the group with the most likely e-mail first.
+   scores: {message-id confidence} of the category, for the model method. Every group:
+   {:key :name :count :emails [{:message-id :subject :date :confidence}] :min-confidence :max-confidence}."
+  [emails method scores]
+  (let [key-of (fn [email]
+                 (let [address (some-> (suggestion-sender email) :address str/lower-case str/trim)]
+                   (cond (str/blank? address) "?"
+                         (= method "domain") (let [at (str/last-index-of address "@")] (if at (subs address (inc at)) address))
+                         :else address)))
+        groups (for [[k group] (group-by key-of emails)
+                     :let [rows (mapv (fn [email]
+                                        {:message-id (get-in email [:header :message-id])
+                                         :subject (get-in email [:header :subject])
+                                         :date (get-in email [:header :date])
+                                         :confidence (get scores (get-in email [:header :message-id]))})
+                                      group)
+                           confidences (keep :confidence rows)
+                           names (keep (comp not-empty str/trim str :name suggestion-sender) group)]]
+                 {:key k
+                  :name (when-not (= method "domain") (first names))
+                  :count (count rows)
+                  :emails (if (= method "model") (vec (sort-by #(- (double (or (:confidence %) 0.0))) rows)) rows)
+                  :min-confidence (when (seq confidences) (apply min confidences))
+                  :max-confidence (when (seq confidences) (apply max confidences))})]
+    (vec (if (= method "model")
+           (sort-by (juxt #(- (double (or (:max-confidence %) 0.0))) #(- (long (:count %)))) groups)
+           (sort-by (juxt #(- (long (:count %))) :key) groups)))))
+
+(defn recent-category-emails
+  "The newest e-mails of a category, without bodies - the category page's E-mails tab."
+  [context category-id n]
+  (:data (int/fetch-emails (:db context) {:entity :enriched-email :strict false :with-bodies false :page (page/page-request 1 n)}
+                           {:where [:= :metadata.category category-id] :order-by [[:date :desc]]})))
+
 (defn- batch-filter-label
   "Chip text for an active batch filter; falls back to the bare id when the run is unknown."
   [db batch-id]

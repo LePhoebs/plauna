@@ -616,7 +616,7 @@
   []
   (let [{:keys [at emails]} (p/model-scores-info)
         trained-at (p/last-successful-training-at)]
-    {:at-text (some-> at (.atZone (p/zone-id)) (.format (java.time.format.DateTimeFormatter/ofPattern "dd.MM.yyyy HH:mm")))
+    {:at-text (when at (.format (.atZone ^Instant at ^java.time.ZoneId (p/zone-id)) (java.time.format.DateTimeFormatter/ofPattern "dd.MM.yyyy HH:mm")))
      :emails emails
      :stale? (boolean (and at trained-at (.isAfter ^Instant trained-at ^Instant at)))
      :running? (scoring-running?)}))
@@ -625,31 +625,53 @@
   (some-> instant (.atZone (p/zone-id)) (.format (java.time.format.DateTimeFormatter/ofPattern "dd.MM.yyyy HH:mm"))))
 
 (defn model-page-data
-  "What the Model page shows: the training state and schedule, the model type and the stored scores."
+  "What the Model page shows: training state and schedule, languages, thresholds, the model type and
+   the stored scores."
   []
   {:training-running? (training-running?)
    :last-training (format-instant (p/last-successful-training-at))
    :training-time (p/automatic-training-time)
    :model-type (p/categorization-model)
+   :model-options analysis/supported-categorization-models
+   :language-preferences (language-preferences)
+   :language-detection-threshold (p/language-detection-threshold)
+   :categorization-threshold (p/categorization-threshold)
    :model-scores (model-scores-summary)})
 
+(def category-tabs #{"suggestions" "emails" "settings"})
+
 (defn category-page
-  "A category's page: what it does with its e-mails and how many older e-mails may belong into it.
-   params: :by (sender, domain or model; default sender) and :min (the model's minimum percentage)."
-  [context category params]
+  "A category's page with the tabs suggestions (default), emails and settings. params: :tab, and for
+   the suggestions :by (sender, domain or model; default sender) and :min (the model's minimum
+   percentage)."
+  ([context category params] (category-page context category params nil))
+  ([context category params messages]
   (let [id (:id category)
-        {:keys [method min-percent]} (app/suggestion-parameters {:suggest-category (str id) :suggest-by (:by params) :suggest-min (:min params)})
-        counts (app/suggestion-counts context id min-percent)
-        flag (first (filter #(= (:flag_color category) (:id %)) flags/colors))]
+        tab (get category-tabs (:tab params) "suggestions")
+        flag (first (filter #(= (:flag_color category) (:id %)) flags/colors))
+        base {:category (assoc category :flag_hex (:hex flag) :flag_label (:label flag))
+              :email-count (app/category-email-count context id)
+              :tab tab}]
     (markup/category-page
-     {:category (assoc category :flag_hex (:hex flag) :flag_label (:label flag))
-      :email-count (app/category-email-count context id)
-      :method method
-      :min-percent min-percent
-      :counts (update-keys counts keyword)
-      :selected-count (get counts method 0)
-      :review-url (str "/emails?size=50&suggest-category=" id "&suggest-by=" method "&suggest-min=" min-percent)
-      :model-scores (model-scores-summary)})))
+     (case tab
+       "emails" (assoc base :emails (app/recent-category-emails context id 25))
+       "settings" (assoc base :flag-colors flags/colors)
+       (let [{:keys [method min-percent]} (app/suggestion-parameters {:suggest-category (str id) :suggest-by (:by params) :suggest-min (:min params)})
+             counts (app/suggestion-counts context id min-percent)
+             selected-count (get counts method 0)
+             candidates (when (pos? (long selected-count)) (app/suggestion-candidates context id method min-percent))
+             scores (when (= method "model") (db/category-scores-for id (mapv #(get-in % [:header :message-id]) candidates)))]
+         (assoc base
+                :method method
+                :min-percent min-percent
+                :counts (update-keys counts keyword)
+                :selected-count selected-count
+                :groups (app/group-suggestions candidates method scores)
+                :capped? (> (long selected-count) (count candidates))
+                :shown-count (count candidates)
+                :review-url (str "/emails?size=50&suggest-category=" id "&suggest-by=" method "&suggest-min=" min-percent)
+                :model-scores (model-scores-summary))))
+     messages))))
 
 (defn scoring-status
   "The e-mail list's JSON view of the current (or last) scoring run."
@@ -2052,7 +2074,10 @@
            (redirect-request request event-bus-busy-message)))))
 
    (comp/GET "/categories" {}
-     (let [categories (db/get-categories)]
+     (let [counts (into {} (map (juxt :id :email_count)) (db/categories-with-counts))
+           categories (->> (db/get-categories)
+                           (map #(assoc % :email_count (get counts (:id %) 0)))
+                           (sort-by #(st/lower-case (str (:name %)))))]
        (success-html-with-body (result-with-messages (markup/categories-page categories) global-messages))))
 
    ;; The category overview moved out of the administration (docs/redesign.org).
@@ -2066,9 +2091,8 @@
    (comp/GET "/model" {}
      (success-html-with-body (result-with-messages (markup/model-page (model-page-data)) global-messages)))
 
-   (comp/GET "/admin/languages" {}
-     (success-html-with-body
-      (result-with-messages (markup/languages-admin-page (language-preferences)) global-messages)))
+   ;; The languages moved to the Model page (docs/redesign.org).
+   (comp/GET "/admin/languages" {} (redirect "/model#languages" 301))
 
    (comp/GET "/admin/preferences" {}
      (let [language-datection-threshold (p/language-detection-threshold)
@@ -2120,10 +2144,10 @@
        (if-let [rejection (model-switch-validation params)]
          (redirect-request request rejection)
          (if (start-training-job! "Model switch" #(switch-categorization-model! params))
-           (redirect (training-progress-url "/admin/preferences") 303)
+           (redirect (training-progress-url "/model") 303)
            (redirect-request request training-busy-message)))))
 
-   (comp/POST "/admin/languages" {params :params}
+   (comp/POST "/admin/languages" {params :params :as request}
      (let [langs-to-use (if (vector? (:use params)) (:use params) [(:use params)])]
        (doseq [preference (mapv (fn [id language]
                                   {:id id :language language :use (some? (some #(= language %) langs-to-use))})
@@ -2132,8 +2156,8 @@
          (db/update-language-preference preference)))
      ;; Categorization caches the activated languages briefly; a change must apply at once.
      (analysis/clear-reference-cache!)
-     (let [language-preferences (language-preferences)]
-       (success-html-with-body (markup/languages-admin-page language-preferences))))
+     (add-to-messages {:type :success :key :model.languages-saved})
+     (redirect-to-referer request))
 
    (comp/POST "/admin/categories" {params :params}
      (if-let [problem (app/category-name-problem (:name params) (map :name (db/get-categories)))]
@@ -2150,7 +2174,7 @@
                         {:type :info :content "A clean-up is already running."}))
      (redirect "/categories" 303))
 
-   (comp/POST "/admin/categories/:id/flag" {route-params :route-params}
+   (comp/POST "/admin/categories/:id/flag" {route-params :route-params :as request}
      (let [category (some-> (parse-long (str (:id route-params))) db/category-by-id)]
        (cond (nil? category)
              (add-to-messages {:type :alert :content "Unknown category."})
@@ -2159,9 +2183,10 @@
              :else
              (do (flag-existing-emails! category)
                  (add-to-messages {:type :info :content (str "Flagging the e-mails of " (:name category) " in the background.")})))
-       (redirect "/categories" 303)))
+       ;; Back to the page the form was on: a category's settings tab, or the overview.
+       (redirect-to-referer request)))
 
-   (comp/POST "/admin/categories/:id" {route-params :route-params params :params}
+   (comp/POST "/admin/categories/:id" {route-params :route-params params :params :as request}
      (let [id (parse-long (str (:id route-params)))
            old-category (some-> id db/category-by-id)
            old-color (flags/valid-color (:flag_color old-category))
@@ -2180,7 +2205,8 @@
                (try (per-connection flagged client/apply-flags!)
                     (catch Throwable e (t/log! {:level :warn :error e} "Could not remove the flags of the category"))))))))
      (analysis/clear-reference-cache!)
-     (redirect "/categories" 303))
+     (add-to-messages {:type :success :key :category.saved})
+     (redirect-to-referer request))
 
    (comp/DELETE "/admin/categories/:id" {route-params :route-params}
      (let [id (Integer/parseInt (:id route-params))

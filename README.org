@@ -191,7 +191,7 @@ Example file with the user-facing keys (the initial =time-zone= is the host syst
 
 Plauna also keeps a few internal values in this file (the session signing key, the time of the last successful training and a =session-generation= counter that ends all sessions when the credentials change). If the file is ever damaged so that it is no longer valid JSON, Plauna refuses to start and names the file instead of silently replacing it with defaults - that would discard the login name, the session key and the mTLS configuration.
 
-Plauna keeps Naive Bayes and MaxEnt model files side by side. When you select a different model under "System" → "General", Plauna opens a confirmation dialog. For the first switch, keep the option to use the current category assignments enabled and enter =Start training= exactly. Plauna then treats the current assignments as correct training examples. The previous model remains active until training of the complete target model succeeds; a failed switch therefore does not leave categorization without a usable model.
+Plauna keeps Naive Bayes and MaxEnt model files side by side. When you select a different model on the "Model" page under "Thresholds and model type", Plauna opens a confirmation dialog. For the first switch, keep the option to use the current category assignments enabled and enter =Start training= exactly. Plauna then treats the current assignments as correct training examples. The previous model remains active until training of the complete target model succeeds; a failed switch therefore does not leave categorization without a usable model.
 
 Both newly trained algorithms use namespaced features for the sender's address and domain, the From address and domain, the subject and up to 500 normalized body tokens. The sender is the =Sender= header (a mailing service's address for many newsletters), else the From address; e-mails stored before Plauna kept both simply lack the From features. Words are split at every kind of space, no-break spaces included, the same way for training and prediction. The displayed category confidence is the selected model's combined probability across those features, not three separate confidence values. On the detail page of an e-mail, "Model Scores" shows what the current model computes for it when the page is opened: the five most likely categories and their probabilities, regardless of the threshold. For a categorized e-mail the assigned category is shown in bold; it can differ from the top score, for example after a manual change or a retraining. Nothing of this is stored. A category or language changed manually is stored with 100% confidence because it represents an explicit user decision rather than a model prediction.
 
@@ -437,21 +437,23 @@ Plauna automatically detects the language of an e-mail when parsing it. Under "M
 
 *** Create Categories
 
-Go to "Categories" to create and delete categories. A category name becomes an IMAP folder name, so it must not be empty, longer than 100 characters, or contain the characters =/= =\= =*= =%= =.= or double quotes (they are hierarchy separators and wildcards in IMAP folder names; the dot is the separator of Maildir++ servers such as many Dovecot setups). When you create a category, Plauna tries to create its folder on every active IMAP connection. Deleting a category clears that category from affected Plauna metadata, but does not delete the corresponding folder or messages from the IMAP server. Plauna creates folders and moves messages as part of categorization; category administration itself does not remove server-side folders or messages.
+Go to "Categories" to see every category with its number of e-mails, its folder, its flag and its time until the trash, and to create one with "New category". Each category has its own page with three tabs: "Suggestions" (see below), "E-mails" (its newest e-mails) and "Settings" (color, destination folder, flag, days until the trash, "Flag existing e-mails" and "Delete category"). A category name becomes an IMAP folder name, so it must not be empty, longer than 100 characters, or contain the characters =/= =\= =*= =%= =.= or double quotes (they are hierarchy separators and wildcards in IMAP folder names; the dot is the separator of Maildir++ servers such as many Dovecot setups). When you create a category, Plauna tries to create its folder on every active IMAP connection. Deleting a category clears that category from affected Plauna metadata, but does not delete the corresponding folder or messages from the IMAP server. Plauna creates folders and moves messages as part of categorization; category administration itself does not remove server-side folders or messages.
 
 *** Finding Older E-mails for a Category
 
-A new category starts with only the e-mails assigned since it exists. Its page (click it in the sidebar or on "Categories") finds older e-mails outside the category that may belong into it. Three methods show how many e-mails each finds:
+A new category starts with only the e-mails assigned since it exists. The "Suggestions" tab of its page (click it in the sidebar or on "Categories") finds older e-mails outside the category that may belong into it. Three methods show how many e-mails each finds:
 
 - "Same sender" finds e-mails whose sender address (ignoring case and display name) already has e-mails in the category.
 - "Same sender domain" does the same for the part of the address after the @. This finds more, but a domain like a large mail provider's matches a lot.
 - "Model" finds the e-mails the trained model puts into the category with at least the given probability (default 50 %), most likely first. It uses scores stored for every e-mail with a detected language. "Score e-mails now" (on the category page with this method, and on the "Model" page) computes them in the background with the current models; the page shows the progress and reloads when it is done. Scores do not follow the model by themselves: after a training run the page says so, and scoring again uses the new model. A category the model has not been trained with yet gets no scores, so train first once the category has some e-mails.
 
-"Review" opens the e-mail list with these e-mails and the category preselected in the bulk bar (see "Filtering and Navigating the E-mail List"). The suggestion stays a filter of the list - shown as a chip with a link back to the category - and combines with every other filter, for example a date range. Assigned e-mails leave the suggestions with the next page load.
+Below, the suggested e-mails of the chosen method are grouped by sender (by domain for "Same sender domain"), the largest group first - for "Model" the group with the most likely e-mail first, with the range of probabilities. Most senders belong into a category entirely or not at all, so "Assign all" gives every e-mail of a group the category, one after the other, exactly as the e-mail list's category dropdown does, including the move on the mail server. "Show the e-mails" lists a group's e-mails with checkboxes; "Assign the ticked e-mails" assigns only those. E-mails the mail server does not have are asked about once at the end. Assigned e-mails leave their group, and an empty group leaves the page. At most the 500 most likely (model) or newest e-mails are grouped.
+
+"Review in the list" opens the e-mail list with the suggestions instead, the category preselected in the bulk bar (see "Filtering and Navigating the E-mail List"). There the suggestion stays a filter - shown as a chip with a link back to the category - and combines with every other filter, for example a date range.
 
 *** Destination Folders
 
-By default, e-mails of a category are moved to a sub-folder of "Categories" named after the category (e.g. =Categories/Work=). You can override this per category: in "Categories" each category has a "Destination Folder" field, and the "New Category" form lets you set one when creating a category.
+By default, e-mails of a category are moved to a sub-folder of "Categories" named after the category (e.g. =Categories/Work=). You can override this per category: the "Settings" tab of each category has a "Destination folder" field, and the "New category" form lets you set one when creating a category.
 
 - Enter a full IMAP folder path using your mail server's hierarchy separator (e.g. =Archive/Newsletters= or =Archive.Newsletters=).
 - Leave it blank to keep the default =Categories/<Name>= behaviour.
@@ -476,11 +478,11 @@ Note that a mail-server filter (e.g. Sieve) delivering new mail directly into a 
 
 *** Category Colors
 
-Each category has a color, set with a color picker in "Categories" (both on the "New Category" form and next to each existing category). The category dropdown on the e-mail list and on an e-mail's details page is color-coded with a left border matching the currently selected category, so you can tell categories apart at a glance; the sidebar shows each category with a dot in its color. A category created before this feature, or one for which an invalid color was submitted, falls back to a neutral gray.
+Each category has a color, set with a color picker on the "New category" form and in the category's "Settings" tab. The category dropdown on the e-mail list and on an e-mail's details page is color-coded with a left border matching the currently selected category, so you can tell categories apart at a glance; the sidebar shows each category with a dot in its color. A category created before this feature, or one for which an invalid color was submitted, falls back to a neutral gray.
 
 *** Flags and Automatic Clean-up
 
-Two more settings per category in "Categories" cover e-mails that belong in the inbox but are no longer needed after a while, such as shipping notices or account confirmations.
+Two more settings in the "Settings" tab of a category cover e-mails that belong in the inbox but are no longer needed after a while, such as shipping notices or account confirmations.
 
 *Flag:* Plauna marks every e-mail it files in the category with an Apple Mail flag of the chosen color. Apple Mail on macOS and iOS shows the color, other mail programs show a plain flag. Plauna sets the IMAP flag =\Flagged= and stores the color in the keywords =$MailFlagBit0= to =$MailFlagBit2=, as Apple Mail itself does. A server that does not keep custom keywords only gets the plain flag. To leave the e-mails in the inbox and only flag them, use =INBOX= as the category's destination folder (see [[*Destination Folders][Destination Folders]]).
 
@@ -551,11 +553,11 @@ Training is built for speed on a multi-core machine: the classification features
 
 You must have selected at least one language in "Model" → "Languages" in order to start training on your e-mails.
 
-Plauna also trains the active model automatically once per day at the time configured under "System" → "General". The configured IANA time zone controls that schedule. If Plauna was stopped at the scheduled time, it catches up the missed training after the next start; failures are logged and retried at the following scheduled run.
+Plauna also trains the active model automatically once per day at the time set on the "Model" page ("Daily training at"). The configured IANA time zone controls that schedule. If Plauna was stopped at the scheduled time, it catches up the missed training after the next start; failures are logged and retried at the following scheduled run.
 
 *** Choosing Naive Bayes or MaxEnt
 
-The categorization model is selected under "System" → "General":
+The categorization model is selected on the "Model" page:
 
 - *Naive Bayes* remains the default and preserves compatibility with existing installations.
 - *Maximum Entropy (MaxEnt, GIS)* considers the same combined sender, domain, subject and body features without Naive Bayes' feature-independence assumption.

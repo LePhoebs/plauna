@@ -162,7 +162,7 @@
 (defn list-date
   "How the e-mail list shows a date: the time for today, day and month for this year, the full date
    for older e-mails."
-  ([^LocalDateTime date-time] (list-date date-time (java.time.LocalDate/now (preferences/zone-id))))
+  ([^LocalDateTime date-time] (list-date date-time (java.time.LocalDate/now ^java.time.ZoneId (preferences/zone-id))))
   ([^LocalDateTime date-time ^java.time.LocalDate today]
    (when date-time
      (let [day (.toLocalDate date-time)]
@@ -177,7 +177,7 @@
   (or (first (filter #(= :from (:type %)) contacts))
       (first (filter #(= :sender (:type %)) contacts))))
 
-(defn- list-row
+(defn list-row
   "An e-mail prepared for a row of the list."
   [email]
   (let [date (timestamp->date (get-in email [:header :date]))
@@ -322,15 +322,38 @@
                                             :active-nav :categories}
                                      (some? messages) (assoc :messages (mapv type->toast-role messages))))))
 
+(defn- percent [confidence]
+  (when (number? confidence) (str (Math/round (* 100.0 (double confidence))) " %")))
+
+(defn- suggestion-group
+  "A group of suggested e-mails prepared for the category page."
+  [group]
+  (-> group
+      (assoc :min-percent (percent (:min-confidence group))
+             :max-percent (percent (:max-confidence group))
+             :message-ids (str/join "\n" (map :message-id (:emails group))))
+      (update :emails (fn [emails]
+                        (mapv #(assoc % :date-text (list-date (timestamp->date (:date %))) :percent (percent (:confidence %)))
+                              emails)))))
+
 (defn category-page
-  "A category's own page (see plauna.server/category-page for data)."
-  [data]
-  (render "category.html" (assoc data :active-nav :categories :active-category (get-in data [:category :id]))))
+  "A category's own page (see plauna.server/category-page for data). messages: pending toasts."
+  ([data] (category-page data nil))
+  ([data messages]
+   (render "category.html" (-> data
+                              (cond-> (seq messages) (assoc :messages (mapv type->toast-role messages)))
+                              (update :tab #(or % "suggestions"))
+                              (update :emails #(mapv list-row %))
+                              (update :groups #(mapv suggestion-group %))
+                              (as-> page (assoc page :group-count (count (:groups page))))
+                              (assoc :active-nav :categories :active-category (get-in data [:category :id]))))))
 
 (defn model-page
-  "The Model area: training, scoring, and links to its settings."
-  [data]
-  (render "model.html" (assoc data :active-nav :model)))
+  "The Model area: training, languages, thresholds, model type and scoring. messages: pending toasts."
+  ([data] (model-page data nil))
+  ([data messages]
+   (render "model.html" (cond-> (assoc data :active-nav :model)
+                          (seq messages) (assoc :messages (mapv type->toast-role messages))))))
 
 (defn languages-admin-page
   ([language-preferences] (languages-admin-page language-preferences nil))

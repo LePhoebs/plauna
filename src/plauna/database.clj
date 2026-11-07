@@ -856,6 +856,18 @@
                        (conj (rest insert) (str (first insert) " ON DUPLICATE KEY UPDATE confidence = VALUES(confidence)"))
                        (conj (rest insert) (string/replace-first (first insert) #"^INSERT" "INSERT OR REPLACE")))))))
 
+(defn category-scores-for
+  "The stored model scores of the given e-mails for one category, as {message-id confidence}."
+  [category-id message-ids]
+  (if (empty? message-ids)
+    {}
+    (into {} (map (juxt :message_id :confidence))
+          (jdbc/execute! (ds) (into [(str "SELECT message_id, confidence FROM category_scores WHERE category_id = ? AND message_id IN ("
+                                          (in-clause-placeholders (count message-ids)) ")")
+                                     category-id]
+                                    message-ids)
+                         builder-function))))
+
 (defn category-scores-of
   "The stored model scores of one e-mail as {category-id confidence}."
   [message-id]
