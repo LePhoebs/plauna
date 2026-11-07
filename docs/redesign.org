@@ -49,9 +49,13 @@ Old addresses keep working through redirects (bookmarks, the installed web app).
    the list to Model; old addresses redirect; bilingual texts for the shell and the new pages
    (category page, Model, System). The category page is a first version: it counts the suggestions
    per method and opens them in the e-mail list; step 3 turns it into the page with tabs.
-2. *E-mails*: toolbar with search, saved views and filter chips; header filters behind the "Filter"
-   button; compact rows with the category as a pill; floating bulk bar; phone: two-line entries and a
-   bottom sheet for the category.
+2. *E-mails* (done): toolbar with search, date range and views (All, Uncategorized, Assigned by the
+   model, With category and language) and filter chips; header filters behind the "Filter" button;
+   compact rows with sender, subject, category pill (dashed with its probability when the model
+   assigned it) and short date; the language column moved to the detail page; a floating bulk bar;
+   phone: two-line entries. The detail page got the new layout (contents left, category and
+   language, model scores and delete on the right). The bottom sheet for the category on the phone
+   uses the bulk bar's native select instead.
 3. *Categories and Model*: category overview and detail page with tabs; suggestions grouped by
    sender with "Assign all"; the Model page bundles languages, thresholds, training and scoring.
 4. *Accounts and System*: accounts with status and sub-pages; System by topic instead of a link

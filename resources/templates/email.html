@@ -1,121 +1,134 @@
 {% extends "base.html" %}
 
 {% block content %}
+<div class="flex flex-col gap-5 max-w-6xl">
+  <nav class="text-xs text-base-content/60" aria-label="{% t category.breadcrumb %}">
+    <a class="link link-hover" href="/emails">{% t nav.emails %}</a> / {% t email.title %}
+  </nav>
 
-<h2 class="uppercase text-lg my-10 break-words">{{email.header.subject}}</h2>
-<table class="table">
-  <tr><td><strong>Message ID: </strong></td><td class="break-all">{{email.header.message-id|readable-message-id}}</td></tr>
-  <tr><td><strong>Date: </strong></td><td>{{email.header.date|date:"dd.MM.yyyy HH:mm:ss"}}</td></tr>
-  <tr><td><strong>Senders: </strong></td><td>{{email.participants|concat-senders}}</td></tr>
-  {% if email.participants|envelope-sender %}<tr><td><strong>Sent by: </strong></td><td>{{email.participants|envelope-sender}}</td></tr>{% endif %}
-  <tr><td><strong>Recipients: </strong></td><td>{{email.participants|concat-receivers}}</td></tr>
-  <tr><td><strong>Cc: </strong></td><td>{{email.participants|concat-cc}}</td></tr>
-  <tr><td><strong>Bcc: </strong></td><td>{{email.participants|concat-bcc}}</td></tr>
+  <header class="flex flex-col gap-2">
+    <h1 class="text-xl font-bold break-words">{% if email.header.subject %}{{email.header.subject}}{% else %}<span class="italic text-base-content/60">{% t list.no-subject %}</span>{% endif %}</h1>
+    <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
+      <dt class="text-base-content/60">{% t email.from %}</dt><dd class="break-words">{{email.participants|concat-senders}}</dd>
+      {% if email.participants|envelope-sender %}<dt class="text-base-content/60">{% t email.sent-by %}</dt><dd class="break-words">{{email.participants|envelope-sender}}</dd>{% endif %}
+      <dt class="text-base-content/60">{% t email.to %}</dt><dd class="break-words">{{email.participants|concat-receivers}}</dd>
+      {% if email.participants|concat-cc %}<dt class="text-base-content/60">Cc</dt><dd class="break-words">{{email.participants|concat-cc}}</dd>{% endif %}
+      {% if email.participants|concat-bcc %}<dt class="text-base-content/60">Bcc</dt><dd class="break-words">{{email.participants|concat-bcc}}</dd>{% endif %}
+      <dt class="text-base-content/60">{% t email.date %}</dt><dd>{{email.header.date|date:"dd.MM.yyyy HH:mm:ss"}}</dd>
+      <dt class="text-base-content/60">{% t email.message-id %}</dt><dd class="break-all text-xs">{{email.header.message-id|readable-message-id}}</dd>
+    </dl>
+  </header>
 
-  <tr>
-    <td>
-      <label class="btn" style="white-space: nowrap;" for="modal">Delete from database</label>
-      <input class="modal-toggle" id="modal" type="checkbox" />
-      <div class="modal">
-	    <label class="modal-overlay" for="modal"></label>
-	    <div class="modal-box flex flex-col gap-5">
-		  <h2 class="text-xl">Delete E-Mail from Database</h2>
-		  <span>Are you sure you want to delete this email from the database?</span>
-		  <span>This will only remove it from the Plauna database. The actualy e-mail on your e-mail server will not be deleted.</span>
-		  <div class="flex gap-3">
-			<button id="delete-button-email" class="btn btn-error">Delete</button>
-		    <label for="modal" class="btn">Cancel</label>
-		  </div>
-          <script>
-            document.getElementById('delete-button-email').addEventListener('click', (e) => {
-                fetch('/emails/{{email.header.message-id|base64-encode}}', {method: 'DELETE'})
-                    .then(plaunaThen(() => window.location.replace('/emails')))});
-          </script>
-	    </div>
+  <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] items-start">
+    <section class="flex flex-col gap-3 min-w-0 lg:order-1 order-2" aria-labelledby="contents-title">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-lg font-semibold" id="contents-title">{% t email.contents %}</h2>
+        <form action="/emails/{{email.header.message-id|base64-encode}}/refetch" method="post" class="flex items-center gap-2">
+          <button class="btn btn-sm" type="submit" title="{% t email.refetch-help %}">{% t email.refetch %}</button>
+        </form>
       </div>
-    </td>
-  </tr>
-  
-  <tr><td><h3 class="uppercase text-lg my-8">Metadata</h3></td></tr>
-<form action="/metadata" id="email" method="post">
-  <input form="email" hidden="true" name="message-id" type="text" value="{{email.header.message-id}}">
-  <input form="email" hidden="true" name="language-confidence" type="text" value="1">
-  <input form="email" hidden="true" name="category-confidence" type="text" value="1">
-  <input form="email" hidden="true" name="redirect-url" type="text" value="/emails">
-    <tr><td><strong>Language: </strong></td><td><input form="email" class="input" name="language" type="text" value="{{email.metadata.language}}"></td></tr>
-    <tr><td><p><strong>Language Confidence: </strong></td><td>{{email.metadata.language-confidence|confidence-percent}}</td></tr>
-    <tr><td><strong>Category: </strong></td><td><select class="select category-select" style="border-left: 6px solid transparent;" form="email" name="category" autocomplete="off" onchange="applyCategoryColor(this)">
-      {% for category in categories %}
-      <option value="{{category.id}}" data-color="{{category.color|category-color}}" {% if category.id = email.metadata.category-id %}selected{% endif %}>{{category.name}}</option>
+
+      {% if email.body|empty? %}<p class="text-base-content/60 italic">{% t email.no-text %}</p>{% endif %}
+      {% for body-part in email.body %}
+      <div class="card bg-base-100 border border-base-300">
+        <div class="card-body gap-3 p-4">
+          <p class="text-xs text-base-content/60 flex flex-wrap gap-x-4 gap-y-1">
+            <span>{{body-part.mime-type}}</span>
+            {% if body-part.charset %}<span>{{body-part.charset}}</span>{% endif %}
+            {% if body-part.transfer-encoding %}<span>{{body-part.transfer-encoding}}</span>{% endif %}
+            {% if body-part.filename %}<span>{% t email.file %} {{body-part.filename}}</span>{% endif %}
+            {% if body-part.content-disposition %}<span>{{body-part.content-disposition}}</span>{% endif %}
+          </p>
+          {% if body-part.mime-type = "text/plain" %}
+          <div class="tabs tabs-border">
+            <input type="radio" name="part-{{forloop.counter}}" class="tab" aria-label="{% t email.sanitized %}" checked="checked" />
+            <div class="tab-content border-base-300 bg-base-100 p-4 overflow-x-auto break-words">{{body-part.sanitized-content}}</div>
+            <input type="radio" name="part-{{forloop.counter}}" class="tab" aria-label="{% t email.original %}" />
+            <div class="tab-content border-base-300 bg-base-100 p-4 overflow-x-auto break-words">{{body-part.content}}</div>
+          </div>
+          {% elif body-part.mime-type = "text/html" %}
+          <div class="tabs tabs-border">
+            <input type="radio" name="part-{{forloop.counter}}" class="tab" aria-label="{% t email.sanitized %}" checked="checked" />
+            <div class="tab-content border-base-300 bg-base-100 p-4 overflow-x-auto break-words">{{body-part.sanitized-content}}</div>
+            <input type="radio" name="part-{{forloop.counter}}" class="tab" aria-label="{% t email.original %}" />
+            <div class="tab-content border-base-300 bg-base-100 p-4 overflow-x-auto break-words">{{body-part.content}}</div>
+          </div>
+          {% else %}
+          <p class="text-base-content/60 italic">{% t email.non-text %}</p>
+          {% endif %}
+        </div>
+      </div>
       {% endfor %}
-    </select></td></tr>
-    <tr><td><strong>Category Confidence: </strong></td><td>{{email.metadata.category-confidence|confidence-percent}}</td></tr>
-    <tr><td class="align-top"><strong>Model Scores: </strong></td><td>
-      {% if category-scores|not-empty %}
-      <ul class="text-sm">
-        {% for score in category-scores %}
-        <li class="flex items-center gap-2{% if score.id = email.metadata.category-id %} font-semibold{% endif %}"><span class="inline-block w-3 h-3 rounded-full" style="background-color: {{score.color|category-color}};"></span><span>{{score.name}}</span><span class="opacity-70">{{score.confidence|confidence-percent}}</span></li>
-        {% endfor %}
-      </ul>
-      <p class="text-xs opacity-70 mt-1">What the current model computes for this e-mail now. Plauna assigns a category on its own only above the categorization threshold.{% if email.metadata.category-id %} The assigned category is in bold; it can differ from the model's top score, for example when it was set by hand or the model has been retrained since.{% endif %}</p>
-      {% else %}
-      <span class="text-sm opacity-70">No prediction: the language is not activated for training or has no model yet.</span>
-      {% endif %}
-    </td></tr>
-  <tr><td><label for="move">Move email after update</label>
-  <input class="checkbox" name="move" type="checkbox" data-tooltip-target="tooltip-checkbox" data-tooltip-placement="right" checked>
-  <div id="tooltip-checkbox" role="tooltip" class="absolute z-10 invisible inline-block px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg shadow-xs opacity-0 tooltip dark:bg-gray-700">
-    Plauna assumes that the e-mail is in the folder which was selected when you first opened this page. If the e-mail was moved manually to somewhere else this operation fails.
-    <div class="tooltip-arrow" data-popper-arrow></div>
-  </div></td></tr>
-  <tr><td><button class="btn btn-primary" form="email">Update Metadata</button></td></tr>
-</form>
-</table>
+    </section>
 
-<h3 class="uppercase text-lg my-8">Contents</h3>
+    <aside class="flex flex-col gap-4 lg:order-2 order-1 lg:sticky lg:top-4">
+      <section class="card bg-base-100 border border-base-300" aria-labelledby="metadata-title">
+        <form action="/metadata" id="email" method="post" class="card-body gap-3 p-4">
+          <h2 class="card-title text-base" id="metadata-title">{% t email.metadata %}</h2>
+          <input hidden="true" name="message-id" type="text" value="{{email.header.message-id}}">
+          <input hidden="true" name="language-confidence" type="text" value="1">
+          <input hidden="true" name="category-confidence" type="text" value="1">
+          <input hidden="true" name="redirect-url" type="text" value="/emails">
+          <label class="flex flex-col gap-1" for="email-category">
+            <span class="text-xs text-base-content/70">{% t email.category %}{% if email.metadata.category-confidence %} · {{email.metadata.category-confidence|confidence-percent}}{% endif %}</span>
+            <select id="email-category" class="select select-sm w-full category-select" style="border-left: 6px solid transparent;" name="category" autocomplete="off" onchange="applyCategoryColor(this)">
+              {% for category in categories %}
+              <option value="{{category.id}}" data-color="{{category.color|category-color}}" {% if category.id = email.metadata.category-id %}selected{% endif %}>{{category.name}}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="flex flex-col gap-1" for="email-language">
+            <span class="text-xs text-base-content/70">{% t email.language %}{% if email.metadata.language-confidence %} · {{email.metadata.language-confidence|confidence-percent}}{% endif %}</span>
+            <input id="email-language" class="input input-sm w-full" name="language" type="text" value="{{email.metadata.language}}">
+          </label>
+          <label class="flex items-start gap-2 text-sm" for="email-move" title="{% t email.move-help %}">
+            <input class="checkbox checkbox-sm mt-0.5" id="email-move" name="move" type="checkbox" checked>
+            <span>{% t email.move %}</span>
+          </label>
+          <div><button class="btn btn-primary btn-sm" type="submit">{% t email.save %}</button></div>
+        </form>
+      </section>
 
-<form action="/emails/{{email.header.message-id|base64-encode}}/refetch" method="post" class="my-4 flex items-center gap-3">
-  <button class="btn" type="submit">Re-fetch from server</button>
-  <span class="text-base-content/60 text-sm">Re-read this message from the IMAP server to fill in content that was missed earlier.</span>
-</form>
+      <section class="card bg-base-100 border border-base-300" aria-labelledby="scores-title">
+        <div class="card-body gap-2 p-4">
+          <h2 class="card-title text-base" id="scores-title">{% t email.model-scores %}</h2>
+          {% if category-scores|not-empty %}
+          <ul class="text-sm flex flex-col gap-1">
+            {% for score in category-scores %}
+            <li class="flex items-center gap-2{% if score.id = email.metadata.category-id %} font-semibold{% endif %}"><span class="inline-block w-3 h-3 rounded-full" style="background-color: {{score.color|category-color}};"></span><span>{{score.name}}</span><span class="ml-auto opacity-70">{{score.confidence|confidence-percent}}</span></li>
+            {% endfor %}
+          </ul>
+          <p class="text-xs opacity-70">{% t email.scores-help %}{% if email.metadata.category-id %} {% t email.scores-bold %}{% endif %}</p>
+          {% else %}
+          <p class="text-sm opacity-70">{% t email.no-prediction %}</p>
+          {% endif %}
+        </div>
+      </section>
 
-{% if email.body|empty? %}<p class="text-base-content/60 italic">Email has no parseable text content.</p>{% endif %}
-{% for body-part in email.body %}
-<table class="table">
-  <tr><td><strong>Mime Type: </strong></td><td>{{body-part.mime-type}}</td></tr>
-  <tr><td><strong>Charset: </strong></td><td>{{body-part.charset}}</td></tr>
-  <tr><td><strong>Transfer Encoding: </strong></td><td>{{body-part.transfer-encoding}}</td></tr>
-  {% if body-part.filename %}<tr><td><strong>File Name: </strong></td><td>{{body-part.filename}}</td></tr> {% endif %}
-  {% if body-part.content-disposition %}<tr><td><strong>Content Disposition: </strong></td><td>{{body-part.content-disposition}}</td></tr> {% endif %}
-  </table>
-  {% if body-part.mime-type = "text/plain" %}
-  <div class="tabs tabs-border">
-    <input type="radio" name="{{forloop.counter}}" class="tab" aria-label="Sanitized Text" checked="checked" />
-    <div class="tab-content border-base-300 bg-base-100 p-4 sm:p-10 overflow-x-auto break-words">
-      {{body-part.sanitized-content}}
-    </div>
-    <input type="radio" name="{{forloop.counter}}" class="tab" aria-label="Original" />
-    <div class="tab-content border-base-300 bg-base-100 p-4 sm:p-10 overflow-x-auto break-words">
-      {{body-part.content}}
-    </div>
+      <div>
+        <label class="btn btn-ghost btn-sm text-error" for="modal">{% t email.delete %}</label>
+        <input class="modal-toggle" id="modal" type="checkbox" />
+        <div class="modal">
+          <label class="modal-overlay" for="modal"></label>
+          <div class="modal-box flex flex-col gap-4">
+            <h2 class="text-lg font-semibold">{% t email.delete-title %}</h2>
+            <p>{% t email.delete-text %}</p>
+            <div class="flex gap-3">
+              <button id="delete-button-email" class="btn btn-error">{% t email.delete-confirm %}</button>
+              <label for="modal" class="btn">{% t list.cancel %}</label>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
   </div>
-  {% elif body-part.mime-type = "text/html" %} 
-  <div class="tabs tabs-border">
-    <input type="radio" name="{{forloop.counter}}" class="tab" aria-label="Sanitized Text" checked="checked" />
-    <div class="tab-content border-base-300 bg-base-100 p-4 sm:p-10 overflow-x-auto break-words">
-      {{body-part.sanitized-content}}
-    </div>
-    <input type="radio" name="{{forloop.counter}}" class="tab" aria-label="Original" />
-    <div class="tab-content border-base-300 bg-base-100 p-4 sm:p-10 overflow-x-auto break-words">
-      {{body-part.content}}
-    </div>
-  </div>
-  {% else %}
-  Non-text content
-  {% endif %}
-{% endfor %}
+</div>
 
 <script>
+  document.getElementById('delete-button-email').addEventListener('click', function () {
+    fetch('/emails/{{email.header.message-id|base64-encode}}', {method: 'DELETE'})
+      .then(plaunaThen(function () { window.location.replace('/emails'); }));
+  });
   // Color-code the category dropdown with its selected category's configured color (left border,
   // so it works regardless of how the browser renders the closed <select>'s own background).
   function applyCategoryColor(select) {
@@ -124,5 +137,4 @@
   }
   document.querySelectorAll('.category-select').forEach(applyCategoryColor);
 </script>
-
 {% endblock %}

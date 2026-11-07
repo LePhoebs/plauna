@@ -1,38 +1,36 @@
-<div class="grid grid-cols-1 lg:grid-cols-3 lg:justify-items-stretch">
-  <div class="hidden lg:block"></div>
-  <div class="lg:justify-self-center-safe my-2">
-    <div class="pagination flex flex-nowrap text-xs lg:text-md items-center gap-1">
-      {% if page.page > 1 %}
-      <form action="/emails" method="get">
-        {% include "emails-pagination-fields.html" %}
-        <input type="hidden" name="page" value="1" />
-        <button class="btn text-xs lg:text-md text-nowrap">&laquo; First</button>
-      </form>
-      <form action="/emails" method="get">
-        {% include "emails-pagination-fields.html" %}
-        <input type="hidden" name="page" value="{{page.page|add:-1}}" />
-        <button class="btn text-xs lg:text-md text-nowrap">&lsaquo; Back</button>
-      </form>
-      {% else %}
-      <button disabled class="btn text-xs lg:text-md text-nowrap">&laquo; First</button>
-      <button disabled class="btn text-xs lg:text-md text-nowrap">&lsaquo; Back</button>
-      {% endif %}
-      <p class="text-sm lg:text-md text-nowrap mx-2">{{page.page}} of {{page.total-pages}}</p>
-      {% if page.page < page.total-pages %}
-      <form action="/emails" method="get">
-        {% include "emails-pagination-fields.html" %}
-        <input type="hidden" name="page" value="{{page.page|add:1}}" />
-        <button class="btn text-xs lg:text-md text-nowrap">Next &rsaquo;</button>
-      </form>
-      <form action="/emails" method="get">
-        {% include "emails-pagination-fields.html" %}
-        <input type="hidden" name="page" value="{{page.total-pages}}" />
-        <button class="btn text-xs lg:text-md text-nowrap">Last &raquo;</button>
-      </form>
-      {% else %}
-      <button disabled class="btn text-xs lg:text-md text-nowrap">Next &rsaquo;</button>
-      <button disabled class="btn text-xs lg:text-md text-nowrap">Last &raquo;</button>
-      {% endif %}
-    </div>
-  </div>
+<div class="flex flex-wrap items-center justify-between gap-2 my-2 text-xs text-base-content/70">
+  <span>{% if page.total > 0 %}{% t list.range page.first-index page.last-index page.total %}{% else %}{% t list.range-empty %}{% endif %}</span>
+  <nav class="flex items-center gap-1" aria-label="{% t list.pages %}">
+    {% if page.page > 1 %}
+    <form action="/emails" method="get">
+      {% include "emails-pagination-fields.html" %}
+      <input type="hidden" name="page" value="1" />
+      <button class="btn btn-ghost btn-xs" title="{% t list.first %}" aria-label="{% t list.first %}">«</button>
+    </form>
+    <form action="/emails" method="get">
+      {% include "emails-pagination-fields.html" %}
+      <input type="hidden" name="page" value="{{page.page|add:-1}}" />
+      <button class="btn btn-ghost btn-xs" title="{% t list.back %}" aria-label="{% t list.back %}">‹</button>
+    </form>
+    {% else %}
+    <button disabled class="btn btn-ghost btn-xs" aria-label="{% t list.first %}">«</button>
+    <button disabled class="btn btn-ghost btn-xs" aria-label="{% t list.back %}">‹</button>
+    {% endif %}
+    <span class="px-1 whitespace-nowrap">{% t list.page-of page.page page.total-pages %}</span>
+    {% if page.page < page.total-pages %}
+    <form action="/emails" method="get">
+      {% include "emails-pagination-fields.html" %}
+      <input type="hidden" name="page" value="{{page.page|add:1}}" />
+      <button class="btn btn-ghost btn-xs" title="{% t list.next %}" aria-label="{% t list.next %}">›</button>
+    </form>
+    <form action="/emails" method="get">
+      {% include "emails-pagination-fields.html" %}
+      <input type="hidden" name="page" value="{{page.total-pages}}" />
+      <button class="btn btn-ghost btn-xs" title="{% t list.last %}" aria-label="{% t list.last %}">»</button>
+    </form>
+    {% else %}
+    <button disabled class="btn btn-ghost btn-xs" aria-label="{% t list.next %}">›</button>
+    <button disabled class="btn btn-ghost btn-xs" aria-label="{% t list.last %}">»</button>
+    {% endif %}
+  </nav>
 </div>

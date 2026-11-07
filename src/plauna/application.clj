@@ -72,10 +72,15 @@
       (= 1 (count conditions)) (first conditions)
       :else (into [:and] conditions))))
 
-(defn- filter->where [filter]
+(defn- filter->where
+  "The list's views: every e-mail, those with category and language (\"enriched-only\"), those
+   without a category, and those whose category the model assigned and nobody confirmed yet - an
+   explicit choice is stored with a confidence of 1.0."
+  [filter]
   (cond
     (= filter "enriched-only") [:and [:<> :metadata.category nil] [:<> :metadata.language nil]]
     (= filter "without-category") [:= :metadata.category nil]
+    (= filter "model-assigned") [:and [:<> :metadata.category nil] [:< :metadata.category-confidence 1.0]]
     :else nil))
 
 (defn- related-message->where
@@ -408,8 +413,8 @@
   "Chip text for an active batch filter; falls back to the bare id when the run is unknown."
   [db batch-id]
   (let [batch (when-not (str/blank? batch-id) (int/fetch-parse-batch db batch-id))]
-    (cond (nil? batch) (str "Batch: " batch-id)
-          :else (str "Batch: " (:folder batch) " (" (:processed batch) " new)"))))
+    (cond (nil? batch) (i18n/t :list.batch-unknown [batch-id])
+          :else (i18n/t :list.batch [(:folder batch) (:processed batch)]))))
 
 (defn- success-result [result-type data] (conj {:result result-type} data))
 
@@ -499,12 +504,15 @@
 (defn- selection-filter-active? [{:keys [include exclude none?]}]
   (boolean (or none? (seq include) (seq exclude))))
 
-(defn- selection-filter-label [label {:keys [include exclude none?]}]
-  (cond
-    none? (str label ": none")
-    (seq include) (str label ": " (count include) " selected")
-    (seq exclude) (str label ": all except " (count exclude))
-    :else nil))
+(defn- selection-filter-label
+  "Chip text of a column filter, label-key naming the column (see i18n texts list.column-*)."
+  [label-key {:keys [include exclude none?]}]
+  (let [label (i18n/t label-key)]
+    (cond
+      none? (i18n/t :list.filter-none [label])
+      (seq include) (i18n/t :list.filter-selected [label (count include)])
+      (seq exclude) (i18n/t :list.filter-except [label (count exclude)])
+      :else nil)))
 
 (defn- selection-filter-badge [{:keys [include exclude none?]}]
   (cond none? "0"
@@ -703,7 +711,7 @@
           date-active? (some? date-filter)
           batch-active? (some? batch-where)
           suggestion-active? (some? suggestion)
-          metadata-active? (contains? #{"enriched-only" "without-category"} (:filter parameters))]
+          metadata-active? (contains? #{"enriched-only" "without-category" "model-assigned"} (:filter parameters))]
       {:data (:data result)
        :parameters {:filter (:filter parameters)
                   :batch (when batch-active? (:batch parameters))
@@ -718,33 +726,40 @@
                   :size (:size page-req)
                   :page (:page result)
                   :total (:total result)
+                  ;; "21–40 of 128" above and below the list.
+                  :first-index (if (pos? (long (or (:total result) 0))) (inc (* (dec (long (or (:page result) 1))) (long (:size page-req)))) 0)
+                  :last-index (min (long (or (:total result) 0)) (* (long (or (:page result) 1)) (long (:size page-req))))
+                  ;; The header filters show only after "Filter" was pressed - or while one is active.
+                  :column-filter-active? (boolean (or subject-active? from-active? to-active? category-active?))
                   :search-text (:search-text parameters)
                   :subject-values (:include subject-selection)
                   :subject-values-exclude (:exclude subject-selection)
                   :subject-values-none (when (:none? subject-selection) "true")
                   :subject-filter-active? subject-active?
-                  :subject-filter-label (selection-filter-label "Subject" subject-selection)
+                  :subject-filter-label (selection-filter-label :list.column-subject subject-selection)
                   :subject-filter-badge (selection-filter-badge subject-selection)
                   :from-keys (:include from-selection)
                   :from-keys-exclude (:exclude from-selection)
                   :from-keys-none (when (:none? from-selection) "true")
                   :from-filter-active? from-active?
-                  :from-filter-label (selection-filter-label "From" from-selection)
+                  :from-filter-label (selection-filter-label :list.column-from from-selection)
                   :from-filter-badge (selection-filter-badge from-selection)
                   :to-keys (:include to-selection)
                   :to-keys-exclude (:exclude to-selection)
                   :to-keys-none (when (:none? to-selection) "true")
                   :to-filter-active? to-active?
-                  :to-filter-label (selection-filter-label "To" to-selection)
+                  :to-filter-label (selection-filter-label :list.column-to to-selection)
                   :to-filter-badge (selection-filter-badge to-selection)
                   :category-ids (:include category-selection)
                   :category-ids-exclude (:exclude category-selection)
                   :category-ids-none (when (:none? category-selection) "true")
                   :category-filter-active? category-active?
-                  :category-filter-label (selection-filter-label "Category" category-selection)
+                  :category-filter-label (selection-filter-label :list.column-category category-selection)
                   :category-filter-badge (selection-filter-badge category-selection)
                   :date-from (:date-from parameters)
                   :date-to (:date-to parameters)
+                  :date-chip-from (if (str/blank? (:date-from parameters)) "…" (:date-from parameters))
+                  :date-chip-to (if (str/blank? (:date-to parameters)) "…" (:date-to parameters))
                   :search-active? search-active?
                   :date-active? date-active?
                   :metadata-active? metadata-active?

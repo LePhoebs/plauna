@@ -284,12 +284,14 @@
                  :subjects [{:subject "Invoice" :checked? true}
                             {:subject "Newsletter" :checked? false}]
                  :senders [] :recipients []})]
-      (is (str/includes? html "Active filters:"))
-      (is (str/includes? html "Body: annual invoice"))
+      (is (str/includes? html "Text: annual invoice"))
       (is (str/includes? html "Subject: 1 selected"))
       (is (str/includes? html "Select all visible"))
-      (is (str/includes? html "<details class=\"dropdown\">"))
-      (is (str/includes? html "<summary class=\"inline-flex"))
+      (is (str/includes? html "<details class=\"dropdown hidden group-data-[filters=on]:inline-block\">")
+          "The column filters show only in filter mode")
+      (is (str/includes? html "id=\"email-table\" class=\"group rounded-box border border-base-300 bg-base-100\" data-filters=\"off\"")
+          "Filter mode starts off while no column filter is active")
+      (is (str/includes? html "id=\"filter-toggle\""))
       (is (str/includes? html "w-96 max-w-[90vw] min-w-0 overflow-hidden"))
       (is (str/includes? html "id=\"subject-checklist\" class=\"max-h-56 overflow-y-auto overflow-x-hidden flex flex-col gap-1 w-full max-w-full min-w-0\""))
       (is (str/includes? html "grid grid-cols-3 gap-1 mt-2 w-full max-w-full min-w-0"))
@@ -404,7 +406,7 @@
           categories [{:id 1 :name "Bills"} {:id nil :name "n/a"}]
           html (markup/list-email-contents email categories [{:id 1 :name "Bills" :color "#112233" :confidence 0.42}
                                                              {:id 2 :name "Friends" :color nil :confidence 0.3}])]
-      (is (str/includes? html "Model Scores"))
+      (is (str/includes? html "Model scores"))
       (is (str/includes? html "Bills"))
       (is (str/includes? html "42.00 %"))
       (is (str/includes? html "30.00 %")))
@@ -417,7 +419,7 @@
                                              [{:id 1 :name "Bills"} {:id 2 :name "Friends"}]
                                              [{:id 1 :name "Bills" :color nil :confidence 0.6}
                                               {:id 2 :name "Friends" :color nil :confidence 0.4}])]
-        (is (str/includes? html "Model Scores"))
+        (is (str/includes? html "Model scores"))
         (is (str/includes? html "60.00 %"))
         (is (re-find #"font-semibold\"><span[^>]*></span><span>Friends</span>" html))
         (is (not (re-find #"font-semibold\"><span[^>]*></span><span>Bills</span>" html)))
@@ -439,3 +441,29 @@
       (is (str/includes? html "action=\"/admin/categories/1/flag\"") "A flagged category offers to flag its existing e-mails")
       (is (not (str/includes? html "action=\"/admin/categories/2/flag\"")))
       (is (str/includes? html "action=\"/admin/categories/clean-up\"")))))
+
+(deftest list-dates-are-short-for-recent-e-mails
+  (let [today (java.time.LocalDate/of 2026 11 7)]
+    (is (= "09:14" (markup/list-date (java.time.LocalDateTime/of 2026 11 7 9 14) today)))
+    (is (= "03.11." (markup/list-date (java.time.LocalDateTime/of 2026 11 3 18 0) today)))
+    (is (= "24.12.2025" (markup/list-date (java.time.LocalDateTime/of 2025 12 24 8 0) today)))
+    (is (nil? (markup/list-date nil today)))))
+
+(deftest email-list-rows-show-sender-category-and-model-probability
+  (with-redefs [client/disconnected-connections (fn [] [])]
+    (let [email (fn [id category confidence]
+                  {:header {:message-id id :subject (str "Subject " id) :date 0}
+                   :metadata {:category-id category :category-confidence confidence}
+                   :participants [{:type :sender :name nil :address "bounce@mailer.example"}
+                                  {:type :from :name "Paketdienst" :address "versand@paket.example"}]})
+          html (markup/list-emails [(email "by-model" 3 0.91) (email "confirmed" 3 1.0) (email "none" nil nil)]
+                                   {:filter "model-assigned" :size 20 :page 1 :total-pages 1 :total 3 :first-index 1 :last-index 3}
+                                   {:categories [{:id 3 :name "Temporary"} {:id nil :name "n/a"}] :category-filter-options []
+                                    :subjects [] :senders [] :recipients []})]
+      (is (str/includes? html ">Paketdienst</a>") "The From address is shown, not the envelope sender")
+      (is (str/includes? html "versand@paket.example"))
+      (is (= 1 (count (re-seq #">91 %</span>" html))) "Only the unconfirmed model assignment shows its probability")
+      (is (= 1 (count (re-seq #"category-select border-dashed" html))))
+      (is (str/includes? html "1–3 of 3"))
+      (is (re-find #"data-view=\"model-assigned\" aria-pressed=\"true\"" html) "The active view is marked")
+      (is (not (str/includes? html "updateLanguage(")) "The language column moved to the detail page"))))

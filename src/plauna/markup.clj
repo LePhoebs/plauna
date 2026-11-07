@@ -159,15 +159,46 @@
              ;; so a malformed value must never reach the page even if it somehow got into the DB.
              (fn [color] (if (re-matches #"#[0-9a-fA-F]{6}" (str color)) color default-category-color)))
 
+(defn list-date
+  "How the e-mail list shows a date: the time for today, day and month for this year, the full date
+   for older e-mails."
+  ([^LocalDateTime date-time] (list-date date-time (java.time.LocalDate/now (preferences/zone-id))))
+  ([^LocalDateTime date-time ^java.time.LocalDate today]
+   (when date-time
+     (let [day (.toLocalDate date-time)]
+       (.format date-time (java.time.format.DateTimeFormatter/ofPattern
+                           (cond (= day today) "HH:mm"
+                                 (= (.getYear day) (.getYear today)) "dd.MM."
+                                 :else "dd.MM.yyyy")))))))
+
+(defn- list-sender
+  "The contact the list shows as the sender: the first From address, else the envelope sender."
+  [contacts]
+  (or (first (filter #(= :from (:type %)) contacts))
+      (first (filter #(= :sender (:type %)) contacts))))
+
+(defn- list-row
+  "An e-mail prepared for a row of the list."
+  [email]
+  (let [date (timestamp->date (get-in email [:header :date]))
+        sender (list-sender (:participants email))
+        confidence (get-in email [:metadata :category-confidence])]
+    (-> email
+        (assoc-in [:header :date] date)
+        (assoc :date-text (list-date date)
+               :sender-name (or (not-empty (str/trim (str (:name sender)))) (:address sender))
+               :sender-address (when (not-empty (str/trim (str (:name sender)))) (:address sender))
+               ;; A category the model assigned and nobody confirmed: shown with its probability.
+               :model-percent (when (and (some? (get-in email [:metadata :category-id])) (number? confidence) (< (double confidence) 1.0))
+                                (str (Math/round (* 100.0 (double confidence))) " %"))))))
+
 (defn list-emails
   "filter-options supplies the Excel-style column filter dropdowns' possible values:
    {:categories ... :subjects ... :senders ... :recipients ...}"
   ([emails page-info filter-options]
-   (let [emails-with-java-date (map #(update-in % [:header :date] timestamp->date) emails)]
-     (render "emails.html" (merge {:emails emails-with-java-date :page page-info :header "Emails" :active-nav :emails} filter-options))))
+   (render "emails.html" (merge {:emails (map list-row emails) :page page-info :header "Emails" :active-nav :emails} filter-options)))
   ([emails page-info filter-options messages]
-   (let [emails-with-java-date (map #(update-in % [:header :date] timestamp->date) emails)]
-     (render "emails.html" (merge {:emails emails-with-java-date :page page-info :header "Emails" :messages (mapv type->toast-role messages) :active-nav :emails} filter-options)))))
+   (render "emails.html" (merge {:emails (map list-row emails) :page page-info :header "Emails" :messages (mapv type->toast-role messages) :active-nav :emails} filter-options))))
 
 (defn list-email-contents
   "category-scores: the model's most likely categories of the e-mail ([{:id :name :color

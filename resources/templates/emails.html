@@ -9,183 +9,119 @@
 
 {% block content %}
 
-<div class="flex flex-col lg:flex-row gap-4">
-  <div class="card grow place-items-center">
-    <h3>Filter</h3>
-    <form action="/emails" method="get" id="page-form">
-      <input type="hidden" name="page" value="1" /> <!-- whenever the filter is used, we want to go back to page 1 -->
-      <input type="hidden" name="batch" value="{{page.batch}}" /> <!-- keeps a "review this parse batch" view while other filters change -->
-      <!-- An active suggestion filter (set on a category's page) survives changes of the other filters. -->
-      <input type="hidden" name="suggest-category" id="suggest-category-input" value="{{page.suggest-category}}" />
-      <input type="hidden" name="suggest-by" value="{{page.suggest-by}}" />
-      <input type="hidden" name="suggest-min" value="{{page.suggest-min}}" />
-      <div class="flex" style="gap: 4px; flex-wrap: wrap;">
-        <fieldset class="fieldset">
-          <legend class="fieldset-legend">Metadata</legend>
-          <select class="select" name="filter" id="metadata-filter-input">
-            <option {% if page.filter = "all" %} selected {% endif %} value="all">
-              All
-            </option>
-            <option {% if page.filter = "enriched-only" %} selected {% endif %}  value="enriched-only">
-              Enriched E-mails Only
-            </option>
-            <option {% if page.filter = "without-category" %} selected {% endif %} value="without-category">
-              E-mails without A Category Only</a>
-            </option>
-          </select>
-        </fieldset>
-        <fieldset class="fieldset">
-          <legend class="fieldset-legend">Search Body</legend>
-          <input type="text" name="search-text" id="body-search-input" class="input" placeholder='Words or "exact phrase"...' value="{{page.search-text}}" />
-          <p class="label whitespace-normal">All words are required. Word prefixes and quoted phrases are supported.</p>
-        </fieldset>
-        <fieldset class="fieldset">
-          <legend class="fieldset-legend">Date Range</legend>
-          <div class="flex items-center gap-1">
-            <input type="text" id="date-range-input" class="input" placeholder="All dates" autocomplete="off" readonly />
-            <button type="button" id="date-range-clear" class="btn btn-square btn-ghost btn-sm" title="Clear date range">✕</button>
-          </div>
-          <input type="hidden" name="date-from" id="date-from-input" value="{{page.date-from}}" />
-          <input type="hidden" name="date-to" id="date-to-input" value="{{page.date-to}}" />
-        </fieldset>
-      </div>
-      <button class="btn btn-primary" type="submit">Apply</button>
-    </form>
-  </div>
-</div>
+<!-- Texts the page's scripts show, in the page's language. -->
+<div id="list-texts" hidden
+     data-select-hint="{% t list.select-hint %}"
+     data-selected-one="{% t list.selected-one %}"
+     data-selected-many="{% t list.selected-many "{0}" %}"
+     data-assigning="{% t list.assigning "{0}" "{1}" %}"
+     data-assigned="{% t list.assigned "{0}" "{1}" %}"
+     data-unchanged="{% t list.unchanged "{0}" %}"
+     data-missing="{% t list.missing "{0}" %}"
+     data-failed="{% t list.failed "{0}" %}"
+     data-missing-confirm="{% t list.missing-confirm "{0}" "{1}" %}"
+     data-date-from="{% t list.date-from "{0}" %}"
+     data-date-until="{% t list.date-until "{0}" %}"></div>
 
-{% if page.any-filter-active? %}
-<div class="flex flex-wrap items-center gap-2 my-3" aria-label="Active filters">
-  <span class="text-sm font-semibold">Active filters:</span>
-  {% if page.metadata-active? %}
-  <button type="button" class="badge badge-primary gap-1" onclick="clearAppliedFilter('metadata')" title="Remove metadata filter">
-    Metadata: {{page.filter}} <span aria-hidden="true">×</span>
-  </button>
-  {% endif %}
-  {% if page.batch-active? %}
-  <button type="button" class="badge badge-primary gap-1" onclick="clearAppliedFilter('batch')" title="Remove parse batch filter">
-    {{page.batch-filter-label}} <span aria-hidden="true">×</span>
-  </button>
-  {% if batch-move-url %}
-  <form action="{{batch-move-url}}" method="post" class="inline" onsubmit="return confirm('Move every categorized e-mail of this batch into its category folder on the IMAP server?')">
-    <input type="hidden" name="redirect-url" value="/emails?batch={{page.batch}}" />
-    <button class="btn btn-outline btn-xs" type="submit" title="For a batch that was parsed without 'Move e-mails after categorization'">Move batch to category folders</button>
-  </form>
-  {% endif %}
-  {% endif %}
-  {% if page.suggestion-active? %}
-  <button type="button" class="badge badge-primary gap-1" onclick="clearAppliedFilter('suggestion')" title="{% t list.remove-suggestion %}">
-    {{page.suggestion-filter-label}} <span aria-hidden="true">×</span>
-  </button>
-  <a class="link link-hover text-xs" href="/categories/{{page.suggest-category}}?by={{page.suggest-by}}&amp;min={{page.suggest-min}}">{% t list.back-to-category %}</a>
-  {% endif %}
-  {% if page.search-active? %}
-  <button type="button" class="badge badge-primary gap-1" onclick="clearAppliedFilter('search')" title="Remove body search">
-    Body: {{page.search-text}} <span aria-hidden="true">×</span>
-  </button>
-  {% endif %}
-  {% if page.date-active? %}
-  <button type="button" class="badge badge-primary gap-1" onclick="clearAppliedFilter('date')" title="Remove date filter">
-    Date: {{page.date-from|default:"…"}} – {{page.date-to|default:"…"}} <span aria-hidden="true">×</span>
-  </button>
-  {% endif %}
-  {% if page.subject-filter-active? %}
-  <button type="button" class="badge badge-primary gap-1" onclick="clearAppliedFilter('subject-filter-checkbox')" title="Remove subject filter">
-    {{page.subject-filter-label}} <span aria-hidden="true">×</span>
-  </button>
-  {% endif %}
-  {% if page.from-filter-active? %}
-  <button type="button" class="badge badge-primary gap-1" onclick="clearAppliedFilter('from-filter-checkbox')" title="Remove sender filter">
-    {{page.from-filter-label}} <span aria-hidden="true">×</span>
-  </button>
-  {% endif %}
-  {% if page.to-filter-active? %}
-  <button type="button" class="badge badge-primary gap-1" onclick="clearAppliedFilter('to-filter-checkbox')" title="Remove recipient filter">
-    {{page.to-filter-label}} <span aria-hidden="true">×</span>
-  </button>
-  {% endif %}
-  {% if page.category-filter-active? %}
-  <button type="button" class="badge badge-primary gap-1" onclick="clearAppliedFilter('category-filter-checkbox')" title="Remove category filter">
-    {{page.category-filter-label}} <span aria-hidden="true">×</span>
-  </button>
-  {% endif %}
-  <a class="btn btn-ghost btn-xs" href="/emails?size={{page.size}}">Clear all</a>
-</div>
+<form action="/emails" method="get" id="page-form" class="flex flex-col gap-3 mb-3">
+  <input type="hidden" name="page" value="1" /> <!-- whenever the filter is used, we want to go back to page 1 -->
+  <input type="hidden" name="batch" value="{{page.batch}}" /> <!-- keeps a "review this parse batch" view while other filters change -->
+  <!-- An active suggestion filter (set on a category's page) survives changes of the other filters. -->
+  <input type="hidden" name="suggest-category" id="suggest-category-input" value="{{page.suggest-category}}" />
+  <input type="hidden" name="suggest-by" value="{{page.suggest-by}}" />
+  <input type="hidden" name="suggest-min" value="{{page.suggest-min}}" />
+  <input type="hidden" name="filter" id="metadata-filter-input" value="{{page.filter}}" />
+  <input type="hidden" name="date-from" id="date-from-input" value="{{page.date-from}}" />
+  <input type="hidden" name="date-to" id="date-to-input" value="{{page.date-to}}" />
+
+  <div class="flex flex-wrap items-center gap-2">
+    <h1 class="text-xl font-bold mr-1">{% t nav.emails %}</h1>
+    <label class="input input-sm flex-1 min-w-48 max-w-md" title="{% t list.search-help %}">
+      <svg class="size-4 opacity-60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+      <input type="search" name="search-text" id="body-search-input" value="{{page.search-text}}" placeholder="{% t list.search %}" aria-label="{% t list.search %}" />
+    </label>
+    <div class="flex items-center">
+      <input type="text" id="date-range-input" class="input input-sm w-44" placeholder="{% t list.all-dates %}" aria-label="{% t list.date-range %}" autocomplete="off" readonly />
+      <button type="button" id="date-range-clear" class="btn btn-ghost btn-sm btn-square" title="{% t list.clear-dates %}" aria-label="{% t list.clear-dates %}">✕</button>
+    </div>
+    <button type="button" id="filter-toggle" class="btn btn-sm" aria-controls="email-table" aria-pressed="{% if page.column-filter-active? %}true{% else %}false{% endif %}">
+      <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+      {% t list.filter %}
+    </button>
+    <button class="btn btn-primary btn-sm" type="submit">{% t list.apply %}</button>
+  </div>
+
+  <div class="flex flex-wrap items-center gap-2" role="group" aria-label="{% t list.views %}">
+    <button type="button" class="btn btn-xs rounded-full {% if page.filter = "all" %}btn-neutral{% else %}btn-ghost border border-base-300{% endif %}" data-view="all" aria-pressed="{% if page.filter = "all" %}true{% else %}false{% endif %}">{% t list.view-all %}</button>
+    <button type="button" class="btn btn-xs rounded-full {% if page.filter = "without-category" %}btn-neutral{% else %}btn-ghost border border-base-300{% endif %}" data-view="without-category" aria-pressed="{% if page.filter = "without-category" %}true{% else %}false{% endif %}">{% t list.view-uncategorized %}</button>
+    <button type="button" class="btn btn-xs rounded-full {% if page.filter = "model-assigned" %}btn-neutral{% else %}btn-ghost border border-base-300{% endif %}" data-view="model-assigned" aria-pressed="{% if page.filter = "model-assigned" %}true{% else %}false{% endif %}" title="{% t list.view-model-help %}">{% t list.view-model %}</button>
+    <button type="button" class="btn btn-xs rounded-full {% if page.filter = "enriched-only" %}btn-neutral{% else %}btn-ghost border border-base-300{% endif %}" data-view="enriched-only" aria-pressed="{% if page.filter = "enriched-only" %}true{% else %}false{% endif %}">{% t list.view-enriched %}</button>
+
+    {% if page.any-filter-active? %}
+    <span class="w-px h-4 bg-base-300 mx-1" aria-hidden="true"></span>
+    {% if page.batch-active? %}
+    <button type="button" class="badge badge-soft badge-primary gap-1" onclick="clearAppliedFilter('batch')" title="{% t list.remove-filter %}">{{page.batch-filter-label}} <span aria-hidden="true">×</span></button>
+    {% if batch-move-url %}
+    <button class="btn btn-outline btn-xs" type="submit" form="batch-move-form" title="{% t list.batch-move-help %}">{% t list.batch-move %}</button>
+    {% endif %}
+    {% endif %}
+    {% if page.suggestion-active? %}
+    <button type="button" class="badge badge-soft badge-primary gap-1" onclick="clearAppliedFilter('suggestion')" title="{% t list.remove-suggestion %}">{{page.suggestion-filter-label}} <span aria-hidden="true">×</span></button>
+    <a class="link link-hover text-xs" href="/categories/{{page.suggest-category}}?by={{page.suggest-by}}&amp;min={{page.suggest-min}}">{% t list.back-to-category %}</a>
+    {% endif %}
+    {% if page.search-active? %}
+    <button type="button" class="badge badge-soft badge-primary gap-1" onclick="clearAppliedFilter('search')" title="{% t list.remove-filter %}">{% t list.chip-search page.search-text %} <span aria-hidden="true">×</span></button>
+    {% endif %}
+    {% if page.date-active? %}
+    <button type="button" class="badge badge-soft badge-primary gap-1" onclick="clearAppliedFilter('date')" title="{% t list.remove-filter %}">{% t list.chip-date page.date-chip-from page.date-chip-to %} <span aria-hidden="true">×</span></button>
+    {% endif %}
+    {% if page.subject-filter-active? %}
+    <button type="button" class="badge badge-soft badge-primary gap-1" onclick="clearAppliedFilter('subject-filter-checkbox')" title="{% t list.remove-filter %}">{{page.subject-filter-label}} <span aria-hidden="true">×</span></button>
+    {% endif %}
+    {% if page.from-filter-active? %}
+    <button type="button" class="badge badge-soft badge-primary gap-1" onclick="clearAppliedFilter('from-filter-checkbox')" title="{% t list.remove-filter %}">{{page.from-filter-label}} <span aria-hidden="true">×</span></button>
+    {% endif %}
+    {% if page.to-filter-active? %}
+    <button type="button" class="badge badge-soft badge-primary gap-1" onclick="clearAppliedFilter('to-filter-checkbox')" title="{% t list.remove-filter %}">{{page.to-filter-label}} <span aria-hidden="true">×</span></button>
+    {% endif %}
+    {% if page.category-filter-active? %}
+    <button type="button" class="badge badge-soft badge-primary gap-1" onclick="clearAppliedFilter('category-filter-checkbox')" title="{% t list.remove-filter %}">{{page.category-filter-label}} <span aria-hidden="true">×</span></button>
+    {% endif %}
+    <a class="btn btn-ghost btn-xs" href="/emails?size={{page.size}}">{% t list.clear-all %}</a>
+    {% endif %}
+  </div>
+</form>
+
+{% if batch-move-url %}
+<!-- Outside #page-form: forms cannot be nested. Its button sits next to the batch chip. -->
+<form id="batch-move-form" action="{{batch-move-url}}" method="post" onsubmit="return confirm(this.dataset.confirm)" data-confirm="{% t list.batch-move-confirm %}">
+  <input type="hidden" name="redirect-url" value="/emails?batch={{page.batch}}" />
+</form>
 {% endif %}
 
 {% include "emails-pagination.html" %}
 
-<!-- Bulk category change: the checkboxes in the first column pick e-mails of this page, and each one
-     goes through the same request as its own category dropdown (move on the mail server included). -->
-{% if emails|not-empty %}
-<div id="bulk-category-bar" class="flex flex-wrap items-center gap-2 my-2">
-  <span id="bulk-category-count" class="text-sm">Select e-mails to change their category together.</span>
-  <select id="bulk-category-select" class="select select-sm w-40" aria-label="Category for the selected e-mails" disabled>
-    <option value="__choose" selected disabled>Category…</option>
-    {% for category in categories %}
-    <option value="{{category.id}}" {% if page.suggestion-active? %}{% if page.suggest-category = category.id %}selected{% endif %}{% endif %}>{{category.name}}</option>
-    {% endfor %}
-  </select>
-  <button type="button" id="bulk-category-apply" class="btn btn-primary btn-sm" disabled>Assign</button>
-  <button type="button" id="bulk-category-clear" class="btn btn-ghost btn-sm" disabled>Clear selection</button>
-  <span id="bulk-category-status" class="text-sm" role="status" aria-live="polite"></span>
-</div>
-{% endif %}
-
 <!-- The table renders even with zero results: hiding it along with the filter bar would make an
-     active filter invisible and drop it from the next submit. -->
-<div class="w-full overflow-x-auto">
-  <table class="table table-zebra table-fixed max-lg:[&_th]:px-2 max-lg:[&_td]:px-2">
-    <thead class="table-header-group">
-      <tr class="table-row">
-        <th class="table-cell w-9 px-2"><input type="checkbox" class="checkbox checkbox-sm" id="email-select-all" autocomplete="off" aria-label="Select every e-mail on this page" title="Select every e-mail on this page"></th>
-        <th class="table-cell text-left w-24 lg:w-28"><strong>Date</strong></th>
-        <th class="table-cell text-left">
-          <details class="dropdown">
-            <summary class="inline-flex items-center gap-1 cursor-pointer list-none {% if page.subject-filter-active? %}text-primary{% endif %}">
-              <strong>Subject</strong>
-              {% if page.subject-filter-active? %}<span class="badge badge-primary badge-xs" title="{{page.subject-filter-label}}">{{page.subject-filter-badge}}</span>{% endif %}
+     active filter invisible and drop it from the next submit. The column filters in its header show
+     only after "Filter" was pressed, or while one of them is active. -->
+<div id="email-table" class="group rounded-box border border-base-300 bg-base-100" data-filters="{% if page.column-filter-active? %}on{% else %}off{% endif %}">
+  <table class="table table-sm table-fixed w-full max-md:block">
+    <thead class="max-md:hidden max-md:group-data-[filters=on]:block">
+      <tr class="max-md:flex max-md:flex-wrap max-md:items-center max-md:gap-2 max-md:p-2 [&>th]:max-md:p-0 [&>th]:max-md:w-auto [&>th]:max-md:border-0">
+        <th class="w-10"><input type="checkbox" class="checkbox checkbox-sm" id="email-select-all" autocomplete="off" aria-label="{% t list.select-page %}" title="{% t list.select-page %}"></th>
+        <th class="w-56">
+          <span class="inline-flex items-center gap-1 group-data-[filters=on]:hidden">{% t list.column-from %}{% if page.from-filter-active? %}<span class="badge badge-primary badge-xs" title="{{page.from-filter-label}}">{{page.from-filter-badge}}</span>{% endif %}</span>
+          <details class="dropdown hidden group-data-[filters=on]:inline-block">
+            <summary class="btn btn-xs gap-1 {% if page.from-filter-active? %}btn-primary{% else %}btn-ghost border border-base-300{% endif %}">
+              {% t list.column-from %}{% if page.from-filter-active? %} <span class="badge badge-xs" title="{{page.from-filter-label}}">{{page.from-filter-badge}}</span>{% endif %}
               <span aria-hidden="true">▾</span>
             </summary>
-            <div tabindex="0" class="dropdown-content menu bg-base-100 rounded-box shadow z-10 w-96 max-w-[90vw] min-w-0 overflow-hidden p-3">
-              <input type="text" class="input input-sm mb-2 w-full" placeholder="Search subjects..." oninput="filterChecklist(this, 'subject-checklist', 'subject-filter-select-all')">
-              <label class="flex items-center gap-2 pb-2 mb-2 border-b border-base-300">
-                <input type="checkbox" class="checkbox checkbox-sm shrink-0" id="subject-filter-select-all"
-                       onchange="toggleVisibleInChecklist(this, 'subject-filter-checkbox', 'subject-checklist')">
-                <span class="font-semibold">Select all visible</span>
-              </label>
-              <div id="subject-checklist" class="max-h-56 overflow-y-auto overflow-x-hidden flex flex-col gap-1 w-full max-w-full min-w-0" data-column="subject" data-checkbox-class="subject-filter-checkbox" data-input-name="subject-values" data-master-id="subject-filter-select-all" data-truncated="{% if subjects-truncated? %}true{% else %}false{% endif %}">
-                {% for subject-row in subjects %}
-                <label class="flex items-center gap-2 min-w-0" title="{{subject-row.subject}}">
-                  <input type="checkbox" class="checkbox checkbox-sm subject-filter-checkbox shrink-0" name="subject-values"
-                         value="{{subject-row.subject}}" form="page-form" data-applied-checked="{% if subject-row.checked? %}true{% else %}false{% endif %}"
-                         onchange="updateSelectAllState('subject-filter-select-all', 'subject-filter-checkbox', 'subject-checklist')" {% if subject-row.checked? %}checked{% endif %}>
-                  <span class="truncate">{{subject-row.subject}}</span>
-                </label>
-                {% endfor %}
-              </div>
-              {% if subjects-truncated? %}<p class="text-xs opacity-70 mt-1">Only the subjects of the newest e-mails are listed. Type at least two characters to search all of them.</p>{% endif %}
-              <div class="grid grid-cols-3 gap-1 mt-2 w-full max-w-full min-w-0">
-                <button class="btn btn-primary btn-xs w-full min-w-0" type="submit" form="page-form">Apply</button>
-                <button class="btn btn-ghost btn-xs w-full min-w-0" type="button" onclick="resetChecklist('subject-filter-checkbox', 'subject-filter-select-all', 'subject-checklist')">Reset</button>
-                <button class="btn btn-ghost btn-xs w-full min-w-0" type="button" onclick="cancelChecklist(this, 'subject-filter-checkbox', 'subject-filter-select-all', 'subject-checklist')">Cancel</button>
-              </div>
-            </div>
-          </details>
-        </th>
-        <th class="hidden lg:table-cell text-left lg:w-40">
-          <details class="dropdown">
-            <summary class="inline-flex items-center gap-1 cursor-pointer list-none {% if page.from-filter-active? %}text-primary{% endif %}">
-              <strong>From</strong>
-              {% if page.from-filter-active? %}<span class="badge badge-primary badge-xs" title="{{page.from-filter-label}}">{{page.from-filter-badge}}</span>{% endif %}
-              <span aria-hidden="true">▾</span>
-            </summary>
-            <div tabindex="0" class="dropdown-content menu bg-base-100 rounded-box shadow z-10 w-96 max-w-[90vw] min-w-0 overflow-hidden p-3">
-              <input type="text" class="input input-sm mb-2 w-full" placeholder="Search senders..." oninput="filterChecklist(this, 'from-checklist', 'from-filter-select-all')">
+            <div tabindex="0" class="dropdown-content menu bg-base-100 rounded-box shadow-lg border border-base-300 z-20 w-96 max-w-[90vw] min-w-0 overflow-hidden p-3 font-normal normal-case">
+              <input type="text" class="input input-sm mb-2 w-full" placeholder="{% t list.search-senders %}" aria-label="{% t list.search-senders %}" oninput="filterChecklist(this, 'from-checklist', 'from-filter-select-all')">
               <label class="flex items-center gap-2 pb-2 mb-2 border-b border-base-300">
                 <input type="checkbox" class="checkbox checkbox-sm shrink-0" id="from-filter-select-all"
                        onchange="toggleVisibleInChecklist(this, 'from-filter-checkbox', 'from-checklist')">
-                <span class="font-semibold">Select all visible</span>
+                <span class="font-semibold">{% t list.select-all-visible %}</span>
               </label>
               <div id="from-checklist" class="max-h-56 overflow-y-auto overflow-x-hidden flex flex-col gap-1 w-full max-w-full min-w-0" data-column="from" data-checkbox-class="from-filter-checkbox" data-input-name="from-keys" data-master-id="from-filter-select-all" data-truncated="{% if senders-truncated? %}true{% else %}false{% endif %}">
                 {% for sender in senders %}
@@ -197,28 +133,61 @@
                 </label>
                 {% endfor %}
               </div>
-              {% if senders-truncated? %}<p class="text-xs opacity-70 mt-1">Only the senders of the newest e-mails are listed. Type at least two characters to search all of them.</p>{% endif %}
+              {% if senders-truncated? %}<p class="text-xs opacity-70 mt-1 whitespace-normal">{% t list.truncated-from %}</p>{% endif %}
               <div class="grid grid-cols-3 gap-1 mt-2 w-full max-w-full min-w-0">
-                <button class="btn btn-primary btn-xs w-full min-w-0" type="submit" form="page-form">Apply</button>
-                <button class="btn btn-ghost btn-xs w-full min-w-0" type="button" onclick="resetChecklist('from-filter-checkbox', 'from-filter-select-all', 'from-checklist')">Reset</button>
-                <button class="btn btn-ghost btn-xs w-full min-w-0" type="button" onclick="cancelChecklist(this, 'from-filter-checkbox', 'from-filter-select-all', 'from-checklist')">Cancel</button>
+                <button class="btn btn-primary btn-xs w-full min-w-0" type="submit" form="page-form">{% t list.apply %}</button>
+                <button class="btn btn-ghost btn-xs w-full min-w-0" type="button" onclick="resetChecklist('from-filter-checkbox', 'from-filter-select-all', 'from-checklist')">{% t list.reset %}</button>
+                <button class="btn btn-ghost btn-xs w-full min-w-0" type="button" onclick="cancelChecklist(this, 'from-filter-checkbox', 'from-filter-select-all', 'from-checklist')">{% t list.cancel %}</button>
               </div>
             </div>
           </details>
         </th>
-        <th class="hidden lg:table-cell text-left lg:w-40">
-          <details class="dropdown">
-            <summary class="inline-flex items-center gap-1 cursor-pointer list-none {% if page.to-filter-active? %}text-primary{% endif %}">
-              <strong>To</strong>
-              {% if page.to-filter-active? %}<span class="badge badge-primary badge-xs" title="{{page.to-filter-label}}">{{page.to-filter-badge}}</span>{% endif %}
+        <th class="">
+          <span class="inline-flex items-center gap-1 group-data-[filters=on]:hidden">{% t list.column-subject %}{% if page.subject-filter-active? %}<span class="badge badge-primary badge-xs" title="{{page.subject-filter-label}}">{{page.subject-filter-badge}}</span>{% endif %}</span>
+          <details class="dropdown hidden group-data-[filters=on]:inline-block">
+            <summary class="btn btn-xs gap-1 {% if page.subject-filter-active? %}btn-primary{% else %}btn-ghost border border-base-300{% endif %}">
+              {% t list.column-subject %}{% if page.subject-filter-active? %} <span class="badge badge-xs" title="{{page.subject-filter-label}}">{{page.subject-filter-badge}}</span>{% endif %}
               <span aria-hidden="true">▾</span>
             </summary>
-            <div tabindex="0" class="dropdown-content menu bg-base-100 rounded-box shadow z-10 w-96 max-w-[90vw] min-w-0 overflow-hidden p-3">
-              <input type="text" class="input input-sm mb-2 w-full" placeholder="Search recipients..." oninput="filterChecklist(this, 'to-checklist', 'to-filter-select-all')">
+            <div tabindex="0" class="dropdown-content menu bg-base-100 rounded-box shadow-lg border border-base-300 z-20 w-96 max-w-[90vw] min-w-0 overflow-hidden p-3 font-normal normal-case">
+              <input type="text" class="input input-sm mb-2 w-full" placeholder="{% t list.search-subjects %}" aria-label="{% t list.search-subjects %}" oninput="filterChecklist(this, 'subject-checklist', 'subject-filter-select-all')">
+              <label class="flex items-center gap-2 pb-2 mb-2 border-b border-base-300">
+                <input type="checkbox" class="checkbox checkbox-sm shrink-0" id="subject-filter-select-all"
+                       onchange="toggleVisibleInChecklist(this, 'subject-filter-checkbox', 'subject-checklist')">
+                <span class="font-semibold">{% t list.select-all-visible %}</span>
+              </label>
+              <div id="subject-checklist" class="max-h-56 overflow-y-auto overflow-x-hidden flex flex-col gap-1 w-full max-w-full min-w-0" data-column="subject" data-checkbox-class="subject-filter-checkbox" data-input-name="subject-values" data-master-id="subject-filter-select-all" data-truncated="{% if subjects-truncated? %}true{% else %}false{% endif %}">
+                {% for subject-row in subjects %}
+                <label class="flex items-center gap-2 min-w-0" title="{{subject-row.subject}}">
+                  <input type="checkbox" class="checkbox checkbox-sm subject-filter-checkbox shrink-0" name="subject-values"
+                         value="{{subject-row.subject}}" form="page-form" data-applied-checked="{% if subject-row.checked? %}true{% else %}false{% endif %}"
+                         onchange="updateSelectAllState('subject-filter-select-all', 'subject-filter-checkbox', 'subject-checklist')" {% if subject-row.checked? %}checked{% endif %}>
+                  <span class="truncate">{{subject-row.subject}}</span>
+                </label>
+                {% endfor %}
+              </div>
+              {% if subjects-truncated? %}<p class="text-xs opacity-70 mt-1 whitespace-normal">{% t list.truncated-subject %}</p>{% endif %}
+              <div class="grid grid-cols-3 gap-1 mt-2 w-full max-w-full min-w-0">
+                <button class="btn btn-primary btn-xs w-full min-w-0" type="submit" form="page-form">{% t list.apply %}</button>
+                <button class="btn btn-ghost btn-xs w-full min-w-0" type="button" onclick="resetChecklist('subject-filter-checkbox', 'subject-filter-select-all', 'subject-checklist')">{% t list.reset %}</button>
+                <button class="btn btn-ghost btn-xs w-full min-w-0" type="button" onclick="cancelChecklist(this, 'subject-filter-checkbox', 'subject-filter-select-all', 'subject-checklist')">{% t list.cancel %}</button>
+              </div>
+            </div>
+          </details>
+        </th>
+        <th class="w-48 hidden xl:table-cell group-data-[filters=on]:table-cell max-md:group-data-[filters=on]:block">
+          <span class="inline-flex items-center gap-1 group-data-[filters=on]:hidden">{% t list.column-to %}{% if page.to-filter-active? %}<span class="badge badge-primary badge-xs" title="{{page.to-filter-label}}">{{page.to-filter-badge}}</span>{% endif %}</span>
+          <details class="dropdown hidden group-data-[filters=on]:inline-block">
+            <summary class="btn btn-xs gap-1 {% if page.to-filter-active? %}btn-primary{% else %}btn-ghost border border-base-300{% endif %}">
+              {% t list.column-to %}{% if page.to-filter-active? %} <span class="badge badge-xs" title="{{page.to-filter-label}}">{{page.to-filter-badge}}</span>{% endif %}
+              <span aria-hidden="true">▾</span>
+            </summary>
+            <div tabindex="0" class="dropdown-content menu bg-base-100 rounded-box shadow-lg border border-base-300 z-20 w-96 max-w-[90vw] min-w-0 overflow-hidden p-3 font-normal normal-case">
+              <input type="text" class="input input-sm mb-2 w-full" placeholder="{% t list.search-recipients %}" aria-label="{% t list.search-recipients %}" oninput="filterChecklist(this, 'to-checklist', 'to-filter-select-all')">
               <label class="flex items-center gap-2 pb-2 mb-2 border-b border-base-300">
                 <input type="checkbox" class="checkbox checkbox-sm shrink-0" id="to-filter-select-all"
                        onchange="toggleVisibleInChecklist(this, 'to-filter-checkbox', 'to-checklist')">
-                <span class="font-semibold">Select all visible</span>
+                <span class="font-semibold">{% t list.select-all-visible %}</span>
               </label>
               <div id="to-checklist" class="max-h-56 overflow-y-auto overflow-x-hidden flex flex-col gap-1 w-full max-w-full min-w-0" data-column="to" data-checkbox-class="to-filter-checkbox" data-input-name="to-keys" data-master-id="to-filter-select-all" data-truncated="{% if recipients-truncated? %}true{% else %}false{% endif %}">
                 {% for recipient in recipients %}
@@ -230,29 +199,27 @@
                 </label>
                 {% endfor %}
               </div>
-              {% if recipients-truncated? %}<p class="text-xs opacity-70 mt-1">Only the recipients of the newest e-mails are listed. Type at least two characters to search all of them.</p>{% endif %}
+              {% if recipients-truncated? %}<p class="text-xs opacity-70 mt-1 whitespace-normal">{% t list.truncated-to %}</p>{% endif %}
               <div class="grid grid-cols-3 gap-1 mt-2 w-full max-w-full min-w-0">
-                <button class="btn btn-primary btn-xs w-full min-w-0" type="submit" form="page-form">Apply</button>
-                <button class="btn btn-ghost btn-xs w-full min-w-0" type="button" onclick="resetChecklist('to-filter-checkbox', 'to-filter-select-all', 'to-checklist')">Reset</button>
-                <button class="btn btn-ghost btn-xs w-full min-w-0" type="button" onclick="cancelChecklist(this, 'to-filter-checkbox', 'to-filter-select-all', 'to-checklist')">Cancel</button>
+                <button class="btn btn-primary btn-xs w-full min-w-0" type="submit" form="page-form">{% t list.apply %}</button>
+                <button class="btn btn-ghost btn-xs w-full min-w-0" type="button" onclick="resetChecklist('to-filter-checkbox', 'to-filter-select-all', 'to-checklist')">{% t list.reset %}</button>
+                <button class="btn btn-ghost btn-xs w-full min-w-0" type="button" onclick="cancelChecklist(this, 'to-filter-checkbox', 'to-filter-select-all', 'to-checklist')">{% t list.cancel %}</button>
               </div>
             </div>
           </details>
         </th>
-        <th class="hidden lg:table-cell text-left lg:w-20"><strong>Language</strong></th>
-        <th class="hidden lg:table-cell text-left lg:w-24"><strong>Confidence</strong></th>
-        <th class="text-left w-32 sm:w-36">
-          <details class="dropdown">
-            <summary class="inline-flex items-center gap-1 cursor-pointer list-none {% if page.category-filter-active? %}text-primary{% endif %}">
-              <strong>Category</strong>
-              {% if page.category-filter-active? %}<span class="badge badge-primary badge-xs" title="{{page.category-filter-label}}">{{page.category-filter-badge}}</span>{% endif %}
+        <th class="w-48">
+          <span class="inline-flex items-center gap-1 group-data-[filters=on]:hidden">{% t list.column-category %}{% if page.category-filter-active? %}<span class="badge badge-primary badge-xs" title="{{page.category-filter-label}}">{{page.category-filter-badge}}</span>{% endif %}</span>
+          <details class="dropdown hidden group-data-[filters=on]:inline-block">
+            <summary class="btn btn-xs gap-1 {% if page.category-filter-active? %}btn-primary{% else %}btn-ghost border border-base-300{% endif %}">
+              {% t list.column-category %}{% if page.category-filter-active? %} <span class="badge badge-xs" title="{{page.category-filter-label}}">{{page.category-filter-badge}}</span>{% endif %}
               <span aria-hidden="true">▾</span>
             </summary>
-            <div tabindex="0" class="dropdown-content menu bg-base-100 rounded-box shadow z-10 w-72 max-w-[90vw] min-w-0 overflow-hidden p-3">
+            <div tabindex="0" class="dropdown-content menu bg-base-100 rounded-box shadow-lg border border-base-300 z-20 w-96 max-w-[90vw] min-w-0 overflow-hidden p-3 font-normal normal-case">
               <label class="flex items-center gap-2 pb-2 mb-2 border-b border-base-300">
                 <input type="checkbox" class="checkbox checkbox-sm shrink-0" id="category-filter-select-all"
                        onchange="toggleVisibleInChecklist(this, 'category-filter-checkbox', 'category-checklist')">
-                <span class="font-semibold">Select all</span>
+                <span class="font-semibold">{% t list.select-all %}</span>
               </label>
               <div id="category-checklist" class="max-h-56 overflow-y-auto overflow-x-hidden flex flex-col gap-1 w-full max-w-full min-w-0">
                 {% for category in category-filter-options %}
@@ -260,77 +227,88 @@
                   <input type="checkbox" class="checkbox checkbox-sm category-filter-checkbox shrink-0" name="category-ids"
                          value="{{category.id|default:"n-a"}}" form="page-form" data-applied-checked="{% if category.checked? %}true{% else %}false{% endif %}"
                          onchange="updateSelectAllState('category-filter-select-all', 'category-filter-checkbox', 'category-checklist')" {% if category.checked? %}checked{% endif %}>
-                  <span class="inline-block w-3 h-3 rounded-full shrink-0" style="background-color: {{category.color|category-color}};"></span>
+                  <span class="inline-block size-2.5 rounded-full shrink-0" style="background-color: {{category.color|category-color}};"></span>
                   <span class="truncate">{{category.name}}</span>
                 </label>
                 {% endfor %}
               </div>
               <div class="grid grid-cols-3 gap-1 mt-2 w-full max-w-full min-w-0">
-                <button class="btn btn-primary btn-xs w-full min-w-0" type="submit" form="page-form">Apply</button>
-                <button class="btn btn-ghost btn-xs w-full min-w-0" type="button" onclick="resetChecklist('category-filter-checkbox', 'category-filter-select-all', 'category-checklist')">Reset</button>
-                <button class="btn btn-ghost btn-xs w-full min-w-0" type="button" onclick="cancelChecklist(this, 'category-filter-checkbox', 'category-filter-select-all', 'category-checklist')">Cancel</button>
+                <button class="btn btn-primary btn-xs w-full min-w-0" type="submit" form="page-form">{% t list.apply %}</button>
+                <button class="btn btn-ghost btn-xs w-full min-w-0" type="button" onclick="resetChecklist('category-filter-checkbox', 'category-filter-select-all', 'category-checklist')">{% t list.reset %}</button>
+                <button class="btn btn-ghost btn-xs w-full min-w-0" type="button" onclick="cancelChecklist(this, 'category-filter-checkbox', 'category-filter-select-all', 'category-checklist')">{% t list.cancel %}</button>
               </div>
             </div>
           </details>
         </th>
-        <th class="hidden lg:table-cell text-left lg:w-24"><strong>Confidence</strong></th>
+        <th class="w-24 text-right max-md:hidden">{% t list.column-date %}</th>
       </tr>
     </thead>
-    <tbody>
+    <tbody class="max-md:block">
       {% for email in emails %}
-      <tr class="table-row">
-        <td class="table-cell px-2"><input type="checkbox" class="checkbox checkbox-sm email-select-checkbox" autocomplete="off" aria-label="Select this e-mail"></td>
-        <td class="table-cell"><a href="/emails/{{email.header.message-id|base64-encode}}">{{email.header.date|date:"dd.MM.yyyy"}}</a></td>
-        <td class="table-cell wrap-anywhere" style="text-wrap-mode: wrap;"><a href="/emails/{{email.header.message-id|base64-encode}}">{{email.header.subject}}</a></td>
-        <td class="hidden lg:table-cell wrap-anywhere" style="text-wrap-mode: wrap;"><a href="/emails/{{email.header.message-id|base64-encode}}">{{email.participants|concat-senders}}</a></td>
-        <td class="hidden lg:table-cell wrap-anywhere" style="text-wrap-mode: wrap;"><a href="/emails/{{email.header.message-id|base64-encode}}">{{email.participants|concat-receivers}}</a></td>
-        <td class="hidden lg:table-cell"><input class="input" type="text" value="{{email.metadata.language}}" data-message-id="{{email.header.message-id}}" onchange="updateLanguage(this)"></td>
-        <td class="hidden lg:table-cell">{{email.metadata.language-confidence|confidence-percent}}</td>
-        <td>
-          <select class="select w-28 sm:w-32 category-select" style="border-left: 6px solid transparent;"
-                  data-message-id="{{email.header.message-id}}" onchange="recategorizeEmail(this)">
-            {% for category in categories %}
-            <option value="{{category.id}}" data-color="{{category.color|category-color}}" {% if email.metadata.category-id = category.id %} selected {% endif %}>{{category.name}}</option>
-            {% endfor %}
-        </select></td>
-        <td class="hidden lg:table-cell">{{email.metadata.category-confidence|confidence-percent}}</td>
+      <tr class="hover:bg-base-200/60 max-md:grid max-md:grid-cols-[1.75rem_minmax(0,1fr)_auto] max-md:gap-x-2 max-md:gap-y-0.5 max-md:px-3 max-md:py-2.5 max-md:border-b max-md:border-base-300 [&>td]:max-md:p-0">
+        <td class="max-md:row-span-3 max-md:pt-0.5"><input type="checkbox" class="checkbox checkbox-sm email-select-checkbox" autocomplete="off" aria-label="{% t list.select-email %}"></td>
+        <td class="truncate max-md:col-start-2 max-md:row-start-1">
+          <a href="/emails/{{email.header.message-id|base64-encode}}" class="font-semibold" title="{{email.sender-name}}{% if email.sender-address %} - {{email.sender-address}}{% endif %}">{{email.sender-name}}</a>{% if email.sender-address %} <span class="text-xs text-base-content/60 max-md:hidden">{{email.sender-address}}</span>{% endif %}
+        </td>
+        <td class="truncate max-md:col-start-2 max-md:col-span-2 max-md:row-start-2">
+          <a href="/emails/{{email.header.message-id|base64-encode}}" title="{{email.header.subject}}">{% if email.header.subject %}{{email.header.subject}}{% else %}<span class="italic text-base-content/50">{% t list.no-subject %}</span>{% endif %}</a>
+        </td>
+        <td class="hidden xl:table-cell group-data-[filters=on]:table-cell max-md:group-data-[filters=on]:hidden truncate text-base-content/70">{{email.participants|concat-receivers}}</td>
+        <td class="max-md:col-start-2 max-md:col-span-2 max-md:row-start-3 max-md:pt-1">
+          <div class="flex items-center gap-2">
+            <select class="select select-xs rounded-full w-36 category-select{% if email.model-percent %} border-dashed{% endif %}" style="border-left: 6px solid transparent;"
+                    data-message-id="{{email.header.message-id}}" onchange="recategorizeEmail(this)" aria-label="{% t list.category-of-email %}">
+              {% for category in categories %}
+              <option value="{{category.id}}" data-color="{{category.color|category-color}}" {% if email.metadata.category-id = category.id %} selected {% endif %}>{{category.name}}</option>
+              {% endfor %}
+            </select>
+            {% if email.model-percent %}<span class="text-xs text-base-content/60 whitespace-nowrap" title="{% t list.by-model %}">{{email.model-percent}}</span>{% endif %}
+          </div>
+        </td>
+        <td class="text-right text-xs text-base-content/60 whitespace-nowrap max-md:col-start-3 max-md:row-start-1"><a href="/emails/{{email.header.message-id|base64-encode}}" title="{{email.header.date|date:"dd.MM.yyyy HH:mm"}}">{{email.date-text}}</a></td>
       </tr>
       {% endfor %}
     </tbody>
-    </table>
-  </div>
-
-  <div id="missing-email-category-dialog" role="dialog" aria-modal="false"
-       aria-labelledby="missing-email-category-dialog-message"
-       class="hidden fixed z-50 w-72 max-w-[calc(100vw-1rem)] rounded-box border border-base-300 bg-base-100 p-3 shadow-xl">
-    <p id="missing-email-category-dialog-message" class="text-sm font-semibold">The e-mail was not found on the mail server. Change its category anyway?</p>
-    <div class="mt-3 flex justify-end gap-2">
-      <button type="button" class="btn btn-ghost btn-sm" onclick="answerMissingEmailCategory(false)">No</button>
-      <button type="button" class="btn btn-primary btn-sm" onclick="answerMissingEmailCategory(true)">Yes</button>
-    </div>
-  </div>
-
-{% if emails|empty? %}
-
-<div role="alert" class="alert my-4">
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-info h-6 w-6 shrink-0">
-    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-  </svg>
-  <span>There are no e-mails matching the current filter</span>
+  </table>
+  {% if emails|empty? %}
+  <p class="p-6 text-center text-base-content/70">{% t list.empty %}</p>
+  {% endif %}
 </div>
-
-{% endif %}
 
 {% include "emails-pagination.html" %}
 
-<div class="flex justify-center my-4">
-  <fieldset class="fieldset">
-    <legend class="fieldset-legend">Page Size</legend>
-    <div class="flex items-center gap-2">
-      <input type="number" name="size" min="1" max="500" class="input w-24" value="{{page.size}}" form="page-form" />
-      <button class="btn btn-primary btn-sm" type="submit" form="page-form">Apply</button>
-    </div>
-  </fieldset>
+<div class="flex justify-end items-center gap-2 my-2 text-xs text-base-content/70">
+  <label for="page-size-input">{% t list.per-page %}</label>
+  <input type="number" id="page-size-input" name="size" min="1" max="500" class="input input-xs w-20" value="{{page.size}}" form="page-form" />
+  <button class="btn btn-xs" type="submit" form="page-form">{% t list.apply %}</button>
+</div>
+
+<!-- Bulk category change: shown while e-mails are ticked. Each one goes through the same request as
+     its own category dropdown (move on the mail server included). -->
+{% if emails|not-empty %}
+<div id="bulk-category-bar" hidden role="region" aria-label="{% t list.bulk %}"
+     class="fixed z-30 bottom-20 lg:bottom-6 left-1/2 lg:left-[calc(50%+6.75rem)] -translate-x-1/2 w-max max-w-[calc(100vw-1.5rem)] flex flex-wrap items-center gap-2 rounded-box bg-neutral text-neutral-content shadow-xl px-3 py-2">
+  <span id="bulk-category-count" class="text-sm font-semibold"></span>
+  <select id="bulk-category-select" class="select select-sm w-40 text-base-content" aria-label="{% t list.bulk-category %}">
+    <option value="__choose" selected disabled>{% t list.category-placeholder %}</option>
+    {% for category in categories %}
+    <option value="{{category.id}}" {% if page.suggestion-active? %}{% if page.suggest-category = category.id %}selected{% endif %}{% endif %}>{{category.name}}</option>
+    {% endfor %}
+  </select>
+  <button type="button" id="bulk-category-apply" class="btn btn-primary btn-sm disabled:bg-neutral-content/15 disabled:text-neutral-content/60 disabled:border-transparent">{% t list.assign %}</button>
+  <button type="button" id="bulk-category-clear" class="btn btn-ghost btn-sm btn-square text-neutral-content" title="{% t list.clear-selection %}" aria-label="{% t list.clear-selection %}">✕</button>
+  <span id="bulk-category-status" class="text-sm basis-full empty:hidden" role="status" aria-live="polite"></span>
+</div>
+{% endif %}
+
+<div id="missing-email-category-dialog" role="dialog" aria-modal="false"
+     aria-labelledby="missing-email-category-dialog-message"
+     class="hidden fixed z-50 w-72 max-w-[calc(100vw-1rem)] rounded-box border border-base-300 bg-base-100 p-3 shadow-xl">
+  <p id="missing-email-category-dialog-message" class="text-sm font-semibold">{% t list.missing-one %}</p>
+  <div class="mt-3 flex justify-end gap-2">
+    <button type="button" class="btn btn-ghost btn-sm" onclick="answerMissingEmailCategory(false)">{% t list.no %}</button>
+    <button type="button" class="btn btn-primary btn-sm" onclick="answerMissingEmailCategory(true)">{% t list.yes %}</button>
+  </div>
 </div>
 
 <script>
@@ -340,41 +318,19 @@
     setTimeout(function () { el.style.outline = ''; }, 1400);
   }
 
-  function autosave(el, url, fields) {
-    el.disabled = true;
-    fetch(url, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-      body: new URLSearchParams(fields)
-    }).then(function (res) {
-      el.disabled = false;
-      // 204 = saved and moved; 200 = move failed (category not saved); otherwise an error.
-      flash(el, res.status === 204 ? '#16a34a' : (res.ok ? '#d97706' : '#dc2626'));
-    }).catch(function () {
-      el.disabled = false;
-      flash(el, '#dc2626');
-    });
+  var TEXTS = document.getElementById('list-texts').dataset;
+  function text(key) {
+    var value = TEXTS[key] || '';
+    for (var i = 1; i < arguments.length; i++) { value = value.split('{' + (i - 1) + '}').join(arguments[i]); }
+    return value;
   }
-
-  // A category's configured color at low opacity, for tinting a whole row without overpowering
-  // its text. "#rrggbb" + alpha -> "rgba(r, g, b, alpha)".
-  function hexToRgba(hex, alpha) {
-    var r = parseInt(hex.substr(1, 2), 16);
-    var g = parseInt(hex.substr(3, 2), 16);
-    var b = parseInt(hex.substr(5, 2), 16);
-    return 'rgba(' + r + ', ' + g + ', ' + b + ', ' + alpha + ')';
-  }
-  var ROW_TINT_ALPHA = 0.2;
 
   // Color-code a category dropdown with its selected category's configured color: a left border on
-  // the dropdown itself (works regardless of how the browser renders the closed <select>'s own
-  // background), plus a subtle tint across the whole row so a category is visible at a glance.
+  // the dropdown itself, which works regardless of how the browser renders a closed <select>.
   function applyCategoryColor(select) {
     var option = select.options[select.selectedIndex];
     var color = option && option.dataset.color;
     select.style.borderLeftColor = color || 'transparent';
-    var row = select.closest('tr');
-    if (row) { row.style.backgroundColor = color ? hexToRgba(color, ROW_TINT_ALPHA) : ''; }
   }
   document.querySelectorAll('.category-select').forEach(function (select) {
     applyCategoryColor(select);
@@ -494,8 +450,9 @@
       selectAll.indeterminate = count > 0 && count < all.length;
       selectAll.disabled = running;
       all.forEach(function (box) { box.disabled = running; });
-      countLabel.textContent = count === 0 ? 'Select e-mails to change their category together.'
-        : (count === 1 ? '1 e-mail selected' : count + ' e-mails selected');
+      countLabel.textContent = count === 1 ? text('selectedOne') : text('selectedMany', count);
+      // The bar floats over the list only while something is ticked, a run is going or its result is shown.
+      bar.hidden = count === 0 && !running && statusLabel.textContent === '';
       categorySelect.disabled = running || count === 0;
       applyButton.disabled = running || count === 0 || categorySelect.value === '__choose';
       clearButton.disabled = running || count === 0;
@@ -519,8 +476,6 @@
       box.checked = false;
     }
 
-    function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
-
     async function assign() {
       var category = categorySelect.value;
       if (category === '__choose') { return; }
@@ -533,7 +488,7 @@
       for (var i = 0; i < picked.length; i++) {
         var box = picked[i];
         var select = rowSelect(box);
-        statusLabel.textContent = 'Assigning ' + (i + 1) + ' of ' + picked.length + '…';
+        statusLabel.textContent = text('assigning', i + 1, picked.length);
         if (select.dataset.savedValue === category) { counts.unchanged++; box.checked = false; continue; }
         select.disabled = true;
         var status = await postCategory(select.dataset.messageId, category, false);
@@ -552,8 +507,7 @@
       }
       if (missing.length > 0) {
         statusLabel.textContent = '';
-        var changeAnyway = window.confirm(plural(missing.length, 'e-mail') + ' of the selection ' + (missing.length === 1 ? 'was' : 'were') +
-          ' not found on the mail server. Change only Plauna\'s category to "' + categoryName + '" anyway?');
+        var changeAnyway = window.confirm(text('missingConfirm', missing.length, categoryName));
         for (var j = 0; j < missing.length; j++) {
           var missingBox = missing[j];
           var missingSelect = rowSelect(missingBox);
@@ -566,10 +520,10 @@
           missingSelect.disabled = false;
         }
       }
-      var parts = [plural(counts.assigned, 'e-mail') + ' assigned to "' + categoryName + '".'];
-      if (counts.unchanged) { parts.push(plural(counts.unchanged, 'e-mail') + ' already had this category.'); }
-      if (counts.missing) { parts.push(plural(counts.missing, 'e-mail') + ' not found on the mail server and left unchanged.'); }
-      if (counts.failed) { parts.push(plural(counts.failed, 'e-mail') + ' could not be changed and stay selected.'); }
+      var parts = [text('assigned', counts.assigned, categoryName)];
+      if (counts.unchanged) { parts.push(text('unchanged', counts.unchanged)); }
+      if (counts.missing) { parts.push(text('missing', counts.missing)); }
+      if (counts.failed) { parts.push(text('failed', counts.failed)); }
       statusLabel.textContent = parts.join(' ');
       running = false;
       update();
@@ -606,10 +560,26 @@
     update();
   })();
 
-  // Save an e-mail's language when its language field changes.
-  function updateLanguage(input) {
-    autosave(input, '/metadata/language', {'message-id': input.dataset.messageId, 'language': input.value});
-  }
+  // The views above the list ("All", "Uncategorized" ...) set the metadata filter and apply it.
+  document.querySelectorAll('[data-view]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      document.getElementById('metadata-filter-input').value = button.dataset.view;
+      document.getElementById('page-form').requestSubmit();
+    });
+  });
+
+  // "Filter" shows the column filters in the table header; they stay visible while one is active.
+  (function () {
+    var toggle = document.getElementById('filter-toggle');
+    var table = document.getElementById('email-table');
+    toggle.addEventListener('click', function () {
+      var on = table.dataset.filters !== 'on';
+      table.dataset.filters = on ? 'on' : 'off';
+      toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+      toggle.classList.toggle('btn-active', on);
+    });
+    toggle.classList.toggle('btn-active', table.dataset.filters === 'on');
+  })();
 
   function closeFilterDropdown(element) {
     var details = element.closest('details.dropdown');
@@ -826,8 +796,8 @@
         toInput.value = selectedDates[1] ? flatpickr.formatDate(selectedDates[1], 'Y-m-d') : '';
       }
     });
-    if (fromInput.value && !toInput.value) { rangeInput.value = 'From ' + fromInput.value; }
-    if (!fromInput.value && toInput.value) { rangeInput.value = 'Until ' + toInput.value; }
+    if (fromInput.value && !toInput.value) { rangeInput.value = text('dateFrom', fromInput.value); }
+    if (!fromInput.value && toInput.value) { rangeInput.value = text('dateUntil', toInput.value); }
     // clear() fires onChange with no dates, which already blanks both hidden fields.
     clearButton.addEventListener('click', function () { picker.clear(); });
   })();

@@ -25,13 +25,14 @@
 (defn- fill [text args]
   (reduce-kv (fn [acc i arg] (str/replace acc (str "{" i "}") (str arg))) text (vec args)))
 
+(defn- text-of [k]
+  (let [k (keyword (name k))]
+    (or (get-in @texts [*lang* k]) (get-in @texts [:en k]) (name k))))
+
 (defn t
   "The text of key in the current language, with {0}, {1} ... replaced by args."
   ([k] (t k nil))
-  ([k args]
-   (let [k (keyword (name k))
-         text (or (get-in @texts [*lang* k]) (get-in @texts [:en k]) (name k))]
-     (fill text args))))
+  ([k args] (fill (text-of k) args)))
 
 (defn- quality
   "The q value of one Accept-Language entry (\"de;q=0.8\" → 0.8), 1.0 without one."
@@ -71,6 +72,12 @@
     (subs arg 1 (dec (count arg)))
     (get-in context-map (mapv keyword (str/split arg #"\.")))))
 
+(defn t-html
+  "t for HTML: the text and every argument HTML-escaped, so the result is safe as element content and
+   inside a double-quoted attribute. Texts never contain markup."
+  [k args]
+  (fill (escape-html (text-of k)) (mapv escape-html args)))
+
 (selmer/add-tag! :t
                  (fn [args context-map]
-                   (t (first args) (mapv #(escape-html (tag-argument % context-map)) (rest args)))))
+                   (t-html (first args) (mapv #(tag-argument % context-map) (rest args)))))
