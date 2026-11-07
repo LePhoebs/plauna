@@ -52,8 +52,8 @@
             <label for="modal-{{config.id}}" class="btn">{% t list.cancel %}</label>
           </div>
           <script>
-            document.getElementById('delete-button-{{config.id}}').addEventListener('click', function () {
-              fetch('/admin/connections/{{config.id}}', {method: 'DELETE'})
+            document.getElementById('delete-button-' + {{config.id|js}}).addEventListener('click', function () {
+              fetch('/admin/connections/' + {{config.id|js}}, {method: 'DELETE'})
                 .then(plaunaThen(function () { window.location.href = '/admin/connections'; }));
             });
           </script>

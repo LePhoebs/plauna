@@ -19,6 +19,7 @@
 
  :toast.close "Close"
 
+ :category.none "No category"
  :category.breadcrumb "Breadcrumb"
  :category.show-emails "Show e-mails"
  :category.edit-settings "Edit settings"
@@ -30,7 +31,7 @@
  :category.flag "Flag: {0}"
 
  :suggest.title "Find more e-mails for this category"
- :suggest.intro "Older e-mails outside {0} that may belong into it. Pick how to look for them, then review the e-mails in the list and assign the right ones."
+ :suggest.intro "Older e-mails outside {0} that may belong into it. Pick how to look for them, then assign the right ones here, a whole group at once or one by one."
  :suggest.method "How to find e-mails"
  :suggest.sender "Same sender"
  :suggest.sender-help "Sender addresses that already have e-mails in the category, ignoring case and display name."
@@ -46,11 +47,13 @@
  :scoring.running "Scoring the e-mails…"
  :scoring.progress "Scoring the e-mails… {0} of {1}"
  :scoring.from "Scores from {0} ({1} e-mails)."
- :scoring.stale "The model was trained since; score again for current results."
+ :scoring.stale "The model has changed since; score again for current results."
+ :scoring.incomplete "The last scoring run did not finish, so the scores are incomplete. Score again."
  :scoring.none "No e-mails have been scored yet."
  :scoring.start "Score e-mails now"
  :scoring.busy "The e-mails are already being scored. Please wait for that run to finish."
  :scoring.done "Model scores are ready for {0} e-mails."
+ :scoring.partial "Model scores are ready for {0} e-mails, but the scores of {1} e-mails could not be saved. Please check the logs."
  :scoring.failed "Scoring the e-mails with the model failed. Please check the logs."
 
  :model.intro "The model learns from your categorized e-mails and categorizes new ones. Train it after you assigned many e-mails by hand."
@@ -235,6 +238,7 @@
  :category.saved "The category was saved."
 
  :suggest.found "Suggested e-mails: {0} from {1} senders."
+ :suggest.found-domain "Suggested e-mails: {0} from {1} sender domains."
  :suggest.capped "The {0} most likely or newest are shown."
  :suggest.review-in-list "Review in the list"
  :suggest.group-count "E-mails: {0}"
@@ -472,6 +476,14 @@
  :training.iteration "iteration {0} of at most {1}"
  :training.write "Write the model files"
  :training.written "{0} of {1} model file(s)"
+ :training.label-automatic "Automatic training"
+ :training.label-manual "Manual training"
+ :training.label-switch "Model switch"
+ :training.state-done "done"
+ :training.state-running "running"
+ :training.state-pending "pending"
+ :training.state-failed "failed"
+ :training.state-skipped "skipped"
  :training.finish "Finish"
 
  :msg.another-mbox-import-or-language-re "Another mbox import or language re-detection is still running. Please try again when it has finished."
@@ -499,10 +511,21 @@
  :msg.please-choose-a-non-empty-mbox "Please choose a non-empty mbox file to upload."
  :msg.moving-expired-e-mails-to-the "Moving expired e-mails to the trash in the background."
  :msg.a-clean-up-is-already-running "A clean-up is already running."
+ :msg.flagging-in-background "Flagging the e-mails of {0} in the background."
  :msg.unknown-category "Unknown category."
  :msg.this-category-has-no-flag-color "This category has no flag color."
  :msg.the-connection-is-not-active-connect "The connection is not active. Connect first, then move."
  :msg.no-folder-given "No folder given."
  :msg.unknown-parse-batch "Unknown parse batch."
  :msg.this-batch-is-already-being-moved "This batch is already being moved."
- :msg.the-connection-is-not-active-connect-2 "The connection is not active. Connect first, then retry."}
+ :msg.the-connection-is-not-active-connect-2 "The connection is not active. Connect first, then retry."
+
+ ;; Flag colors (Apple Mail)
+ :flag.red "Red"
+ :flag.orange "Orange"
+ :flag.yellow "Yellow"
+ :flag.green "Green"
+ :flag.blue "Blue"
+ :flag.purple "Purple"
+ :flag.gray "Gray"
+}

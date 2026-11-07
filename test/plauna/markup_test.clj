@@ -218,7 +218,7 @@
       (is (str/includes? sender "This method finds no e-mails outside the category.") "No groups were passed")
       (is (not (str/includes? sender "Score e-mails now")) "Scoring only shows for the model method")
       (is (str/includes? model "name=\"min\" min=\"1\" max=\"99\" value=\"60\""))
-      (is (str/includes? model "Scores from 07.11.2026 14:03 (120 e-mails). The model was trained since"))
+      (is (str/includes? model "Scores from 07.11.2026 14:03 (120 e-mails). The model has changed since"))
       (is (str/includes? model "The model suggests no e-mails at this probability."))
       (is (str/includes? model "menu-active") "The category is highlighted in the sidebar"))))
 
@@ -297,7 +297,7 @@
       (is (str/includes? html "id=\"email-table\" class=\"group rounded-box border border-base-300 bg-base-100\" data-filters=\"off\"")
           "Filter mode starts off while no column filter is active")
       (is (str/includes? html "id=\"filter-toggle\""))
-      (is (str/includes? html "w-96 max-w-[90vw] min-w-0 overflow-hidden"))
+      (is (str/includes? html "w-96 max-w-[90vw] max-md:fixed max-md:inset-x-3 max-md:w-auto max-md:max-w-none min-w-0 overflow-hidden"))
       (is (str/includes? html "id=\"subject-checklist\" class=\"max-h-56 overflow-y-auto overflow-x-hidden flex flex-col gap-1 w-full max-w-full min-w-0\""))
       (is (str/includes? html "grid grid-cols-3 gap-1 mt-2 w-full max-w-full min-w-0"))
       (is (str/includes? html "id=\"missing-email-category-dialog\" role=\"dialog\""))
@@ -456,7 +456,7 @@
       (is (str/includes? flagged "name=\"retention-days\" value=\"30\""))
       (is (str/includes? flagged "action=\"/admin/categories/1/flag\"") "A flagged category offers to flag its existing e-mails")
       (is (not (str/includes? plain "action=\"/admin/categories/2/flag\"")))
-      (is (str/includes? plain "fetch('/admin/categories/2', {method: 'DELETE'})")))))
+      (is (str/includes? plain "fetch('/admin/categories/' + \"2\", {method: 'DELETE'})")))))
 
 (deftest category-suggestions-are-grouped-by-sender
   (with-redefs [client/disconnected-connections (fn [] [])]
@@ -513,3 +513,7 @@
   (let [template (slurp "resources/templates/admin-connection.html")]
     (is (str/includes? template "const form = document.getElementById('update');"))
     (is (not (str/includes? template "document.querySelector('form')")))))
+
+(deftest flag-colors-are-named-in-the-interface-language
+  (binding [plauna.i18n/*lang* :de]
+    (is (= ["Rot" "Orange" "Gelb" "Grün" "Blau" "Lila" "Grau"] (mapv :label (markup/flag-colors))))))

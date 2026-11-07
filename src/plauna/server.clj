@@ -88,6 +88,14 @@
 (defn vectorize [items]
   (if (vector? items) items [items]))
 
+(def ^:private max-selection-values
+  "A column filter's include/exclude list is cut off here: every value becomes a bound SQL parameter,
+   and a crafted URL with tens of thousands of them would exceed the database's limit."
+  1000)
+
+(defn- vectorize-capped [items]
+  (vec (take max-selection-values (vectorize items))))
+
 (defn flatten-map [param-map]
   (let [message-ids (vectorize (get param-map :message-id []))
         languages (vectorize (get param-map :language []))
@@ -563,34 +571,60 @@
 
 (defn scoring-running? [] (= :running (:status @scoring-progress)))
 
+(def ^:private min-stored-score
+  "Scores below 1 % are not stored: the model suggestions start at 1 %, and storing every e-mail ×
+   category pair would grow the table by millions of useless rows."
+  0.01)
+
 (defn- score-page!
-  "Score one page of e-mails with the current models and store the result; returns how many e-mails
-   got scores (those of a language without a model get none)."
+  "Score one page of e-mails with the current models and replace their stored scores; returns how many
+   e-mails got scores (those of a language without a model get none, and lose their old ones). A page
+   that cannot be stored is logged and counted as failed, so one bad page does not end the run."
   [emails]
   (let [tokens (cached-classification-tokens emails #(swap! scoring-progress update :tokens-computed (fnil + 0) %))
-        rows (for [email emails
-                   :let [message-id (-> email :header :message-id)
-                         scores (analysis/category-scores-for-tokens-text (get tokens message-id) (-> email :metadata :language))]
-                   score scores]
-               [message-id (:id score) (double (:confidence score))])
-        scored (count (distinct (map first rows)))]
-    (db/save-category-scores! rows)
-    (swap! scoring-progress #(-> % (update :done (fnil + 0) (count emails)) (update :scored (fnil + 0) scored)))
-    scored))
+        scored-rows (for [email emails
+                          :let [message-id (-> email :header :message-id)
+                                scores (analysis/category-scores-for-tokens-text (get tokens message-id) (-> email :metadata :language))]
+                          score scores]
+                      [message-id (:id score) (double (:confidence score))])
+        scored (count (distinct (map first scored-rows)))
+        stored? (try (db/replace-category-scores! (mapv #(-> % :header :message-id) emails)
+                                                  (filterv #(>= (double (nth % 2)) min-stored-score) scored-rows))
+                     true
+                     (catch Exception e
+                       (t/log! {:level :warn :error e} "Could not store the model scores of a page of e-mails.")
+                       false))]
+    (swap! scoring-progress #(cond-> (update % :done (fnil + 0) (count emails))
+                               stored? (update :scored (fnil + 0) scored)
+                               (not stored?) (update :failed (fnil + 0) (count emails))))
+    (if stored? scored 0)))
+
+(def ^:private scoring-page-size 200)
 
 (defn score-all-emails!
   "Replace the stored model scores with those of the current models for every e-mail with a detected
-   language. Records when it finished, for the e-mail list."
+   language, page by page: until the run is over, the other e-mails keep their previous scores. Pages go
+   by message id (keyset), so e-mails arriving meanwhile do not shift the pages. Records when it
+   finished and with which model, for the Model page; returns how many e-mails got scores."
   []
-  (db/delete-all-category-scores!)
-  (let [entity-query {:entity :enriched-email :page {:size 200 :page 1} :with-bodies false}
-        ;; A stable order: LIMIT/OFFSET pages without one may skip or repeat e-mails.
-        sql-query {:where [:<> :language nil] :order-by [[:headers.message-id :asc]]}
-        total (:total (db/fetch-data (assoc entity-query :page {:size 1 :page 1}) sql-query))]
+  (let [model (p/categorization-model)
+        trained-at (some-> (p/last-successful-training-at) str)
+        entity-query {:entity :enriched-email :with-bodies false}
+        where [:<> :language nil]
+        total (:total (db/fetch-data (assoc entity-query :page {:size 1 :page 1}) {:where where}))]
+    (p/record-model-scores-started!)
     (swap! scoring-progress assoc :total (or total 0))
-    (core-email/iterate-over-all-pages db/fetch-data score-page! entity-query sql-query false)
-    (let [scored (:scored @scoring-progress 0)]
-      (p/record-model-scores! (Instant/now) scored)
+    (loop [after nil]
+      (let [emails (db/fetch-data entity-query {:where (if after [:and where [:> :headers.message-id after]] where)
+                                                :order-by [[:headers.message-id :asc]]
+                                                :limit scoring-page-size})]
+        (when (seq emails)
+          (score-page! emails)
+          (when (= scoring-page-size (count emails))
+            (recur (-> emails last :header :message-id))))))
+    (db/delete-unscorable-category-scores!)
+    (let [{:keys [scored failed] :or {scored 0 failed 0}} @scoring-progress]
+      (p/record-model-scores! (Instant/now) scored model trained-at (zero? failed))
       scored)))
 
 (defn start-scoring-job!
@@ -600,13 +634,16 @@
                                (fn [state]
                                  (if (= :running (:status state))
                                    state
-                                   {:status :running :started-at (System/currentTimeMillis) :done 0 :scored 0 :total 0 :tokens-computed 0})))]
+                                   {:status :running :started-at (System/currentTimeMillis) :done 0 :scored 0 :failed 0 :total 0 :tokens-computed 0})))]
     (if (= :running (:status before))
       false
       (do (async/thread
             (let [result (try
-                           (let [scored (score-all-emails!)]
-                             {:type :success :key :scoring.done :args [scored]})
+                           (let [scored (score-all-emails!)
+                                 failed (:failed @scoring-progress 0)]
+                             (if (pos? failed)
+                               {:type :alert :key :scoring.partial :args [scored failed]}
+                               {:type :success :key :scoring.done :args [scored]}))
                            (catch Throwable e
                              (t/log! {:level :error :error e} "Scoring the e-mails with the model failed.")
                              {:type :alert :key :scoring.failed}))]
@@ -616,15 +653,22 @@
           true))))
 
 (defn model-scores-summary
-  "What the e-mail list says about the stored model scores: when they were computed (in the configured
-   time zone), for how many e-mails, whether a training ran since (then they are from an older model)
-   and whether a scoring run is in progress."
+  "What the Model page says about the stored model scores: when they were computed (in the configured
+   time zone), for how many e-mails, whether they are from an older model (a training ran or another
+   model type was activated since), whether the last run did not finish, and whether a run is in
+   progress."
   []
-  (let [{:keys [at emails]} (p/model-scores-info)
-        trained-at (p/last-successful-training-at)]
+  (let [{:keys [at emails model trained-at complete?]} (p/model-scores-info)
+        current-trained-at (p/last-successful-training-at)]
     {:at-text (when at (.format (.atZone ^Instant at ^java.time.ZoneId (p/zone-id)) (java.time.format.DateTimeFormatter/ofPattern "dd.MM.yyyy HH:mm")))
      :emails emails
-     :stale? (boolean (and at trained-at (.isAfter ^Instant trained-at ^Instant at)))
+     :stale? (boolean (and at
+                           (if model
+                             (or (not= model (p/categorization-model))
+                                 (not= trained-at (some-> current-trained-at str)))
+                             ;; Scores stored before the model was recorded with them.
+                             (and current-trained-at (.isAfter ^Instant current-trained-at ^Instant at)))))
+     :incomplete? (and (not complete?) (not (scoring-running?)))
      :running? (scoring-running?)}))
 
 (defn- format-instant [^Instant instant]
@@ -654,16 +698,17 @@
   ([context category params messages]
   (let [id (:id category)
         tab (get category-tabs (:tab params) "suggestions")
-        flag (first (filter #(= (:flag_color category) (:id %)) flags/colors))
+        flag (first (filter #(= (:flag_color category) (:id %)) (markup/flag-colors)))
         base {:category (assoc category :flag_hex (:hex flag) :flag_label (:label flag))
               :email-count (app/category-email-count context id)
               :tab tab}]
     (markup/category-page
      (case tab
        "emails" (assoc base :emails (app/recent-category-emails context id 25))
-       "settings" (assoc base :flag-colors flags/colors)
+       "settings" (assoc base :flag-colors (markup/flag-colors))
        (let [{:keys [method min-percent]} (app/suggestion-parameters {:suggest-category (str id) :suggest-by (:by params) :suggest-min (:min params)})
-             counts (app/suggestion-counts context id min-percent)
+             ;; Only the selected method's count: the page loads the others afterwards.
+             counts (app/suggestion-counts context id min-percent [method])
              selected-count (get counts method 0)
              candidates (when (pos? (long selected-count)) (app/suggestion-candidates context id method min-percent))
              scores (when (= method "model") (db/category-scores-for id (mapv #(get-in % [:header :message-id]) candidates)))]
@@ -748,13 +793,21 @@
                    :else "done")
       :detail (when (= :finished status) (:content result))}]))
 
+(def ^:private training-label-keys
+  "The text keys of the training runs' labels (the labels stay English in the state and the logs)."
+  {"Automatic training" :training.label-automatic
+   "Manual training" :training.label-manual
+   "Model switch" :training.label-switch})
+
 (defn training-status
   "The progress page's JSON view of the current run."
   []
-  (let [state @training-progress]
+  (let [raw @training-progress
+        ;; A keyed message reads in the language of the progress page that polls for it - in the result
+        ;; and in the "Finish" step that shows it.
+        state (update raw :result #(if (:key %) (assoc % :content (i18n/t (:key %) (:args %))) %))]
     (-> (select-keys state [:status :label :phase :started-at :finished-at :result])
-        ;; A keyed message reads in the language of the progress page that polls for it.
-        (update :result #(if (:key %) (assoc % :content (i18n/t (:key %) (:args %))) %))
+        (update :label #(if-let [k (get training-label-keys %)] (i18n/t k) %))
         (assoc :percent (training-percent state)
                :steps (training-steps state)))))
 
@@ -1203,24 +1256,25 @@
                       :page {:default 1 :type-fn (int-or-default 1)}
                       :filter {:default "all" :type-fn identity}
                       :search-text {:default nil :type-fn identity}
-                      :subject-values {:default nil :type-fn vectorize}
-                      :subject-values-exclude {:default nil :type-fn vectorize}
+                      :subject-values {:default nil :type-fn vectorize-capped}
+                      :subject-values-exclude {:default nil :type-fn vectorize-capped}
                       :subject-values-none {:default nil :type-fn identity}
-                      :from-keys {:default nil :type-fn vectorize}
-                      :from-keys-exclude {:default nil :type-fn vectorize}
+                      :from-keys {:default nil :type-fn vectorize-capped}
+                      :from-keys-exclude {:default nil :type-fn vectorize-capped}
                       :from-keys-none {:default nil :type-fn identity}
-                      :to-keys {:default nil :type-fn vectorize}
-                      :to-keys-exclude {:default nil :type-fn vectorize}
+                      :to-keys {:default nil :type-fn vectorize-capped}
+                      :to-keys-exclude {:default nil :type-fn vectorize-capped}
                       :to-keys-none {:default nil :type-fn identity}
-                      :category-ids {:default nil :type-fn vectorize}
-                      :category-ids-exclude {:default nil :type-fn vectorize}
+                      :category-ids {:default nil :type-fn vectorize-capped}
+                      :category-ids-exclude {:default nil :type-fn vectorize-capped}
                       :category-ids-none {:default nil :type-fn identity}
                       :date-from {:default nil :type-fn identity}
                       :date-to {:default nil :type-fn identity}
                       :batch {:default nil :type-fn identity}
                       :suggest-category {:default nil :type-fn identity}
                       :suggest-by {:default nil :type-fn identity}
-                      :suggest-min {:default nil :type-fn identity}})
+                      :suggest-min {:default nil :type-fn identity}
+                      :filters {:default nil :type-fn identity}})
 
 (defn template->request-parameters [template]
   (fn [rp] (reduce (fn [acc [k v]] (if (contains? rp k)
@@ -1912,7 +1966,10 @@
      (let [value (get-in request [:params :ui-language])]
        (when (contains? p/ui-languages value)
          (p/update-preference :ui-language value))
-       (redirect-to-referer request)))
+       ;; The form names the page it was used on; the Referer is wrong for a page that answered a POST.
+       (if-let [target (safe-redirect-path (get-in request [:params :redirect-url]) nil)]
+         {:status 303 :headers {"Location" target}}
+         (redirect-to-referer request))))
 
    (comp/GET "/logout" {}
      (-> (redirect "/login") (assoc :session nil)))
@@ -2096,6 +2153,16 @@
        (success-html-with-body (result-with-messages (category-page context category params) global-messages))
        {:status 404 :headers html-headers :body "<p>This category does not exist.</p><p><a href=\"/categories\">Categories</a></p>"}))
 
+   ;; The category page's suggestion counts of the methods that are not selected (loaded after the page).
+   (comp/GET "/categories/:id/suggestion-counts" {route-params :route-params params :params}
+     (if-let [category (some-> (:id route-params) parse-long db/category-by-id)]
+       (let [{:keys [min-percent]} (app/suggestion-parameters {:suggest-category (str (:id category)) :suggest-min (:min params)})
+             methods (filterv (set (st/split (str (:methods params)) #",")) app/suggestion-method-order)]
+         {:status 200
+          :headers {"Content-Type" "application/json; charset=UTF-8" "Cache-Control" "no-store"}
+          :body (generate-string (app/suggestion-counts context (:id category) min-percent methods))})
+       {:status 404 :headers {"Content-Type" "application/json; charset=UTF-8"} :body "{}"}))
+
    (comp/GET "/model" {}
      (success-html-with-body (result-with-messages (markup/model-page (model-page-data)) global-messages)))
 
@@ -2190,31 +2257,36 @@
              (add-to-messages (message :alert :msg.this-category-has-no-flag-color))
              :else
              (do (flag-existing-emails! category)
-                 (add-to-messages {:type :info :content (str "Flagging the e-mails of " (:name category) " in the background.")})))
+                 (add-to-messages (message :info :msg.flagging-in-background (:name category)))))
        ;; Back to the page the form was on: a category's settings tab, or the overview.
        (redirect-to-referer request)))
 
    (comp/POST "/admin/categories/:id" {route-params :route-params params :params :as request}
      (let [id (parse-long (str (:id route-params)))
-           old-category (some-> id db/category-by-id)
-           old-color (flags/valid-color (:flag_color old-category))
-           ;; A form rendered before these fields existed (a tab left open across an update) must not
-           ;; erase them.
-           new-color (if (contains? params :flag-color) (:flag-color params) old-color)
-           retention-days (if (contains? params :retention-days) (:retention-days params) (:retention_days old-category))]
-       (app/update-category! context (:id route-params) (:name params) (:destination-folder params) (:color params)
-                             {:flag-color new-color :retention-days retention-days})
-       ;; A category that stops flagging takes its flags away. A new color is not pushed onto existing
-       ;; e-mails automatically: that would re-flag the ones the user unflagged to keep them.
-       (when (and (some? old-color) (nil? (flags/valid-color new-color)))
-         (let [flagged (mapv #(assoc % :flag :clear) (db/categorized-email-locations id))]
-           (when (seq flagged)
-             (async/thread
-               (try (per-connection flagged client/apply-flags!)
-                    (catch Throwable e (t/log! {:level :warn :error e} "Could not remove the flags of the category"))))))))
-     (analysis/clear-reference-cache!)
-     (add-to-messages {:type :success :key :category.saved})
-     (redirect-to-referer request))
+           old-category (some-> id db/category-by-id)]
+       (if (nil? old-category)
+         ;; A deleted category (a tab left open) or a made-up id: saving it would still create IMAP
+         ;; folders under the posted name and report success.
+         (do (add-to-messages (message :alert :msg.unknown-category))
+             {:status 303 :headers {"Location" "/categories"}})
+         (let [old-color (flags/valid-color (:flag_color old-category))
+               ;; A form rendered before these fields existed (a tab left open across an update) must not
+               ;; erase them.
+               new-color (if (contains? params :flag-color) (:flag-color params) old-color)
+               retention-days (if (contains? params :retention-days) (:retention-days params) (:retention_days old-category))]
+           (app/update-category! context (:id route-params) (:name params) (:destination-folder params) (:color params)
+                                 {:flag-color new-color :retention-days retention-days})
+           ;; A category that stops flagging takes its flags away. A new color is not pushed onto existing
+           ;; e-mails automatically: that would re-flag the ones the user unflagged to keep them.
+           (when (and (some? old-color) (nil? (flags/valid-color new-color)))
+             (let [flagged (mapv #(assoc % :flag :clear) (db/categorized-email-locations id))]
+               (when (seq flagged)
+                 (async/thread
+                   (try (per-connection flagged client/apply-flags!)
+                        (catch Throwable e (t/log! {:level :warn :error e} "Could not remove the flags of the category")))))))
+           (analysis/clear-reference-cache!)
+           (add-to-messages {:type :success :key :category.saved})
+           (redirect-to-referer request)))))
 
    (comp/DELETE "/admin/categories/:id" {route-params :route-params}
      (let [id (Integer/parseInt (:id route-params))
@@ -2371,7 +2443,7 @@
      (if-let [decoded-id (decode-message-id id)]
        (if-let [email (enriched-email-by-message-id decoded-id)]
          (let [email-data (add-sanitized-text-to-enriched-email email)
-               categories (conj (db/get-categories) {:id nil :name "n/a"})
+               categories (conj (db/get-categories) {:id nil :name (i18n/t :category.none)})
                ;; What the current model computes for the e-mail, also below the threshold and also when it
                ;; already has a category.
                category-scores (try (some->> (analysis/category-scores-for-email email (-> email :metadata :language))

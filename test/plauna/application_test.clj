@@ -932,7 +932,7 @@
              (fetch-emails [_ _ _] {:data [] :total 0}))
         result (app/fetch-emails {:db db} {:filter "all" :category-ids ["1"] :page 1 :size 20})
         by-name (into {} (map (juxt :name :checked?)) (:categories (:optional result)))]
-    (is (= {"Work" true "Personal" false "n/a" false} by-name)))
+    (is (= {"Work" true "Personal" false "No category" false} by-name)))
   "Only the selected category (and not the others, including n/a) is marked checked")
 
 (deftest fetch-emails-marks-every-category-checked-when-unfiltered
@@ -958,7 +958,7 @@
              (fetch-emails [_ _ _] {:data [] :total 0}))
         result (app/fetch-emails {:db db} {:filter "all" :category-ids-exclude ["1"] :page 1 :size 20})
         by-name (into {} (map (juxt :name :checked?)) (:categories (:optional result)))]
-    (is (= {"Work" false "Personal" true "n/a" true} by-name)))
+    (is (= {"Work" false "Personal" true "No category" true} by-name)))
   "In exclude mode, every category is checked except the excluded one")
 
 (deftest fetch-emails-marks-selected-subjects-senders-and-recipients-checked
@@ -1082,7 +1082,7 @@
         "The category checklist's reachable set is scoped by the From filter")
     (is (= ["Work"] (mapv :name (:category-filter-options (:optional result))))
         "Only categories fetch-header-categories reports as reachable appear in the checklist")
-    (is (= #{"Work" "Personal" "n/a"} (into #{} (map :name) (:categories (:optional result))))
+    (is (= #{"Work" "Personal" "No category"} (into #{} (map :name) (:categories (:optional result))))
         "The per-row reassignment dropdown (:categories) is never narrowed"))
   "The Category checklist narrows to reachable categories; the per-row assignment dropdown does not")
 
@@ -1534,3 +1534,32 @@
       (is (= "friend@else.example" (:key (first groups))) "The group with the most likely e-mail first")
       (is (= ["b" "a"] (mapv :message-id (:emails (second groups)))) "Most likely first within a group")
       (is (= [0.6 0.9] ((juxt :min-confidence :max-confidence) (second groups)))))))
+
+(deftest search-needles-match-what-sqlite-lowers
+  (let [needles @#'app/search-needles]
+    (is (= ["reise"] (needles "reise")))
+    (is (= #{"öster" "Öster"} (set (needles "öster"))) "SQLite keeps Ö in a lowered column")
+    (is (= #{"müßig" "mÜßig"} (set (needles "müßig"))) "ASCII letters are lowered by SQLite anyway; ß has no single upper-case letter")
+    (is (= 2 (count (needles "äöüäöü"))) "Beyond four such letters only all lower and all upper")))
+
+(deftest a-page-beyond-the-end-shows-the-last-page
+  (let [pages (atom [])
+        db (reify int/DB
+             (fetch-categories [_] [])
+             (fetch-distinct-subjects [_ _] (throw (ex-info "not asked for" {})))
+             (fetch-distinct-senders [_ _] (throw (ex-info "not asked for" {})))
+             (fetch-distinct-recipients [_ _] (throw (ex-info "not asked for" {})))
+             (fetch-header-categories [_ _] [])
+             (fetch-emails [_ entity _]
+               (let [page (get-in entity [:page :page])]
+                 (swap! pages conj page)
+                 (if (= page 21)
+                   {:data (vec (repeat 1 {})) :total 201 :page 21}
+                   {:data [] :total 201 :page page}))))
+        result (app/fetch-emails {:db db} {:filter "all" :page 50 :size 10})
+        params (:parameters result)]
+    (is (= [50 21] @pages))
+    (is (= [21 201 201] [(:page params) (:first-index params) (:last-index params)])
+        "201 e-mails: page 21 shows the 201st, not \"491–201 of 201\"")
+    (is (false? (:show-column-filters? params))
+        "Without filters=on and no active column filter, the checklists are not computed")))

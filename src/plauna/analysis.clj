@@ -82,6 +82,10 @@
       (if (st/blank? iso3) language iso3))
     (catch Exception _ language)))
 
+(def model-confidence-cap
+  "The highest confidence a category assigned by the model is stored with: 1.0 means the user chose it."
+  0.9999)
+
 (def undetected-language {:code "n/a" :confidence 0.0})
 
 (defn detect-language
@@ -409,7 +413,9 @@
                      ;; The first of equally likely labels wins, as with getBestCategory.
                      (reduce (fn [a b] (if (or (nil? a) (> (double (:confidence b)) (double (:confidence a)))) b a)) nil))]
        (if (and (some? best) (> (double (:confidence best)) (double (p/categorization-threshold))))
-         best
+         ;; A confidence of exactly 1.0 marks a category the user chose (the list's "Model assigned"
+         ;; view relies on it); a very sure model can round to 1.0 as a double, so it stays just below.
+         (update best :confidence #(min (double %) model-confidence-cap))
          {:name nil :confidence 0}))
      {:name nil :confidence 0})))
 

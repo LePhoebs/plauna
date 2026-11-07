@@ -42,7 +42,7 @@
       <span class="text-xs text-base-content/70">{% t category.email-count category.email_count %}</span>
       <span class="text-xs text-base-content/70">{% if category.destination_folder %}{% t category.folder category.destination_folder %}{% else %}{% t category.folder-default category.name %}{% endif %}</span>
       {% if category.retention_days %}<span class="badge badge-ghost badge-sm" title="{% t category.retention category.retention_days %}">{{category.retention_days}} d</span>{% endif %}
-      {% if category.flag_hex %}<span style="color: {{category.flag_hex}};" title="{% t category.flag category.flag_color %}">⚑</span>{% endif %}
+      {% if category.flag_hex %}<span style="color: {{category.flag_hex}};" title="{% t category.flag category.flag_label %}">⚑</span>{% endif %}
       <span class="flex gap-1 ml-auto">
         <a class="btn btn-ghost btn-xs" href="/categories/{{category.id}}">{% t category.tab-suggestions %}</a>
         <a class="btn btn-ghost btn-xs" href="/categories/{{category.id}}?tab=settings">{% t category.tab-settings %}</a>

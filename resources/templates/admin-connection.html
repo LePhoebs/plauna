@@ -302,7 +302,7 @@
         notice.textContent = finished ? texts.jobFinished : texts.jobRunning;
       }
       function poll() {
-        fetch('/admin/connections/{{id}}/activity', {cache: 'no-store'})
+        fetch('/admin/connections/' + {{id|js}} + '/activity', {cache: 'no-store'})
           .then(function (r) { return r.json(); })
           .then(function (state) {
             if (dirty || editing()) {
@@ -342,8 +342,8 @@
                 body.append(element.name, element.value);
             }
           }
-          fetch('/admin/connections/{{id}}', {method: 'PUT', body: body})
-            .then(plaunaThen(() => window.location.href = '/admin/connections/{{id}}'))});
+          fetch('/admin/connections/' + {{id|js}}, {method: 'PUT', body: body})
+            .then(plaunaThen(() => window.location.href = '/admin/connections/' + {{id|js}}))});
 
         
      });

@@ -126,7 +126,7 @@
 
 <script>
   document.getElementById('delete-button-email').addEventListener('click', function () {
-    fetch('/emails/{{email.header.message-id|base64-encode}}', {method: 'DELETE'})
+    fetch('/emails/' + {{email.header.message-id|base64-encode|js}}, {method: 'DELETE'})
       .then(plaunaThen(function () { window.location.replace('/emails'); }));
   });
   // Color-code the category dropdown with its selected category's configured color (left border,

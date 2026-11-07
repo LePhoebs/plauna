@@ -5,7 +5,10 @@
 <div id="training-texts" hidden
      data-loading="{% t training.loading %}" data-label="{% t training.title %}"
      data-in-progress="{% t training.in-progress "{0}" %}" data-finished="{% t training.finished "{0}" %}"
-     data-retry="{% t training.status-failed %}"></div>
+     data-retry="{% t training.status-failed %}"
+     data-state-done="{% t training.state-done %}" data-state-running="{% t training.state-running %}"
+     data-state-pending="{% t training.state-pending %}" data-state-failed="{% t training.state-failed %}"
+     data-state-skipped="{% t training.state-skipped %}"></div>
 <nav class="text-xs text-base-content/60 mb-3" aria-label="{% t category.breadcrumb %}">
   <a class="link link-hover" href="/model">{% t nav.model %}</a> / {% t training.title %}
 </nav>
@@ -52,7 +55,9 @@
       text.textContent = step.label + (step.detail ? ' - ' + step.detail : '');
       var stateText = document.createElement('span');
       stateText.className = 'sr-only';
-      stateText.textContent = ' (' + step.state + ')';
+      var stateTexts = document.getElementById('training-texts').dataset;
+      var stateKey = 'state' + step.state.charAt(0).toUpperCase() + step.state.slice(1);
+      stateText.textContent = ' (' + (stateTexts[stateKey] || step.state) + ')';
       item.appendChild(icon);
       item.appendChild(text);
       item.appendChild(stateText);

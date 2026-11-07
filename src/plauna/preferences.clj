@@ -103,14 +103,30 @@
   (settings/update-setting! :last-successful-training-at (str instant)))
 
 (defn model-scores-info
-  "When the e-mails were last scored with the model (see the e-mail list's suggestion filter) and how
-   many got scores: {:at Instant-or-nil :emails n-or-nil}."
+  "When the e-mails were last scored with the model (see the category pages' model suggestions), how
+   many got scores, with which model type and training they were made, and whether that run finished:
+   {:at Instant-or-nil :emails n-or-nil :model type-or-nil :trained-at string-or-nil :complete? bool}.
+   Scores stored before these fields existed count as complete."
   []
   {:at (some-> (settings/fetch-setting :model-scores-at) str java.time.Instant/parse)
-   :emails (settings/fetch-setting :model-scores-emails)})
+   :emails (settings/fetch-setting :model-scores-emails)
+   :model (some-> (settings/fetch-setting :model-scores-model) str)
+   :trained-at (some-> (settings/fetch-setting :model-scores-trained-at) str)
+   :complete? (not (false? (settings/fetch-setting :model-scores-complete)))})
 
-(defn record-model-scores! [instant scored-emails]
-  (settings/update-settings! {:model-scores-at (str instant) :model-scores-emails scored-emails}))
+(defn record-model-scores-started!
+  "A scoring run starts replacing the stored scores: until it finishes they are incomplete."
+  []
+  (settings/update-settings! {:model-scores-complete false}))
+
+(defn record-model-scores!
+  "A scoring run finished at instant with scores for scored-emails e-mails, made with the given model
+   type and training (the training's time as a string, or nil); complete? is false when some pages could
+   not be stored."
+  [instant scored-emails model trained-at complete?]
+  (settings/update-settings! {:model-scores-at (str instant) :model-scores-emails scored-emails
+                              :model-scores-model model :model-scores-trained-at trained-at
+                              :model-scores-complete (boolean complete?)}))
 
 (def ui-languages
   "The interface language setting: follow the browser, or always German or English."

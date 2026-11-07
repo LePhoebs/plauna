@@ -842,19 +842,50 @@
   (jdbc/execute! (ds) (honey/format {:delete-from :training-tokens :where [:= :message-id message-id]})))
 
 (defn delete-all-category-scores!
-  "Forget every stored model score (a new scoring run starts from scratch)."
+  "Forget every stored model score."
   []
   (jdbc/execute! (ds) ["DELETE FROM category_scores"]))
+
+(defn- category-scores-insert
+  "The INSERT statement for rows of [message-id category-id confidence]; an existing row is replaced."
+  [rows]
+  (let [insert (builder/for-insert-multi :category_scores [:message_id :category_id :confidence] (vec rows) {})]
+    (if (mariadb?)
+      (conj (rest insert) (str (first insert) " ON DUPLICATE KEY UPDATE confidence = VALUES(confidence)"))
+      (conj (rest insert) (string/replace-first (first insert) #"^INSERT" "INSERT OR REPLACE")))))
 
 (defn save-category-scores!
   "Store model scores, rows of [message-id category-id confidence]; an existing row is replaced."
   [rows]
   (when (seq rows)
-    (let [insert (builder/for-insert-multi :category_scores [:message_id :category_id :confidence] (vec rows) {})]
-      (jdbc/execute! (ds)
-                     (if (mariadb?)
-                       (conj (rest insert) (str (first insert) " ON DUPLICATE KEY UPDATE confidence = VALUES(confidence)"))
-                       (conj (rest insert) (string/replace-first (first insert) #"^INSERT" "INSERT OR REPLACE")))))))
+    (jdbc/execute! (ds) (category-scores-insert rows))))
+
+(defn replace-category-scores!
+  "Replace the stored model scores of the given e-mails with rows of [message-id category-id
+   confidence], in one transaction. Rows of an e-mail or category deleted in the meantime are left
+   out: a scoring run takes minutes, and one vanished e-mail must not fail its page."
+  [message-ids rows]
+  (when (seq message-ids)
+    (jdbc/with-transaction [tx (ds)]
+      ;; The DELETE comes first: on SQLite it takes the write lock, so no e-mail can vanish between the
+      ;; existence check below and the INSERT.
+      (jdbc/execute! tx (into [(str "DELETE FROM category_scores WHERE message_id IN (" (in-clause-placeholders (count message-ids)) ")")]
+                              message-ids))
+      (when (seq rows)
+        (let [row-ids (vec (distinct (map first rows)))
+              existing-ids (into #{} (map :message_id)
+                                 (jdbc/execute! tx (into [(str "SELECT message_id FROM headers WHERE message_id IN (" (in-clause-placeholders (count row-ids)) ")")]
+                                                         row-ids)
+                                                builder-function))
+              existing-categories (into #{} (map :id) (jdbc/execute! tx ["SELECT id FROM categories"] builder-function))
+              kept (filterv (fn [[message-id category-id]] (and (existing-ids message-id) (existing-categories category-id))) rows)]
+          (when (seq kept)
+            (jdbc/execute! tx (category-scores-insert kept))))))))
+
+(defn delete-unscorable-category-scores!
+  "Drop the stored scores of e-mails a scoring run no longer covers (they lost their language)."
+  []
+  (jdbc/execute! (ds) ["DELETE FROM category_scores WHERE message_id NOT IN (SELECT message_id FROM metadata WHERE language IS NOT NULL)"]))
 
 (defn category-scores-for
   "The stored model scores of the given e-mails for one category, as {message-id confidence}."
@@ -980,11 +1011,16 @@
   "Every category with the number of e-mails it holds (:email_count), ordered by name - the
    sidebar's category list."
   []
+  ;; Counted on metadata alone, which its category index answers without reading the rows; the
+  ;; categories are joined to the few resulting counts.
   (jdbc/execute! (ds) (honey/format {:select [:categories.id :categories.name :categories.color
-                                              [[:count :metadata.message-id] :email-count]]
+                                              [[:coalesce :counts.n 0] :email-count]]
                                      :from [:categories]
-                                     :left-join [:metadata [:= :metadata.category :categories.id]]
-                                     :group-by [:categories.id :categories.name :categories.color]
+                                     :left-join [[{:select [:category [[:count :*] :n]]
+                                                   :from [:metadata]
+                                                   :where [:is-not :category nil]
+                                                   :group-by [:category]} :counts]
+                                                 [:= :counts.category :categories.id]]
                                      :order-by [[[:lower :categories.name] :asc]]})
                  builder-function))
 
@@ -1085,11 +1121,12 @@
   ([other-filters-where]
    (let [base-cond [:and [:is-not :headers.subject nil] [:<> :headers.subject ""]]
          result (jdbc/execute! (ds) (honey/format (most-recent-first
-                                                   {:select [:headers.subject]
-                                                    :from [:headers]
-                                                    :left-join [:metadata [:= :headers.message-id :metadata.message-id]]
-                                                    :where (if other-filters-where [:and base-cond other-filters-where] base-cond)
-                                                    :group-by [:headers.subject]}))
+                                                   (cond-> {:select [:headers.subject]
+                                                            :from [:headers]
+                                                            :where (if other-filters-where [:and base-cond other-filters-where] base-cond)
+                                                            :group-by [:headers.subject]}
+                                                     ;; Only the other filters read metadata columns.
+                                                     other-filters-where (assoc :left-join [:metadata [:= :headers.message-id :metadata.message-id]]))))
                                 builder-function)]
      (when (= distinct-value-limit (count result))
        (t/log! :info ["Subject filter: more than" distinct-value-limit "distinct subjects exist; showing the" distinct-value-limit "with the newest e-mails"]))
@@ -1105,13 +1142,13 @@
   ([participant-types other-filters-where]
    (let [type-cond [:in :communications.type participant-types]
          result (jdbc/execute! (ds) (honey/format (most-recent-first
-                                                   {:select [:contacts.contact-key :contacts.name :contacts.address]
-                                                    :from [:contacts]
-                                                    :join [:communications [:= :communications.contact-key :contacts.contact-key]
-                                                           :headers [:= :headers.message-id :communications.message-id]]
-                                                    :left-join [:metadata [:= :headers.message-id :metadata.message-id]]
-                                                    :where (if other-filters-where [:and type-cond other-filters-where] type-cond)
-                                                    :group-by [:contacts.contact-key :contacts.name :contacts.address]}))
+                                                   (cond-> {:select [:contacts.contact-key :contacts.name :contacts.address]
+                                                            :from [:contacts]
+                                                            :join [:communications [:= :communications.contact-key :contacts.contact-key]
+                                                                   :headers [:= :headers.message-id :communications.message-id]]
+                                                            :where (if other-filters-where [:and type-cond other-filters-where] type-cond)
+                                                            :group-by [:contacts.contact-key :contacts.name :contacts.address]}
+                                                     other-filters-where (assoc :left-join [:metadata [:= :headers.message-id :metadata.message-id]]))))
                                 builder-function)]
      (when (= distinct-value-limit (count result))
        (t/log! :info ["Contact filter: more than" distinct-value-limit "distinct contacts exist for types" participant-types "; showing the" distinct-value-limit "with the newest e-mails"]))

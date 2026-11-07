@@ -394,15 +394,22 @@
                                 (cond-> {:order-by [[:date :desc]]} where (assoc :where where))))
       0))
 
+(def suggestion-method-order
+  "The suggestion methods in the order the category page shows them."
+  ["sender" "domain" "model"])
+
 (defn suggestion-counts
   "How many e-mails each suggestion method finds for the category (see suggestion->where), as
-   {\"sender\" n \"domain\" n \"model\" n}, with min-percent for the model method."
-  [context category-id min-percent]
-  (let [db (:db context)]
-    (into {} (for [method ["sender" "domain" "model"]]
-               [method (count-emails db (suggestion->where (suggestion-parameters {:suggest-category (str category-id)
-                                                                                   :suggest-by method
-                                                                                   :suggest-min (str min-percent)})))]))))
+   {\"sender\" n \"domain\" n \"model\" n}, with min-percent for the model method. methods limits it
+   to some of them (each count is a query over the whole mailbox)."
+  ([context category-id min-percent] (suggestion-counts context category-id min-percent suggestion-method-order))
+  ([context category-id min-percent methods]
+   (let [db (:db context)]
+     (into {} (for [method suggestion-method-order
+                    :when (some #{method} methods)]
+                [method (count-emails db (suggestion->where (suggestion-parameters {:suggest-category (str category-id)
+                                                                                    :suggest-by method
+                                                                                    :suggest-min (str min-percent)})))])))))
 
 (defn category-email-count
   "How many e-mails have the category."
@@ -500,8 +507,9 @@
     (when (valid-hex-color? trimmed) trimmed)))
 
 (defn categories
-  "There is no entry for 'no entry' in the database. This function adds a 'n/a' entry to the actual list."
-  [db] (conj (int/fetch-categories db) {:id nil :name "n/a" :color default-category-color}))
+  "There is no entry for 'no category' in the database. This function adds one (id nil, named in the
+   interface language) to the actual list."
+  [db] (conj (int/fetch-categories db) {:id nil :name (i18n/t :category.none) :color default-category-color}))
 
 (defonce ^:private connect-locks (atom {}))
 
@@ -707,6 +715,20 @@
     {:items (annotate-checked-by all-items selection key-fn)
      :truncated? truncated?}))
 
+(defn- search-needles
+  "The lower-case needle, plus what it looks like in a column lowered by SQLite: its lower() folds only
+   ASCII letters, so \"Österreich\" stays \"Österreich\" and the needle \"öster\" alone misses it.
+   Every mix of lower- and upper-case non-ASCII letters is tried (up to four such letters; beyond that
+   only all lower and all upper). MariaDB lowers everything, where the extra variants never match."
+  [needle]
+  (let [non-ascii (vec (keep-indexed (fn [i c] (when (and (> (int c) 127) (not= c (Character/toUpperCase (char c)))) i)) needle))
+        upper-at (fn [positions] (let [chars (vec needle)]
+                                   (apply str (reduce (fn [cs i] (update cs i #(Character/toUpperCase (char %)))) chars positions))))]
+    (cond (empty? non-ascii) [needle]
+          (> (count non-ascii) 4) (distinct [needle (upper-at non-ascii)])
+          :else (distinct (for [mask (range (bit-shift-left 1 (count non-ascii)))]
+                            (upper-at (keep-indexed (fn [bit i] (when (bit-test mask bit) i)) non-ascii)))))))
+
 (defn filter-options
   "The values of the column filter column (:subject :from :to) that contain query, ignoring case,
    scoped like that column's checklist (see fetch-emails). The page's checklist is cut off at
@@ -719,7 +741,9 @@
     (if (or (nil? spec) (str/blank? needle))
       []
       (let [{:keys [db selections other-where]} (filter-scope context parameters)
-            search-where (into [:or] (map (fn [column-name] [:> [:instr [:lower column-name] needle] 0])) search-columns)
+            search-where (into [:or] (for [column-name search-columns
+                                           variant (search-needles needle)]
+                                       [:> [:instr [:lower column-name] variant] 0]))
             items (vec (fetch db (combine-wheres [(other-where column) search-where])))]
         (mapv (fn [item] {:value (str (key-fn item)) :label (str (label-fn item)) :checked (boolean (:checked? item))})
               (annotate-checked-by items (get selections column) key-fn))))))
@@ -741,7 +765,12 @@
         cat-list (annotate-checked-by (categories db) category-selection #(or (:id %) uncategorized-token))
         reachable-categories (reachable-category-tokens db (other-where :category))
         category-filter-options (filterv #(contains? reachable-categories (str (or (:id %) uncategorized-token))) cat-list)
-        column-values (fn [column] (checklist-values db (get checklist-columns column) (other-where column) (get selections column)))
+        ;; The column filters show only after "Filter" was pressed (filters=on) or while one is active.
+        ;; Their Subject/From/To checklists aggregate the whole mailbox, so they are only computed then.
+        column-filter-active? (boolean (some selection-filter-active? [subject-selection from-selection to-selection category-selection]))
+        show-column-filters? (or column-filter-active? (= "on" (:filters parameters)))
+        column-values (fn [column] (when show-column-filters?
+                                     (checklist-values db (get checklist-columns column) (other-where column) (get selections column))))
         subjects (column-values :subject)
         senders (column-values :from)
         recipients (column-values :to)
@@ -764,7 +793,14 @@
         page-req (page/page-request (:page parameters) (:size parameters))
         ;; :with-bodies false — the list renders no body content, so don't materialize
         ;; up to 500 e-mails' full MIME bodies per page.
-        result (int/fetch-emails db {:entity :enriched-email :strict false :page page-req :with-bodies false} customization-clause)]
+        fetch-page (fn [page-req] (int/fetch-emails db {:entity :enriched-email :strict false :page page-req :with-bodies false} customization-clause))
+        first-result (fetch-page page-req)
+        ;; A page beyond the end (the last page was just assigned away, or an old link) shows the last
+        ;; page instead of nothing - and never "491–201 of 201".
+        last-page (page/calculate-pages-total (or (:total first-result) 0) (:size page-req))
+        result (if (and (empty? (:data first-result)) (> (long (or (:page first-result) 1)) last-page))
+                 (fetch-page (assoc page-req :page last-page))
+                 first-result)]
     (let [subject-active? (selection-filter-active? subject-selection)
           from-active? (selection-filter-active? from-selection)
           to-active? (selection-filter-active? to-selection)
@@ -792,7 +828,8 @@
                   :first-index (if (pos? (long (or (:total result) 0))) (inc (* (dec (long (or (:page result) 1))) (long (:size page-req)))) 0)
                   :last-index (min (long (or (:total result) 0)) (* (long (or (:page result) 1)) (long (:size page-req))))
                   ;; The header filters show only after "Filter" was pressed - or while one is active.
-                  :column-filter-active? (boolean (or subject-active? from-active? to-active? category-active?))
+                  :column-filter-active? column-filter-active?
+                  :show-column-filters? show-column-filters?
                   :search-text (:search-text parameters)
                   :subject-values (:include subject-selection)
                   :subject-values-exclude (:exclude subject-selection)

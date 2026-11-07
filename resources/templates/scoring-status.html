@@ -4,7 +4,7 @@
      data-running="{% if model-scores.running? %}true{% else %}false{% endif %}"
      data-progress="{% t scoring.progress "{0}" "{1}" %}">
   <span id="scoring-status-text" class="text-base-content/70">
-    {% if model-scores.running? %}{% t scoring.running %}{% else %}{% if model-scores.at-text %}{% t scoring.from model-scores.at-text model-scores.emails %}{% if model-scores.stale? %} {% t scoring.stale %}{% endif %}{% else %}{% t scoring.none %}{% endif %}{% endif %}
+    {% if model-scores.running? %}{% t scoring.running %}{% else %}{% if model-scores.at-text %}{% t scoring.from model-scores.at-text model-scores.emails %}{% if model-scores.stale? %} {% t scoring.stale %}{% endif %}{% else %}{% if not model-scores.incomplete? %}{% t scoring.none %}{% endif %}{% endif %}{% if model-scores.incomplete? %} <strong class="text-warning">{% t scoring.incomplete %}</strong>{% endif %}{% endif %}
   </span>
   <form action="/model/score" method="post">
     <button class="btn btn-sm" type="submit" {% if model-scores.running? %}disabled{% endif %}>{% t scoring.start %}</button>

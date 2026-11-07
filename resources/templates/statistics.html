@@ -62,12 +62,12 @@
         {% if chart.has-data %}
         <div id="{{chart.id}}" class="mt-4 w-full min-w-0" aria-label="{{chart.title}}"></div>
         <script>
-          vegaEmbed('#{{chart.id}}', plaunaChart({{chart.json-data|safe}}), {actions: false, renderer: 'svg'})
+          vegaEmbed('#' + {{chart.id|js}}, plaunaChart({{chart.json-data|safe}}), {actions: false, renderer: 'svg'})
             .catch(function (error) {
-              const target = document.getElementById('{{chart.id}}');
+              const target = document.getElementById({{chart.id|js}});
               target.setAttribute('role', 'alert');
               target.textContent = '{% t stats.chart-failed %}';
-              console.error('Could not render {{chart.id}} chart', error);
+              console.error('Could not render ' + {{chart.id|js}} + ' chart', error);
             });
         </script>
         {% else %}

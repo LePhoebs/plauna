@@ -597,11 +597,47 @@
     (with-redefs [analysis/category-scores-for-tokens-text (fn [tokens language]
                                                              (when (= "de" language)
                                                                [{:id temporary :confidence (if (string? tokens) 0.75 0.0)}]))
-                  preferences/record-model-scores! (fn [_ n] (reset! recorded n))]
-      (reset! server/scoring-progress {:status :running :done 0 :scored 0 :total 0})
+                  preferences/record-model-scores-started! (fn [])
+                  preferences/record-model-scores! (fn [_ n _ _ complete?] (reset! recorded [n complete?]))]
+      (reset! server/scoring-progress {:status :running :done 0 :scored 0 :failed 0 :total 0})
       (let [scored (server/score-all-emails!)]
         (is (pos? scored))
-        (is (= scored @recorded) "The run records how many e-mails got scores")
+        (is (= [scored true] @recorded) "The run records how many e-mails got scores, and that it finished")
         (is (= {temporary 0.75} (db/category-scores-of "sr-de")) "Scored from its (cached) classification tokens")
         (is (= {} (db/category-scores-of "sr-none")) "Scores of an earlier run are dropped")
         (is (= (:total @server/scoring-progress) (:done @server/scoring-progress)) "The progress reaches the total")))))
+
+(deftest replacing-scores-skips-vanished-e-mails-and-categories
+  (let [kept (ensure-category "replace-scores-kept")
+        mail (fn [id] {:mime-type "text/plain" :subject (str "Replace " id) :message-id id :date 0 :in-reply-to nil})]
+    (db/save-headers [(mail "rs-a") (mail "rs-b")])
+    (db/save-category-scores! [["rs-a" kept 0.3] ["rs-b" kept 0.4]])
+    (db/replace-category-scores! ["rs-a" "rs-gone"] [["rs-a" kept 0.8] ["rs-gone" kept 0.9] ["rs-a" 987654 0.5]])
+    (is (= {kept 0.8} (db/category-scores-of "rs-a"))
+        "The page's scores are replaced; a deleted e-mail or category does not fail the page")
+    (is (= {kept 0.4} (db/category-scores-of "rs-b")) "E-mails outside the page keep their scores")
+    (db/replace-category-scores! ["rs-b"] [])
+    (is (= {} (db/category-scores-of "rs-b")) "An e-mail that got no scores loses its old ones")))
+
+(deftest scoring-run-survives-a-failing-page-and-skips-tiny-scores
+  (let [temporary (ensure-category "scoring-fail-temporary")
+        recorded (atom nil)
+        mail (fn [id] {:mime-type "text/plain" :subject (str "Scoring " id) :message-id id :date 0 :in-reply-to nil})]
+    (db/save-headers [(mail "sf-a") (mail "sf-b")])
+    (db/update-metadata-language "sf-a" "de" 1.0)
+    (db/update-metadata-language "sf-b" "de" 1.0)
+    (with-redefs [analysis/category-scores-for-tokens-text (fn [_ _] [{:id temporary :confidence 0.004}])
+                  db/replace-category-scores! (fn [_ _] (throw (ex-info "constraint" {})))
+                  preferences/record-model-scores-started! (fn [])
+                  preferences/record-model-scores! (fn [_ n _ _ complete?] (reset! recorded [n complete?]))]
+      (reset! server/scoring-progress {:status :running :done 0 :scored 0 :failed 0 :total 0})
+      (server/score-all-emails!)
+      (is (false? (second @recorded)) "A page that could not be stored marks the run as incomplete")
+      (is (pos? (:failed @server/scoring-progress))))
+    (with-redefs [analysis/category-scores-for-tokens-text (fn [_ _] [{:id temporary :confidence 0.004}])
+                  preferences/record-model-scores-started! (fn [])
+                  preferences/record-model-scores! (fn [_ n _ _ complete?] (reset! recorded [n complete?]))]
+      (reset! server/scoring-progress {:status :running :done 0 :scored 0 :failed 0 :total 0})
+      (server/score-all-emails!)
+      (is (true? (second @recorded)))
+      (is (= {} (db/category-scores-of "sf-a")) "Scores below 1 % are not stored"))))

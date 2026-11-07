@@ -35,20 +35,38 @@
     <div class="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="{% t suggest.method %}">
       <a href="/categories/{{category.id}}?by=sender" role="radio" aria-checked="{% if method = "sender" %}true{% else %}false{% endif %}"
          class="rounded-box border p-3 flex flex-col gap-1 bg-base-100 {% if method = "sender" %}border-primary ring-1 ring-primary{% else %}border-base-300 hover:bg-base-200{% endif %}">
-        <span class="flex items-baseline justify-between gap-2"><b>{% t suggest.sender %}</b><span class="text-lg font-semibold">{{counts.sender}}</span></span>
+        <span class="flex items-baseline justify-between gap-2"><b>{% t suggest.sender %}</b><span class="text-lg font-semibold" data-suggestion-count="sender">{{counts.sender|default:"…"}}</span></span>
         <span class="text-xs text-base-content/70">{% t suggest.sender-help %}</span>
       </a>
       <a href="/categories/{{category.id}}?by=domain" role="radio" aria-checked="{% if method = "domain" %}true{% else %}false{% endif %}"
          class="rounded-box border p-3 flex flex-col gap-1 bg-base-100 {% if method = "domain" %}border-primary ring-1 ring-primary{% else %}border-base-300 hover:bg-base-200{% endif %}">
-        <span class="flex items-baseline justify-between gap-2"><b>{% t suggest.domain %}</b><span class="text-lg font-semibold">{{counts.domain}}</span></span>
+        <span class="flex items-baseline justify-between gap-2"><b>{% t suggest.domain %}</b><span class="text-lg font-semibold" data-suggestion-count="domain">{{counts.domain|default:"…"}}</span></span>
         <span class="text-xs text-base-content/70">{% t suggest.domain-help %}</span>
       </a>
       <a href="/categories/{{category.id}}?by=model&amp;min={{min-percent}}" role="radio" aria-checked="{% if method = "model" %}true{% else %}false{% endif %}"
          class="rounded-box border p-3 flex flex-col gap-1 bg-base-100 {% if method = "model" %}border-primary ring-1 ring-primary{% else %}border-base-300 hover:bg-base-200{% endif %}">
-        <span class="flex items-baseline justify-between gap-2"><b>{% t suggest.model %}</b><span class="text-lg font-semibold">{{counts.model}}</span></span>
+        <span class="flex items-baseline justify-between gap-2"><b>{% t suggest.model %}</b><span class="text-lg font-semibold" data-suggestion-count="model">{{counts.model|default:"…"}}</span></span>
         <span class="text-xs text-base-content/70">{% t suggest.model-help min-percent %}</span>
       </a>
     </div>
+    <script>
+      // The other methods' counts come after the page: each is a query over the whole mailbox.
+      (function () {
+        var pending = Array.prototype.filter.call(document.querySelectorAll('[data-suggestion-count]'),
+                                                  function (el) { return el.textContent === '…'; });
+        if (pending.length === 0) { return; }
+        var methods = pending.map(function (el) { return el.dataset.suggestionCount; }).join(',');
+        fetch('/categories/' + {{category.id|js}} + '/suggestion-counts?min=' + {{min-percent|js}} + '&methods=' + methods, {headers: {'Accept': 'application/json'}})
+          .then(function (response) { return response.ok ? response.json() : {}; })
+          .then(function (counts) {
+            pending.forEach(function (el) {
+              var n = counts[el.dataset.suggestionCount];
+              el.textContent = (typeof n === 'number') ? String(n) : '–';
+            });
+          })
+          .catch(function () { pending.forEach(function (el) { el.textContent = '–'; }); });
+      })();
+    </script>
 
     {% if method = "model" %}
     <div class="flex flex-wrap items-end justify-between gap-4 rounded-box bg-base-100 border border-base-300 p-3">
@@ -66,7 +84,7 @@
 
     {% if groups|not-empty %}
     <div class="flex flex-wrap items-center justify-between gap-2">
-      <p class="text-sm text-base-content/70">{% t suggest.found selected-count group-count %}{% if capped? %} {% t suggest.capped shown-count %}{% endif %}</p>
+      <p class="text-sm text-base-content/70">{% ifequal method "domain" %}{% t suggest.found-domain selected-count group-count %}{% else %}{% t suggest.found selected-count group-count %}{% endifequal %}{% if capped? %} {% t suggest.capped shown-count %}{% endif %}</p>
       <a class="btn btn-sm btn-ghost" href="{{review-url}}">{% t suggest.review-in-list %}</a>
     </div>
 
@@ -196,7 +214,7 @@
     </div>
     <script>
       document.getElementById('delete-category-button').addEventListener('click', function () {
-        fetch('/admin/categories/{{category.id}}', {method: 'DELETE'})
+        fetch('/admin/categories/' + {{category.id|js}}, {method: 'DELETE'})
           .then(plaunaThen(function () { window.location.href = '/categories'; }));
       });
     </script>

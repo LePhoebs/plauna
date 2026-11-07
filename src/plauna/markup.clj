@@ -154,6 +154,16 @@
    Must match plauna.application/default-category-color."
   "#9ca3af")
 
+(defn- script-safe-json
+  "JSON for an inline <script>: < is escaped too, so no value can close the script element or open an
+   HTML comment in it."
+  [value]
+  (str/replace (json/write-str value) "<" "\\u003c"))
+
+;; A value inside an inline <script>, as a JavaScript string literal (quotes included). HTML escaping
+;; is the wrong escaping there: the script would see &amp; instead of &.
+(add-filter! :js (fn [value] [:safe (script-safe-json (str value))]))
+
 (add-filter! :category-color
              ;; Re-validate here too (not just on save): renders straight into a style="" attribute,
              ;; so a malformed value must never reach the page even if it somehow got into the DB.
@@ -281,7 +291,7 @@
    :title title
    :description description
    :has-data (boolean (seq values))
-   :json-data (when (seq values) (json/write-str spec))})
+   :json-data (when (seq values) (script-safe-json spec))})
 
 (defn statistics-overall [yearly-emails mime-types languages categories]
   (let [email-values (->> yearly-emails
@@ -311,14 +321,20 @@
                       (chart-context "categories" (i18n/t :stats.category-chart) (i18n/t :stats.category-help)
                                      category-values (breakdown-chart (i18n/t :stats.by-category) category-values :name (i18n/t :stats.category)))]})))
 
+(defn flag-colors
+  "The flag colors with their names in the interface language."
+  []
+  (mapv #(assoc % :label (i18n/t (keyword (str "flag." (:id %))))) flags/colors))
+
 (defn- with-flag-hex [category]
-  (assoc category :flag_hex (:hex (first (filter #(= (:flag_color category) (:id %)) flags/colors)))))
+  (let [flag (first (filter #(= (:flag_color category) (:id %)) (flag-colors)))]
+    (assoc category :flag_hex (:hex flag) :flag_label (:label flag))))
 
 (defn categories-page
   ([categories] (categories-page categories nil))
   ([categories messages]
    (render "admin-categories.html" (cond-> {:categories (mapv with-flag-hex categories)
-                                            :flag-colors flags/colors
+                                            :flag-colors (flag-colors)
                                             :active-nav :categories}
                                      (some? messages) (assoc :messages (mapv type->toast-role messages))))))
 

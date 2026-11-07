@@ -69,6 +69,20 @@ Old addresses keep working through redirects (bookmarks, the installed web app).
    for logs); dark mode: theme colors instead of fixed grays, the logo blended into the surface, the
    charts drawn in the theme's colors.
 
+* Review after step 4
+
+Four independent reviews (data layer, server, interface, security) of all changes since the filter
+fix found no security hole. Fixed afterwards: the scoring run replaces scores page by page instead of
+deleting them all first (a deleted e-mail failed the whole run), skips scores below 1 % and marks
+unfinished runs; "out of date" also follows a switch of the model type; the bulk bar's ✕ closes a
+finished run's result; the column filters fit a phone screen; the language switch returns to the page
+it was used on, also after a form post; saving an unknown category is refused; a page beyond the end
+shows the last page; the checklist search finds non-ASCII capitals on SQLite; the Subject/From/To
+checklists are only computed when the column filters are shown, the other suggestion counts load after
+the category page; flag colors, "No category" (was "n/a"), the training labels and step states are
+translated; model assignments stay below a confidence of 1.0; template values inside scripts are
+encoded as JSON strings.
+
 * Ideas for later
 
 - *Remaining English texts*: the composed messages about folder parse runs, retries, moves and the

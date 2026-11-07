@@ -19,6 +19,7 @@
 
  :toast.close "Schließen"
 
+ :category.none "Keine Kategorie"
  :category.breadcrumb "Pfad"
  :category.show-emails "E-Mails anzeigen"
  :category.edit-settings "Einstellungen bearbeiten"
@@ -30,7 +31,7 @@
  :category.flag "Markierung: {0}"
 
  :suggest.title "Weitere E-Mails für diese Kategorie finden"
- :suggest.intro "Ältere E-Mails außerhalb von {0}, die dorthin gehören könnten. Wähle, wie gesucht wird, sieh dir die E-Mails dann in der Liste an und weise die passenden zu."
+ :suggest.intro "Ältere E-Mails außerhalb von {0}, die dorthin gehören könnten. Wähle, wie gesucht wird, und weise die passenden direkt hier zu, eine ganze Gruppe auf einmal oder einzeln."
  :suggest.method "Suchmethode"
  :suggest.sender "Gleicher Absender"
  :suggest.sender-help "Absenderadressen, die schon E-Mails in der Kategorie haben, unabhängig von Groß- und Kleinschreibung und Anzeigename."
@@ -46,11 +47,13 @@
  :scoring.running "Die E-Mails werden bewertet …"
  :scoring.progress "Die E-Mails werden bewertet … {0} von {1}"
  :scoring.from "Bewertung vom {0} ({1} E-Mails)."
- :scoring.stale "Das Modell wurde seitdem trainiert; neu bewerten für aktuelle Ergebnisse."
+ :scoring.stale "Das Modell hat sich seitdem geändert; neu bewerten für aktuelle Ergebnisse."
+ :scoring.incomplete "Der letzte Bewertungslauf wurde nicht fertig, die Bewertungen sind unvollständig. Bitte neu bewerten."
  :scoring.none "Es wurden noch keine E-Mails bewertet."
  :scoring.start "E-Mails jetzt bewerten"
  :scoring.busy "Die E-Mails werden bereits bewertet. Bitte warte, bis dieser Lauf fertig ist."
  :scoring.done "Die Modell-Bewertung ist für {0} E-Mails fertig."
+ :scoring.partial "Die Modell-Bewertung ist für {0} E-Mails fertig, aber die Bewertungen von {1} E-Mails konnten nicht gespeichert werden. Details stehen im Log."
  :scoring.failed "Die Bewertung der E-Mails mit dem Modell ist fehlgeschlagen. Details stehen im Log."
 
  :model.intro "Das Modell lernt aus deinen kategorisierten E-Mails und ordnet neue ein. Trainiere es, nachdem du viele E-Mails von Hand zugewiesen hast."
@@ -235,6 +238,7 @@
  :category.saved "Die Kategorie wurde gespeichert."
 
  :suggest.found "Vorgeschlagene E-Mails: {0} von {1} Absendern."
+ :suggest.found-domain "Vorgeschlagene E-Mails: {0} von {1} Absender-Domains."
  :suggest.capped "Angezeigt werden die {0} wahrscheinlichsten bzw. neuesten."
  :suggest.review-in-list "In der Liste ansehen"
  :suggest.group-count "E-Mails: {0}"
@@ -472,6 +476,14 @@
  :training.iteration "Durchlauf {0} von höchstens {1}"
  :training.write "Modelldateien schreiben"
  :training.written "{0} von {1} Modelldatei(en)"
+ :training.label-automatic "Automatisches Training"
+ :training.label-manual "Manuelles Training"
+ :training.label-switch "Modellwechsel"
+ :training.state-done "erledigt"
+ :training.state-running "läuft"
+ :training.state-pending "ausstehend"
+ :training.state-failed "fehlgeschlagen"
+ :training.state-skipped "übersprungen"
  :training.finish "Abschluss"
 
  :msg.another-mbox-import-or-language-re "Ein anderer mbox-Import oder eine Spracherkennung läuft noch. Bitte versuche es erneut, wenn er fertig ist."
@@ -499,10 +511,21 @@
  :msg.please-choose-a-non-empty-mbox "Bitte wähle eine nicht leere mbox-Datei zum Hochladen."
  :msg.moving-expired-e-mails-to-the "Abgelaufene E-Mails werden im Hintergrund in den Papierkorb verschoben."
  :msg.a-clean-up-is-already-running "Ein Aufräumen läuft bereits."
+ :msg.flagging-in-background "Die E-Mails von {0} werden im Hintergrund markiert."
  :msg.unknown-category "Unbekannte Kategorie."
  :msg.this-category-has-no-flag-color "Diese Kategorie hat keine Markierungsfarbe."
  :msg.the-connection-is-not-active-connect "Die Verbindung ist nicht aktiv. Verbinde zuerst und verschiebe dann."
  :msg.no-folder-given "Kein Ordner angegeben."
  :msg.unknown-parse-batch "Unbekannter Einlese-Lauf."
  :msg.this-batch-is-already-being-moved "Dieser Lauf wird bereits verschoben."
- :msg.the-connection-is-not-active-connect-2 "Die Verbindung ist nicht aktiv. Verbinde zuerst und versuche es dann erneut."}
+ :msg.the-connection-is-not-active-connect-2 "Die Verbindung ist nicht aktiv. Verbinde zuerst und versuche es dann erneut."
+
+ ;; Flag colors (Apple Mail)
+ :flag.red "Rot"
+ :flag.orange "Orange"
+ :flag.yellow "Gelb"
+ :flag.green "Grün"
+ :flag.blue "Blau"
+ :flag.purple "Lila"
+ :flag.gray "Grau"
+}

@@ -56,20 +56,20 @@
                       <label for="modal-{{provider.id}}" class="btn">{% t list.cancel %}</label>
    		            </div>
                   <script>
-                    document.getElementById('delete-button-{{provider.id}}').addEventListener('click', (e) => {
-                        fetch('/admin/auth-providers/{{provider.id}}', {method: 'DELETE', body: JSON.stringify({"conn-id": "{{id}}"})})
+                    document.getElementById('delete-button-' + {{provider.id|js}}).addEventListener('click', (e) => {
+                        fetch('/admin/auth-providers/' + {{provider.id|js}}, {method: 'DELETE', body: JSON.stringify({"conn-id": {{id|js}}})})
                             .then(plaunaThen(response => window.location.replace(response.url)))});
 
-                    document.getElementById('update-button-{{provider.id}}').addEventListener('click', (e) => {
+                    document.getElementById('update-button-' + {{provider.id|js}}).addEventListener('click', (e) => {
                         e.stopPropagation();
-                        const form = document.getElementById('provider-{{provider.id}}'); 
+                        const form = document.getElementById('provider-' + {{provider.id|js}}); 
                         const body = new FormData();
                         for (let element of form.elements) {
                             if (element.localName != "button" && element.type != "checkbox") {
                               body.append(element.name, element.value);
                             }
                         };
-                        return fetch('/admin/auth-providers/{{provider.id}}', {method: 'PUT', body: body}).then(plaunaThen(() => window.location.reload()));
+                        return fetch('/admin/auth-providers/' + {{provider.id|js}}, {method: 'PUT', body: body}).then(plaunaThen(() => window.location.reload()));
                     });
                   </script>
 	            </div>

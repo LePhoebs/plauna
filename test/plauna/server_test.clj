@@ -1201,7 +1201,7 @@
 (deftest category-page-renders-every-tab-with-pending-messages
   (with-redefs [app/category-email-count (fn [_ _] 3)
                 app/recent-category-emails (fn [_ _ _] [])
-                app/suggestion-counts (fn [_ _ _] {"sender" 0 "domain" 0 "model" 0})
+                app/suggestion-counts (fn [& _] {"sender" 0 "domain" 0 "model" 0})
                 server/model-scores-summary (fn [] {})
                 plauna.client/disconnected-connections (fn [] [])]
     (doseq [tab ["suggestions" "emails" "settings"]]
@@ -1215,3 +1215,64 @@
     (is (= "Unbekannte Kategorie."
            (:content (binding [plauna.i18n/*lang* :de] (plauna.markup/type->toast-role message))))
         "A German page shows it in German")))
+
+(deftest model-scores-are-stale-after-a-model-switch-or-training
+  (let [at (java.time.Instant/parse "2026-11-07T10:00:00Z")
+        info (fn [m] (merge {:at at :emails 10 :model "naive-bayes" :trained-at "2026-11-06T10:00:00Z" :complete? true} m))
+        summary (fn [stored current-model trained-at]
+                  (with-redefs [preferences/model-scores-info (fn [] stored)
+                                preferences/categorization-model (fn [] current-model)
+                                preferences/last-successful-training-at (fn [] (some-> trained-at java.time.Instant/parse))
+                                server/scoring-running? (fn [] false)]
+                    (server/model-scores-summary)))]
+    (is (false? (:stale? (summary (info {}) "naive-bayes" "2026-11-06T10:00:00Z"))))
+    (is (true? (:stale? (summary (info {}) "maxent" "2026-11-06T10:00:00Z"))) "Another model type was activated")
+    (is (true? (:stale? (summary (info {}) "naive-bayes" "2026-11-07T09:00:00Z")))
+        "A training that ended while the run was going (before it finished) still makes the scores stale")
+    (is (false? (:stale? (summary (info {:model nil :trained-at nil}) "maxent" "2026-11-06T10:00:00Z")))
+        "Older scores without a recorded model only compare the training time")
+    (is (true? (:incomplete? (summary (info {:complete? false}) "naive-bayes" "2026-11-06T10:00:00Z"))))))
+
+(deftest language-switch-returns-to-the-page-it-was-used-on
+  (with-redefs [preferences/update-preference (fn [& _] nil)]
+    (let [routes (server/make-routes {})
+          switch (fn [params referer]
+                   (routes {:request-method :post :uri "/ui-language" :params params
+                            :headers (cond-> {"host" "plauna.local"} referer (assoc "referer" referer))}))]
+      (is (= "/admin/database" (get-in (switch {:ui-language "en" :redirect-url "/admin/database"} "http://plauna.local/admin/database/test")
+                                       [:headers "Location"]))
+          "The page's own address wins over the Referer, which names the POST route a page answered")
+      (is (= "/emails?page=2" (get-in (switch {:ui-language "de" :redirect-url ""} "http://plauna.local/emails?page=2")
+                                      [:headers "Location"]))
+          "Without one, back to the Referer")
+      (is (= "/" (get-in (switch {:ui-language "de" :redirect-url "//evil.example"} nil) [:headers "Location"]))
+          "An off-site target is refused"))))
+
+(deftest saving-an-unknown-category-changes-nothing
+  (let [updated (atom false)]
+    (with-redefs [db/category-by-id (constantly nil)
+                  app/update-category! (fn [& _] (reset! updated true))]
+      (let [response ((server/make-routes {}) {:request-method :post :uri "/admin/categories/999"
+                                                :params {:name "Ghost"} :headers {}})]
+        (is (= 303 (:status response)))
+        (is (= "/categories" (get-in response [:headers "Location"])))
+        (is (false? @updated) "No IMAP folder is created and nothing is saved")
+        (is (= :msg.unknown-category (:key (last (server/take-messages!)))))))))
+
+(deftest suggestion-counts-endpoint-returns-only-the-asked-methods
+  (with-redefs [db/category-by-id (fn [id] (when (= 3 id) {:id 3 :name "Temporary"}))
+                app/suggestion-counts (fn [_ _ _ methods] (into {} (map (fn [m] [m 7])) methods))]
+    (let [routes (server/make-routes {})
+          response (routes {:request-method :get :uri "/categories/3/suggestion-counts"
+                            :params {:min "60" :methods "domain,model,bogus"}})]
+      (is (= 200 (:status response)))
+      (is (= {"domain" 7 "model" 7} (cheshire.core/parse-string (:body response))))
+      (is (= 404 (:status (routes {:request-method :get :uri "/categories/99/suggestion-counts" :params {}})))))))
+
+(deftest training-status-translates-the-label-and-the-finish-step
+  (reset! server/training-progress {:status :finished :label "Manual training" :phase :writing
+                                    :result {:type :info :key :scoring.done :args [3] :content "Model scores are ready for 3 e-mails."}})
+  (binding [plauna.i18n/*lang* :de]
+    (let [status (server/training-status)]
+      (is (= "Manuelles Training" (:label status)))
+      (is (= "Die Modell-Bewertung ist für 3 E-Mails fertig." (:detail (last (:steps status))))))))

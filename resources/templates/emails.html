@@ -33,6 +33,8 @@
   <input type="hidden" name="filter" id="metadata-filter-input" value="{{page.filter}}" />
   <input type="hidden" name="date-from" id="date-from-input" value="{{page.date-from}}" />
   <input type="hidden" name="date-to" id="date-to-input" value="{{page.date-to}}" />
+  <!-- Keeps the column filters open after "Filter" was pressed, also when none of them is used yet. -->
+  <input type="hidden" name="filters" id="filters-input" value="{% if page.show-column-filters? %}on{% endif %}" />
 
   <div class="flex flex-wrap items-center gap-2">
     <h1 class="text-xl font-bold mr-1">{% t nav.emails %}</h1>
@@ -44,7 +46,7 @@
       <input type="text" id="date-range-input" class="input input-sm w-44" placeholder="{% t list.all-dates %}" aria-label="{% t list.date-range %}" autocomplete="off" readonly />
       <button type="button" id="date-range-clear" class="btn btn-ghost btn-sm btn-square" title="{% t list.clear-dates %}" aria-label="{% t list.clear-dates %}">✕</button>
     </div>
-    <button type="button" id="filter-toggle" class="btn btn-sm" aria-controls="email-table" aria-pressed="{% if page.column-filter-active? %}true{% else %}false{% endif %}">
+    <button type="button" id="filter-toggle" class="btn btn-sm" aria-controls="email-table" aria-pressed="{% if page.show-column-filters? %}true{% else %}false{% endif %}">
       <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
       {% t list.filter %}
     </button>
@@ -104,7 +106,7 @@
 <!-- The table renders even with zero results: hiding it along with the filter bar would make an
      active filter invisible and drop it from the next submit. The column filters in its header show
      only after "Filter" was pressed, or while one of them is active. -->
-<div id="email-table" class="group rounded-box border border-base-300 bg-base-100" data-filters="{% if page.column-filter-active? %}on{% else %}off{% endif %}">
+<div id="email-table" class="group rounded-box border border-base-300 bg-base-100" data-filters="{% if page.show-column-filters? %}on{% else %}off{% endif %}" data-checklists="{% if page.show-column-filters? %}loaded{% else %}none{% endif %}">
   <table class="table table-sm table-fixed w-full max-md:block">
     <thead class="max-md:hidden max-md:group-data-[filters=on]:block">
       <tr class="max-md:flex max-md:flex-wrap max-md:items-center max-md:gap-2 max-md:p-2 [&>th]:max-md:p-0 [&>th]:max-md:w-auto [&>th]:max-md:border-0">
@@ -116,7 +118,7 @@
               {% t list.column-from %}{% if page.from-filter-active? %} <span class="badge badge-xs" title="{{page.from-filter-label}}">{{page.from-filter-badge}}</span>{% endif %}
               <span aria-hidden="true">▾</span>
             </summary>
-            <div tabindex="0" class="dropdown-content menu bg-base-100 rounded-box shadow-lg border border-base-300 z-20 w-96 max-w-[90vw] min-w-0 overflow-hidden p-3 font-normal normal-case">
+            <div tabindex="0" class="dropdown-content menu bg-base-100 rounded-box shadow-lg border border-base-300 z-20 w-96 max-w-[90vw] max-md:fixed max-md:inset-x-3 max-md:w-auto max-md:max-w-none min-w-0 overflow-hidden p-3 font-normal normal-case">
               <input type="text" class="input input-sm mb-2 w-full" placeholder="{% t list.search-senders %}" aria-label="{% t list.search-senders %}" oninput="filterChecklist(this, 'from-checklist', 'from-filter-select-all')">
               <label class="flex items-center gap-2 pb-2 mb-2 border-b border-base-300">
                 <input type="checkbox" class="checkbox checkbox-sm shrink-0" id="from-filter-select-all"
@@ -149,7 +151,7 @@
               {% t list.column-subject %}{% if page.subject-filter-active? %} <span class="badge badge-xs" title="{{page.subject-filter-label}}">{{page.subject-filter-badge}}</span>{% endif %}
               <span aria-hidden="true">▾</span>
             </summary>
-            <div tabindex="0" class="dropdown-content menu bg-base-100 rounded-box shadow-lg border border-base-300 z-20 w-96 max-w-[90vw] min-w-0 overflow-hidden p-3 font-normal normal-case">
+            <div tabindex="0" class="dropdown-content menu bg-base-100 rounded-box shadow-lg border border-base-300 z-20 w-96 max-w-[90vw] max-md:fixed max-md:inset-x-3 max-md:w-auto max-md:max-w-none min-w-0 overflow-hidden p-3 font-normal normal-case">
               <input type="text" class="input input-sm mb-2 w-full" placeholder="{% t list.search-subjects %}" aria-label="{% t list.search-subjects %}" oninput="filterChecklist(this, 'subject-checklist', 'subject-filter-select-all')">
               <label class="flex items-center gap-2 pb-2 mb-2 border-b border-base-300">
                 <input type="checkbox" class="checkbox checkbox-sm shrink-0" id="subject-filter-select-all"
@@ -182,7 +184,7 @@
               {% t list.column-to %}{% if page.to-filter-active? %} <span class="badge badge-xs" title="{{page.to-filter-label}}">{{page.to-filter-badge}}</span>{% endif %}
               <span aria-hidden="true">▾</span>
             </summary>
-            <div tabindex="0" class="dropdown-content menu bg-base-100 rounded-box shadow-lg border border-base-300 z-20 w-96 max-w-[90vw] min-w-0 overflow-hidden p-3 font-normal normal-case">
+            <div tabindex="0" class="dropdown-content menu bg-base-100 rounded-box shadow-lg border border-base-300 z-20 w-96 max-w-[90vw] max-md:fixed max-md:inset-x-3 max-md:w-auto max-md:max-w-none min-w-0 overflow-hidden p-3 font-normal normal-case">
               <input type="text" class="input input-sm mb-2 w-full" placeholder="{% t list.search-recipients %}" aria-label="{% t list.search-recipients %}" oninput="filterChecklist(this, 'to-checklist', 'to-filter-select-all')">
               <label class="flex items-center gap-2 pb-2 mb-2 border-b border-base-300">
                 <input type="checkbox" class="checkbox checkbox-sm shrink-0" id="to-filter-select-all"
@@ -215,7 +217,7 @@
               {% t list.column-category %}{% if page.category-filter-active? %} <span class="badge badge-xs" title="{{page.category-filter-label}}">{{page.category-filter-badge}}</span>{% endif %}
               <span aria-hidden="true">▾</span>
             </summary>
-            <div tabindex="0" class="dropdown-content menu bg-base-100 rounded-box shadow-lg border border-base-300 z-20 w-96 max-w-[90vw] min-w-0 overflow-hidden p-3 font-normal normal-case">
+            <div tabindex="0" class="dropdown-content menu bg-base-100 rounded-box shadow-lg border border-base-300 z-20 w-96 max-w-[90vw] max-md:fixed max-md:inset-x-3 max-md:w-auto max-md:max-w-none min-w-0 overflow-hidden p-3 font-normal normal-case">
               <label class="flex items-center gap-2 pb-2 mb-2 border-b border-base-300">
                 <input type="checkbox" class="checkbox checkbox-sm shrink-0" id="category-filter-select-all"
                        onchange="toggleVisibleInChecklist(this, 'category-filter-checkbox', 'category-checklist')">
@@ -455,7 +457,8 @@
       bar.hidden = count === 0 && !running && statusLabel.textContent === '';
       categorySelect.disabled = running || count === 0;
       applyButton.disabled = running || count === 0 || categorySelect.value === '__choose';
-      clearButton.disabled = running || count === 0;
+      // ✕ also closes the bar that only shows the result of the last run.
+      clearButton.disabled = running || (count === 0 && statusLabel.textContent === '');
     }
 
     function postCategory(messageId, category, force) {
@@ -574,6 +577,18 @@
     var table = document.getElementById('email-table');
     toggle.addEventListener('click', function () {
       var on = table.dataset.filters !== 'on';
+      var url = new URL(window.location.href);
+      if (on && table.dataset.checklists !== 'loaded') {
+        // The Subject/From/To checklists are only computed on request: load the page with them.
+        url.searchParams.set('filters', 'on');
+        window.location.href = url.toString();
+        return;
+      }
+      document.getElementById('filters-input').value = on ? 'on' : '';
+      if (!on && url.searchParams.has('filters')) {
+        url.searchParams.delete('filters');
+        window.history.replaceState(null, '', url.toString());
+      }
       table.dataset.filters = on ? 'on' : 'off';
       toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
       toggle.classList.toggle('btn-active', on);

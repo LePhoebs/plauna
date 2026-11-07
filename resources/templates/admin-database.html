@@ -130,7 +130,7 @@
       </form>
       <script>
         document.getElementById('sqlite-delete-confirmation').addEventListener('input', (e) => {
-          document.getElementById('sqlite-delete-submit').disabled = e.target.value.trim() !== '{{sqlite-delete-confirmation}}';
+          document.getElementById('sqlite-delete-submit').disabled = e.target.value.trim() !== {{sqlite-delete-confirmation|js}};
         });
       </script>
     </div>

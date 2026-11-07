@@ -27,6 +27,13 @@
         };
         // .then(plaunaThen(next)): run next only for a successful response, otherwise show the server's
         // message - a failed save must not look like a successful one.
+        // The language switch returns to the page it was used on. A page rendered as the answer to a
+        // form post (the Database page) names its own address; its URL is the POST route.
+        window.plaunaSwitchLanguage = function (select) {
+          var own = document.querySelector('meta[name="plauna-refresh-url"]');
+          select.form.elements['redirect-url'].value = own ? own.content : window.location.pathname + window.location.search;
+          select.form.submit();
+        };
         window.plaunaThen = function (next) {
           return function (response) {
             if (response.ok) { return next(response); }
@@ -77,7 +84,8 @@
           {% endif %}
           <form action="/ui-language" method="post" class="flex items-center gap-2">
             <label for="ui-language-side" class="text-xs text-base-content/60">{% t shell.language %}</label>
-            <select id="ui-language-side" name="ui-language" class="select select-xs w-auto" onchange="this.form.submit()">
+            <input type="hidden" name="redirect-url" value="">
+            <select id="ui-language-side" name="ui-language" class="select select-xs w-auto" onchange="plaunaSwitchLanguage(this)">
               <option value="auto" {% if ui-language = "auto" %}selected{% endif %}>{% t shell.language-auto %}</option>
               <option value="de" {% if ui-language = "de" %}selected{% endif %}>Deutsch</option>
               <option value="en" {% if ui-language = "en" %}selected{% endif %}>English</option>
@@ -121,7 +129,8 @@
           </ul>
           <div class="px-2 pb-1"><form action="/ui-language" method="post" class="flex items-center gap-2">
             <label for="ui-language-more" class="text-xs text-base-content/60">{% t shell.language %}</label>
-            <select id="ui-language-more" name="ui-language" class="select select-xs w-auto" onchange="this.form.submit()">
+            <input type="hidden" name="redirect-url" value="">
+            <select id="ui-language-more" name="ui-language" class="select select-xs w-auto" onchange="plaunaSwitchLanguage(this)">
               <option value="auto" {% if ui-language = "auto" %}selected{% endif %}>{% t shell.language-auto %}</option>
               <option value="de" {% if ui-language = "de" %}selected{% endif %}>Deutsch</option>
               <option value="en" {% if ui-language = "en" %}selected{% endif %}>English</option>
