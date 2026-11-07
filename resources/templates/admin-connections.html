@@ -1,90 +1,69 @@
 {% extends "base.html" %}
 
 {% block content %}
+<div class="max-w-5xl flex flex-col gap-5">
+  <header class="flex flex-wrap items-end justify-between gap-3">
+    <div class="flex flex-col gap-1">
+      <h1 class="text-2xl font-bold">{% t nav.accounts %}</h1>
+      <p class="text-base-content/70 max-w-prose">{% t accounts.intro %}</p>
+    </div>
+    <a class="btn btn-primary btn-sm" href="/admin/new-connection">{% t accounts.new %}</a>
+  </header>
 
-{% if configs|empty? %}
-
-<div role="alert" class="alert">
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-info h-6 w-6 shrink-0">
-    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-  </svg>
-  <span>There are no active IMAP connections</span>
-</div>
-
-{% endif %}
-
-
-<h3 class="uppercase text-lg my-8">Connections</h3>
-{% if configs|not-empty %}
-
-<table class="table-xs lg:table table-zebra lg:[&_:is(th,td)]:px-4 lg:[&_:is(th,td)]:py-3">
-  <thead class="table-header-group">
-    <tr>
-      <th class="text-xs lg:text-lg">Account</th>
-      <th class="text-xs lg:text-lg">Host</th>
-      <th class="text-xs lg:text-lg text-center">Logged-in</th>
-      <th class="text-xs lg:text-lg text-center">Folder Open</th>
-      <th class="text-xs lg:text-lg"></th>
-      <th class="text-xs lg:text-lg"></th>
-    </tr>
-  </thead>
-  <tbody>
+  {% if configs|not-empty %}
+  <ul class="rounded-box border border-base-300 bg-base-100 divide-y divide-base-300">
     {% for config in configs %}
-    <tr class="table-row">
-      <td class="text-xs lg:text-lg text-left">
-        <a class="link link-underline" href="/admin/connections/{{config.id}}">{{config.user}}</a>
-      </td>
-      <td class="text-left text-xs lg:text-lg">{{config.host}}</td>
-      <td class="text-center text-xs lg:text-lg">{{config.connected | iconize}}</td>
-      <td class="text-center text-xs lg:text-lg">{{config.folder-open | iconize}}</td>
-      <td class="flex flex-wrap gap-2">
+    <li class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+      <span class="inline-block size-2.5 rounded-full shrink-0 {% if config.connected %}bg-success{% else %}bg-error{% endif %}" aria-hidden="true"></span>
+      <div class="min-w-0 flex-1">
+        <a class="font-semibold link link-hover break-all" href="/admin/connections/{{config.id}}">{{config.user}}</a>
+        <p class="text-xs text-base-content/70">{{config.host}} · {% if config.connected %}{% t accounts.connected %}{% else %}{% t accounts.not-connected %}{% endif %}{% if config.connected %} · {% if config.folder-open %}{% t accounts.folder-open %}{% else %}{% t accounts.folder-closed %}{% endif %}{% endif %}</p>
+      </div>
+      <div class="flex flex-wrap gap-2">
         {% if config.connected %}
         <form action="/admin/connections/{{config.id}}/controls" method="post">
           <input type="hidden" name="operation" value="reconnect"/>
           <input type="hidden" name="redirect-url" value="/admin/connections"/>
-          <button class="btn btn-outline-primary">Reconnect</button>
+          <button class="btn btn-sm">{% t accounts.reconnect %}</button>
         </form>
         <form action="/admin/connections/{{config.id}}/controls" method="post">
           <input type="hidden" name="operation" value="disconnect"/>
           <input type="hidden" name="redirect-url" value="/admin/connections"/>
-          <button class="btn btn-primary">Disconnect</button>
+          <button class="btn btn-sm btn-ghost">{% t accounts.disconnect %}</button>
         </form>
         {% endif %}
         {% if not config.connected %}
         <form action="/admin/connections/{{config.id}}/controls" method="post">
           <input type="hidden" name="operation" value="connect"/>
           <input type="hidden" name="redirect-url" value="/admin/connections"/>
-          <button class="btn btn-outlint-primary">Connect</button>
+          <button class="btn btn-sm btn-primary">{% t accounts.connect %}</button>
         </form>
         {% endif %}
-      </td>
-      <td>
-        <label class="btn btn-ghost" for="modal-{{config.id}}">X</label>
-        <input class="modal-toggle" id="modal-{{config.id}}" type="checkbox" />
-        <div class="modal">
-	      <label class="modal-overlay" for="modal-{{config.id}}"></label>
-	      <div class="modal-box flex flex-col gap-5">
-		    <h2 class="text-xl">Delete Connection: {{config.host}} - {{config.user}}</h2>
-		    <span>Are you sure you want to delete this connection?</span>
-		    <div class="flex gap-3">
-			  <button id="delete-button-{{config.id}}" class="btn btn-error">Delete</button>
-		      <label for="modal-{{config.id}}" class="btn">Cancel</label>
-		    </div>
-            <script>
-              document.getElementById('delete-button-{{config.id}}').addEventListener('click', (e) => {
-                  fetch('/admin/connections/{{config.id}}', {method: 'DELETE'})
-                      .then(plaunaThen(() => window.location.href = '/admin/connections'))});
-            </script>
-	      </div>
+        <label class="btn btn-sm btn-ghost text-error" for="modal-{{config.id}}" title="{% t accounts.delete %}">✕</label>
+      </div>
+      <input class="modal-toggle" id="modal-{{config.id}}" type="checkbox" />
+      <div class="modal">
+        <label class="modal-overlay" for="modal-{{config.id}}"></label>
+        <div class="modal-box flex flex-col gap-4">
+          <h2 class="text-lg font-semibold">{% t accounts.delete-title config.user config.host %}</h2>
+          <p>{% t accounts.delete-text %}</p>
+          <div class="flex gap-3">
+            <button id="delete-button-{{config.id}}" class="btn btn-error">{% t email.delete-confirm %}</button>
+            <label for="modal-{{config.id}}" class="btn">{% t list.cancel %}</label>
+          </div>
+          <script>
+            document.getElementById('delete-button-{{config.id}}').addEventListener('click', function () {
+              fetch('/admin/connections/{{config.id}}', {method: 'DELETE'})
+                .then(plaunaThen(function () { window.location.href = '/admin/connections'; }));
+            });
+          </script>
         </div>
-      </td>
-    </tr>
+      </div>
+    </li>
     {% endfor %}
-  </tbody>
-</table>
-
-{% endif %}
-
-<a class="btn my-4" href="/admin/new-connection">New Connection</a>
-
+  </ul>
+  {% else %}
+  <p class="rounded-box bg-base-100 border border-base-300 p-4 text-base-content/70">{% t accounts.none %}</p>
+  {% endif %}
+</div>
 {% endblock %}

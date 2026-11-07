@@ -66,6 +66,12 @@
   ;; Transient state of "move this parse batch to its category folders" jobs, keyed by batch id.
   (atom {}))
 
+(defn message
+  "A message for the toast area by its text key (see plauna.i18n). It is shown in the language of the
+   page that shows it; :content keeps the English text for logs and callers that read it."
+  [type k & args]
+  {:type type :key k :args (vec args) :content (binding [i18n/*lang* :en] (i18n/t k args))})
+
 (defn add-to-messages [message] (swap! global-messages (fn [messages] (conj messages message))))
 
 (defn take-messages!
@@ -252,7 +258,7 @@
 (defn- release-event-bus-job! [] (reset! event-bus-job nil))
 
 (def event-bus-busy-message
-  {:type :info :content "Another mbox import or language re-detection is still running. Please try again when it has finished."})
+  (message :info :msg.another-mbox-import-or-language-re))
 
 (defn- start-mbox-import!
   "Parse an uploaded mbox on a background thread and report the outcome as a toast. The multipart
@@ -313,7 +319,7 @@
               (add-to-messages {:type :success :content (str "Language detection was queued for " (count ids) " e-mail(s).")})
               (catch Throwable e
                 (t/log! {:level :error :error e} "Re-detecting languages failed.")
-                (add-to-messages {:type :alert :content "Re-detecting languages failed. Please see the logs."}))
+                (add-to-messages (message :alert :msg.re-detecting-languages-failed-please-see)))
               (finally
                 (messaging/close-limiter! limiter)
                 (release-event-bus-job!))))))
@@ -468,8 +474,8 @@
                    #(analysis/serialize-and-write-model! (:model training-model) %))
                   (swap! training-progress update :models-written (fnil inc 0)))
                 (training-outcome-message trained skipped failed))
-              {:type :alert :content "There are no categorized e-mails in the selected training languages."})))
-      {:type :alert :content "There are no selected languages to train in. Cannot proceed."})))
+              (message :alert :msg.there-are-no-categorized-e-mails))))
+      (message :alert :msg.there-are-no-selected-languages-to))))
 
 (defn write-emails-to-training-files-and-train []
   (train-categorization-model! (p/categorization-model)))
@@ -503,9 +509,9 @@
                                     :started-at (System/currentTimeMillis) :emails-written 0 :emails-total 0})))]
     (not= :running (:status before))))
 
-(def training-busy-message {:type :info :content "A model training run is already in progress. Please wait for it to finish."})
+(def training-busy-message (message :info :msg.a-model-training-run-is-already))
 
-(def training-success-message {:type :success :content "Training finished. The updated model is now used for categorization."})
+(def training-success-message (message :success :msg.training-finished-the-updated-model-is))
 
 (defn- execute-training-job!
   "Run a claimed training job to completion and publish its outcome. job-fn returns a message map
@@ -515,7 +521,7 @@
                  (or (job-fn) training-success-message)
                  (catch Throwable e
                    (t/log! {:level :error :error e} "Model training failed.")
-                   {:type :alert :content "Training failed. The existing model remains active."}))]
+                   (message :alert :msg.training-failed-the-existing-model-remains)))]
     ;; The phase is left where the run ended, so the step list can show which step failed.
     (swap! training-progress assoc :status :finished :finished-at (System/currentTimeMillis) :result result)
     ;; Also surface the outcome on the next page load: the progress page may long have been closed.
@@ -713,7 +719,7 @@
                      :else "pending")
             :detail (cond
                       (contains? skipped language) (get skipped language)
-                      (and (not done?) (some-> iteration pos?)) (str "iteration " iteration " of at most " iterations)
+                      (and (not done?) (some-> iteration pos?)) (i18n/t :training.iteration [iteration iterations])
                       :else nil)}))))
 
 (defn training-steps
@@ -723,20 +729,20 @@
   (let [collect-state (step-state :collecting state)
         training-state (step-state :training state)
         writing-state (step-state :writing state)]
-    [{:id "prepare" :label "Prepare the training run" :state (step-state :starting state) :detail nil}
-     {:id "collect" :label "Collect the categorized e-mails"
+    [{:id "prepare" :label (i18n/t :training.prepare) :state (step-state :starting state) :detail nil}
+     {:id "collect" :label (i18n/t :training.collect)
       :state collect-state
       :detail (when (not= "pending" collect-state)
-                (str (or emails-written 0) " of " (or emails-total 0) " e-mails"
-                     (when (some-> tokens-computed pos?) (str ", " tokens-computed " analysed for the first time and cached"))))}
-     {:id "train" :label "Train the language models (in parallel)"
+                (str (i18n/t :training.collected [(or emails-written 0) (or emails-total 0)])
+                     (when (some-> tokens-computed pos?) (i18n/t :training.cached [tokens-computed]))))}
+     {:id "train" :label (i18n/t :training.train)
       :state training-state
       :detail nil
       :children (language-steps state)}
-     {:id "write" :label "Write the model files"
+     {:id "write" :label (i18n/t :training.write)
       :state writing-state
-      :detail (when (not= "pending" writing-state) (str (or models-written 0) " of " (or models-total 0) " model file(s)"))}
-     {:id "finish" :label "Finish"
+      :detail (when (not= "pending" writing-state) (i18n/t :training.written [(or models-written 0) (or models-total 0)]))}
+     {:id "finish" :label (i18n/t :training.finish)
       :state (cond (not= :finished status) "pending"
                    (= :alert (:type result)) "failed"
                    :else "done")
@@ -747,6 +753,8 @@
   []
   (let [state @training-progress]
     (-> (select-keys state [:status :label :phase :started-at :finished-at :result])
+        ;; A keyed message reads in the language of the progress page that polls for it.
+        (update :result #(if (:key %) (assoc % :content (i18n/t (:key %) (:args %))) %))
         (assoc :percent (training-percent state)
                :steps (training-steps state)))))
 
@@ -775,10 +783,10 @@
         current (p/categorization-model)]
     (cond
       (nil? target)
-      {:type :alert :content "Unknown categorization model. Nothing was changed."}
+      (message :alert :msg.unknown-categorization-model-nothing-was-changed)
 
       (= target current)
-      {:type :info :content "The selected categorization model is already active."}
+      (message :info :msg.the-selected-categorization-model-is-already)
 
       (not= model-switch-confirmation confirmation)
       {:type :alert :content (str "Model switch not confirmed. Enter ‘" model-switch-confirmation "’ exactly.")}
@@ -1053,8 +1061,8 @@
     false
     (do (async/thread
           (let [totals (run-retention!)]
-            (cond (nil? totals) (add-to-messages {:type :info :content "Another clean-up was already running; its result is in the log."})
-                  (:error totals) (add-to-messages {:type :alert :content "The clean-up failed. Please see the logs."})
+            (cond (nil? totals) (add-to-messages (message :info :msg.another-clean-up-was-already-running))
+                  (:error totals) (add-to-messages (message :alert :msg.the-clean-up-failed-please-see))
                   :else (add-to-messages {:type :success :content (str "Clean-up finished: " (retention-summary-text totals) ".")}))))
         true)))
 
@@ -1077,7 +1085,7 @@
                                         ".")}))
       (catch Throwable e
         (t/log! {:level :error :error e} ["Flagging the e-mails of" (:name category) "failed"])
-        (add-to-messages {:type :alert :content "Flagging failed. Please see the logs."})))))
+        (add-to-messages (message :alert :msg.flagging-failed-please-see-the-logs))))))
 
 (defn mime-type-statistics []
   ;; Header MIME type represents one value per e-mail. Counting body parts here would count multipart
@@ -1151,8 +1159,8 @@
           (let [lang (analysis/language-result refetched)]
             (when (and (:code lang) (not= "n/a" (:code lang)))
               (db/update-metadata-language message-id (:code lang) (:confidence lang))))))
-      {:type :success :content "Re-fetched the email from the server and filled in its contents."})
-    {:type :alert :content "Could not re-fetch this email: it was not found on any connected account."}))
+      (message :success :msg.re-fetched-the-email-from-the))
+    (message :alert :msg.could-not-re-fetch-this-email)))
 
 (defn- int-or-default
   "Parse an integer request parameter, falling back to the default on blank or non-numeric input.
@@ -1358,7 +1366,7 @@
       (redirect-request request)
 
       (= :error (:result action))
-      (redirect-request request {:type :alert :content "Connection failed. Please see the logs for the details."}))))
+      (redirect-request request (message :alert :msg.connection-failed-please-see-the-logs)))))
 
 (defn- reconnect-control-response [context request id]
   (when-let [connection-data (client/connection-data-from-id id)]
@@ -1574,7 +1582,7 @@
   (let [params (:params request)
         since-days (parse-since-days (:since-days params))]
     (if (nil? since-days)
-      (redirect-request request {:type :alert :content "Please enter how many days to look back: a whole number of at least 1."})
+      (redirect-request request (message :alert :msg.please-enter-how-many-days-to))
       (start-parse-response context request id
                             (watched-folder id nil)
                             {:move? (some? (:move params)) :since-days since-days}))))
@@ -1887,7 +1895,7 @@
              (let [seconds (max 1 (long (Math/ceil (/ wait 1000.0))))]
                {:status 429
                 :headers (assoc html-headers "Retry-After" (str seconds))
-                :body (markup/login-page {:error (str "Too many failed login attempts. Please wait " seconds " second(s) and try again.")})})
+                :body (markup/login-page {:error (i18n/t :login.too-many [seconds])})})
 
              (auth/verify-web-credentials? login-name password)
              (do (auth/record-login-success!)
@@ -1897,7 +1905,7 @@
              :else
              (do (t/log! :warn "Rejected a web login attempt: wrong login name or password.")
                  (success-html-with-body
-                  (markup/login-page {:error "Invalid login name or password."}))))))))
+                  (markup/login-page {:error (i18n/t :login.invalid)}))))))))
 
    ;; The language switch of the sidebar and the phone's "More" menu.
    (comp/POST "/ui-language" request
@@ -2006,7 +2014,7 @@
            ;; Every other session was established with the old credentials: end them all, and renew
            ;; this one so the administrator stays logged in.
            (p/bump-session-generation!)
-           (assoc (redirect-request request {:type :success :content "Login name changed successfully."})
+           (assoc (redirect-request request (message :success :msg.login-name-changed-successfully))
                   :session (authenticate-session (:session request)))
            (catch clojure.lang.ExceptionInfo e
              (redirect-request request {:type :alert :content (.getMessage e)}))))))
@@ -2019,17 +2027,17 @@
          (redirect-request request (password-check-alert check))
 
          (not= new-password confirm-password)
-         (redirect-request request {:type :alert :content "New password and confirmation do not match."})
+         (redirect-request request (message :alert :msg.new-password-and-confirmation-do-not))
 
          (< (count (or new-password "")) 8)
-         (redirect-request request {:type :alert :content "New password must be at least 8 characters long."})
+         (redirect-request request (message :alert :msg.new-password-must-be-at-least))
 
          :else
          (do (auth/set-password! new-password)
              ;; A changed password must end every other session (a leaked cookie stays valid otherwise);
              ;; the administrator's own session is renewed.
              (p/bump-session-generation!)
-             (assoc (redirect-request request {:type :success :content "Password changed successfully. Other browsers have been logged out."})
+             (assoc (redirect-request request (message :success :msg.password-changed-successfully-other-browsers-have))
                     :session (authenticate-session (:session request)))))))
 
    (comp/GET "/admin/mtls" request
@@ -2052,9 +2060,9 @@
              (if revoked?
                ;; A removed certificate must not keep the sessions it opened; this one is renewed.
                (do (p/bump-session-generation!)
-                   (assoc (redirect-request request {:type :success :content "mTLS login configuration saved and activated. Sessions of removed certificates have been ended."})
+                   (assoc (redirect-request request (message :success :msg.mtls-login-configuration-saved-and-activated))
                           :session (authenticate-session (:session request))))
-               (redirect-request request {:type :success :content "mTLS login configuration saved and activated."})))
+               (redirect-request request (message :success :msg.mtls-login-configuration-saved-and-activated-2))))
            (catch clojure.lang.ExceptionInfo e
              (redirect-request request {:type :alert :content (.getMessage e)}))))))
 
@@ -2068,7 +2076,7 @@
      (let [upload (get-in request [:params :filename])
            ^java.io.File temp-file (when (map? upload) (:tempfile upload))]
        (if (or (nil? temp-file) (not (.exists temp-file)) (zero? (.length temp-file)))
-         (redirect-request request {:type :alert :content "Please choose a non-empty mbox file to upload."})
+         (redirect-request request (message :alert :msg.please-choose-a-non-empty-mbox))
          (if (start-mbox-import! temp-file (str (:filename upload)))
            (redirect-request request {:type :success :content (str "Importing the mbox file " (:filename upload) " in the background. Its e-mails appear in the list as they are processed; a message reports when the file has been read completely.")})
            (redirect-request request event-bus-busy-message)))))
@@ -2170,16 +2178,16 @@
 
    (comp/POST "/admin/categories/clean-up" {}
      (add-to-messages (if (start-manual-retention!)
-                        {:type :info :content "Moving expired e-mails to the trash in the background."}
-                        {:type :info :content "A clean-up is already running."}))
+                        (message :info :msg.moving-expired-e-mails-to-the)
+                        (message :info :msg.a-clean-up-is-already-running)))
      (redirect "/categories" 303))
 
    (comp/POST "/admin/categories/:id/flag" {route-params :route-params :as request}
      (let [category (some-> (parse-long (str (:id route-params))) db/category-by-id)]
        (cond (nil? category)
-             (add-to-messages {:type :alert :content "Unknown category."})
+             (add-to-messages (message :alert :msg.unknown-category))
              (nil? (flags/valid-color (:flag_color category)))
-             (add-to-messages {:type :alert :content "This category has no flag color."})
+             (add-to-messages (message :alert :msg.this-category-has-no-flag-color))
              :else
              (do (flag-existing-emails! category)
                  (add-to-messages {:type :info :content (str "Flagging the e-mails of " (:name category) " in the background.")})))
@@ -2335,10 +2343,10 @@
            conn (client/connection-data-from-id id)]
        (cond
          (or (nil? conn) (not (client/connected? conn)))
-         (redirect-request request {:type :alert :content "The connection is not active. Connect first, then move."})
+         (redirect-request request (message :alert :msg.the-connection-is-not-active-connect))
 
          (st/blank? folder)
-         (redirect-request request {:type :alert :content "No folder given."})
+         (redirect-request request (message :alert :msg.no-folder-given))
 
          (not (start-folder-move! context id folder))
          (redirect-request request {:type :info :content (str "The e-mails of " folder " are already being moved.")})
@@ -2351,10 +2359,10 @@
            batch (db/parse-batch batch-id)]
        (cond
          (nil? batch)
-         (redirect-request request {:type :alert :content "Unknown parse batch."})
+         (redirect-request request (message :alert :msg.unknown-parse-batch))
 
          (not (start-batch-move! context batch))
-         (redirect-request request {:type :info :content "This batch is already being moved."})
+         (redirect-request request (message :info :msg.this-batch-is-already-being-moved))
 
          :else
          (redirect (str "/admin/connections/" (:connection-id batch)) 303))))
@@ -2464,10 +2472,10 @@
            conn (client/connection-data-from-id id)]
        (cond
          (or (nil? conn) (not (client/connected? conn)))
-         (redirect-request request {:type :alert :content "The connection is not active. Connect first, then retry."})
+         (redirect-request request (message :alert :msg.the-connection-is-not-active-connect-2))
 
          (st/blank? folder)
-         (redirect-request request {:type :alert :content "No folder given."})
+         (redirect-request request (message :alert :msg.no-folder-given))
 
          :else
          (if-let [n (start-failure-retry! context id folder move?)]

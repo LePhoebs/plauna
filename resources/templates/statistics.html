@@ -7,15 +7,41 @@
 {% endblock %}
 
 {% block content %}
-<section class="space-y-8">
+<script>
+  // Charts take the colors of the active theme (light or dark): Vega draws its own labels and grid,
+  // so they are read from the theme's CSS variables instead of Vega's light defaults.
+  function plaunaThemeColor(name, fallback) {
+    var value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return value || fallback;
+  }
+  function plaunaChartConfig() {
+    var text = plaunaThemeColor('--color-base-content', '#1f1a1c');
+    var line = plaunaThemeColor('--color-base-300', '#e4dcde');
+    return {background: null, view: {stroke: null},
+            axis: {labelColor: text, titleColor: text, gridColor: line, domainColor: line, tickColor: line},
+            legend: {labelColor: text, titleColor: text}, title: {color: text}};
+  }
+  function plaunaChart(spec) {
+    var primary = plaunaThemeColor('--color-primary', null);
+    if (primary && spec.mark && typeof spec.mark === 'object' && spec.mark.color) { spec.mark.color = primary; }
+    // The spec's own config wins over the embed options, so the theme colors go into it.
+    var theme = plaunaChartConfig();
+    spec.config = spec.config || {};
+    Object.keys(theme).forEach(function (key) {
+      spec.config[key] = (theme[key] && typeof theme[key] === 'object') ? Object.assign({}, spec.config[key] || {}, theme[key]) : theme[key];
+    });
+    return spec;
+  }
+</script>
+<section class="space-y-6 max-w-6xl">
   <header>
-    <h1 class="text-2xl font-bold">Statistics</h1>
-    <p class="mt-1 text-sm text-base-content/70">An overview of the e-mails currently stored in Plauna.</p>
+    <h1 class="text-2xl font-bold">{% t nav.statistics %}</h1>
+    <p class="mt-1 text-sm text-base-content/70">{% t stats.intro %}</p>
   </header>
 
   <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
     {% for item in summary %}
-    <div class="card card-border bg-base-100 min-w-0">
+    <div class="card border border-base-300 bg-base-100 min-w-0">
       <div class="card-body gap-1 p-4 sm:p-6">
         <span class="text-xs font-medium uppercase tracking-wide text-base-content/60">{{item.label}}</span>
         <strong class="break-words text-2xl sm:text-3xl">{{item.value}}</strong>
@@ -26,7 +52,7 @@
 
   <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
     {% for chart in charts %}
-    <article class="card card-border bg-base-100 min-w-0 overflow-hidden">
+    <article class="card border border-base-300 bg-base-100 min-w-0 overflow-hidden">
       <div class="card-body min-w-0 p-4 sm:p-6">
         <div>
           <h2 class="card-title">{{chart.title}}</h2>
@@ -34,13 +60,13 @@
         </div>
 
         {% if chart.has-data %}
-        <div id="{{chart.id}}" class="mt-4 w-full min-w-0" aria-label="{{chart.title}} chart"></div>
+        <div id="{{chart.id}}" class="mt-4 w-full min-w-0" aria-label="{{chart.title}}"></div>
         <script>
-          vegaEmbed('#{{chart.id}}', {{chart.json-data|safe}}, {actions: false, renderer: 'svg'})
+          vegaEmbed('#{{chart.id}}', plaunaChart({{chart.json-data|safe}}), {actions: false, renderer: 'svg'})
             .catch(function (error) {
               const target = document.getElementById('{{chart.id}}');
               target.setAttribute('role', 'alert');
-              target.textContent = 'This chart could not be rendered.';
+              target.textContent = '{% t stats.chart-failed %}';
               console.error('Could not render {{chart.id}} chart', error);
             });
         </script>
@@ -49,7 +75,7 @@
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-info h-6 w-6 shrink-0">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
           </svg>
-          <span>No data available for this chart.</span>
+          <span>{% t stats.no-data %}</span>
         </div>
         {% endif %}
       </div>

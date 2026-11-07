@@ -46,7 +46,7 @@
 
       <!-- Sidebar (desktop) -->
       <aside class="hidden lg:flex flex-col gap-4 sticky top-0 h-screen overflow-y-auto bg-base-200 border-r border-base-300 px-2 py-4" aria-label="{% t nav.main %}">
-        <a href="/emails" class="px-3"><img src="/plauna-banner.png" alt="Plauna" style="height: 28px"/></a>
+        <a href="/emails" class="px-3"><img class="plauna-logo" src="/plauna-banner.png" alt="Plauna" style="height: 28px"/></a>
         <ul class="menu menu-sm w-full p-0 gap-0.5">
           <li><a href="/emails" class="{% if active-nav = :emails %}menu-active{% endif %}"><svg class="size-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16v12H4z"/><path d="m4 7 8 6 8-6"/></svg>{% t nav.emails %}</a></li>
           <li><a href="/categories" class="{% if active-nav = :categories %}menu-active{% endif %}"><svg class="size-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h7v7H4zM13 5h7v7h-7zM4 14h7v5H4zM13 14h7v5h-7z"/></svg>{% t nav.categories %}</a></li>
@@ -91,7 +91,7 @@
       <div class="min-w-0 flex flex-col">
         <!-- Top bar (phone) -->
         <header class="lg:hidden flex items-center justify-between px-3 py-2 bg-base-100 border-b border-base-300">
-          <a href="/emails"><img src="/plauna-banner.png" alt="Plauna" style="height: 26px"/></a>
+          <a href="/emails"><img class="plauna-logo" src="/plauna-banner.png" alt="Plauna" style="height: 26px"/></a>
         </header>
         {% if disconnected %}
         <div class="lg:hidden alert alert-error alert-soft rounded-none py-2" role="alert">

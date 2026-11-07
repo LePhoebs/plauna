@@ -529,7 +529,7 @@
       update();
     }
 
-    document.querySelector('table').addEventListener('click', function (event) {
+    document.getElementById('email-table').addEventListener('click', function (event) {
       var box = event.target;
       if (!box.classList || !box.classList.contains('email-select-checkbox')) { return; }
       // Shift-click ticks or unticks every e-mail between the previous click and this one.

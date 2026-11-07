@@ -1,28 +1,28 @@
 <!DOCTYPE html>
-<html>
+<html lang="{{lang}}">
   <head>
     <link rel="stylesheet" href="/css/tailwind.css" type="text/css"/>
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png"/>
     <meta charset="UTF-8">
     <meta content="width=device-width, initial-scale=1" name="viewport">
-    <title>Plauna — Login</title>
+    <title>Plauna — {% t login.title %}</title>
   </head>
-  <body class="min-h-screen flex items-center justify-center mx-2">
-    <div class="card card-border w-full max-w-sm">
+  <body class="min-h-screen flex items-center justify-center px-3 bg-base-200 text-base-content text-sm">
+    <div class="card bg-base-100 border border-base-300 w-full max-w-sm">
       <div class="card-body items-center gap-4">
-        <a href="/"><img src="/plauna-banner.png" style="height: 36px"/></a>
-        <h2 class="card-title">Sign in</h2>
+        <a href="/"><img class="plauna-logo" src="/plauna-banner.png" alt="Plauna" style="height: 36px"/></a>
+        <h1 class="card-title">{% t login.title %}</h1>
         {% if error %}
-        <div role="alert" class="alert alert-error alert-outline w-full">
+        <div role="alert" class="alert alert-error alert-soft w-full">
           <span>{{error}}</span>
         </div>
         {% endif %}
         <form action="/login" method="POST" class="flex flex-col gap-4 w-full">
           <input class="input w-full" name="login-name" type="text" value=""
-                 placeholder="Login name" autocomplete="username" maxlength="128" autofocus required>
-          <input class="input w-full" name="password" type="password" placeholder="Password"
+                 placeholder="{% t login.name %}" aria-label="{% t login.name %}" autocomplete="username" maxlength="128" autofocus required>
+          <input class="input w-full" name="password" type="password" placeholder="{% t login.password %}" aria-label="{% t login.password %}"
                  autocomplete="current-password" required>
-          <button class="btn btn-primary w-full" type="submit">Sign in</button>
+          <button class="btn btn-primary w-full" type="submit">{% t login.title %}</button>
         </form>
       </div>
     </div>

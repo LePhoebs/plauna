@@ -467,7 +467,7 @@
                   db/save-communications (fn [contacts] (swap! calls conj [:communications contacts]))
                   db/fetch-metadata (fn [_] {:language "en"})]
       (is (= {:type :success :content "Re-fetched the email from the server and filled in its contents."}
-             (server/refetch-email-and-fill! "msg-1")))
+           (select-keys (server/refetch-email-and-fill! "msg-1") [:type :content])))
       (is (= [[:contacts participants]
               [:communications participants]]
              @calls)))))
@@ -1208,3 +1208,10 @@
       (let [html (server/category-page {} {:id 1 :name "Temporary"} {:tab tab} [{:type :success :content "Saved it."}])]
         (is (str/includes? html "Temporary") tab)
         (is (str/includes? html "Saved it.") tab)))))
+
+(deftest server-messages-keep-english-content-and-show-in-the-page-language
+  (let [message (server/message :alert :msg.unknown-category)]
+    (is (= "Unknown category." (:content message)) "Logs and callers read the English text")
+    (is (= "Unbekannte Kategorie."
+           (:content (binding [plauna.i18n/*lang* :de] (plauna.markup/type->toast-role message))))
+        "A German page shows it in German")))

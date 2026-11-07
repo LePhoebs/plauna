@@ -382,7 +382,7 @@ A sidebar on the left leads to the six areas of Plauna; on a phone, a bar at the
 
 The bottom of the sidebar shows whether every IMAP account is connected; a broken connection turns it red and links to "Accounts". Messages appear at the bottom right and close by themselves, except errors.
 
-The interface speaks English and German. By default it follows the browser's language; the "Language" switch at the bottom of the sidebar (on a phone: under "More") fixes it to German or English for every browser. The pages are translated step by step as the interface is reworked (see =docs/redesign.org=), so some pages are still English only. Light and dark mode follow the system setting.
+The interface speaks English and German. By default it follows the browser's language; the "Language" switch at the bottom of the sidebar (on a phone: under "More") fixes it to German or English for every browser. Every page is translated; some longer messages about folder parse runs and moves are still English only (see =docs/redesign.org=). Light and dark mode follow the system setting, the charts on "Statistics" included.
 
 ** Getting Started
 

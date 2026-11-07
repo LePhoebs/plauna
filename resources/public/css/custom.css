@@ -160,3 +160,15 @@ html.plauna-ptr {
   color: var(--color-primary);
   opacity: 1;
 }
+
+/* The logo image has a white background. Multiply makes it disappear on the light surfaces; in dark
+   mode the image is inverted (keeping its hues) and screened onto the dark surface instead. */
+.plauna-logo {
+  mix-blend-mode: multiply;
+}
+@media (prefers-color-scheme: dark) {
+  .plauna-logo {
+    filter: invert(1) hue-rotate(180deg);
+    mix-blend-mode: screen;
+  }
+}

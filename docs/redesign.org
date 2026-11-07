@@ -62,10 +62,18 @@ Old addresses keep working through redirects (bookmarks, the installed web app).
    bundles the training and its daily time, languages, thresholds, the model type and the scoring;
    System → General keeps time zone, intervals and log level. /admin/languages redirects to
    /model#languages.
-4. *Accounts and System*: accounts with status and sub-pages; System by topic instead of a link
-   list; statistics in the new style; polish the dark theme.
+4. *Accounts and System* (done): the accounts list with a status dot and its actions; the account
+   page in cards (connection, re-scan, folder parse, providers, failures, folders, runs); System's
+   login, client certificate and database pages; statistics, training progress and login page in
+   the new style and translated; the fixed server messages translated (their English :content stays
+   for logs); dark mode: theme colors instead of fixed grays, the logo blended into the surface, the
+   charts drawn in the theme's colors.
 
 * Ideas for later
+
+- *Remaining English texts*: the composed messages about folder parse runs, retries, moves and the
+  clean-up (built from several parts in plauna.server), some validation messages of forms, and the
+  generic "The request failed." of page scripts.
 
 - *E-mail detail beside the list*: on the desktop the e-mail opens in a panel to the right of the
   list, so one can click through e-mails without leaving the list (and its filters and selection).

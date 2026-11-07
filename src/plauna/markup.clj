@@ -82,7 +82,7 @@
 
 (defn login-page
   ([] (login-page {}))
-  ([data] (render-file "login.html" data)))
+  ([data] (render-file "login.html" (assoc data :lang (name i18n/*lang*)))))
 
 (defn password-page [data] (render "admin-password.html" (conj {:active-nav :system} data)))
 
@@ -249,15 +249,15 @@
             :font "system-ui"}})
 
 (defn- volume-chart [values]
-  (merge (base-chart "Number of e-mails per year" values)
+  (merge (base-chart (i18n/t :stats.per-year) values)
          {:height 280
           :mark {:type "bar" :tooltip true :color chart-color
                  :cornerRadiusTopLeft 3 :cornerRadiusTopRight 3}
-          :encoding {:x {:field "time-bucket" :type "ordinal" :title "Year" :sort nil}
-                     :y {:field "count" :type "quantitative" :title "E-mails"
+          :encoding {:x {:field "time-bucket" :type "ordinal" :title (i18n/t :stats.year) :sort nil}
+                     :y {:field "count" :type "quantitative" :title (i18n/t :stats.emails)
                          :axis {:tickMinStep 1 :format "d"}}
-                     :tooltip [{:field "time-bucket" :type "ordinal" :title "Year"}
-                               {:field "count" :type "quantitative" :title "E-mails"}]}}))
+                     :tooltip [{:field "time-bucket" :type "ordinal" :title (i18n/t :stats.year)}
+                               {:field "count" :type "quantitative" :title (i18n/t :stats.emails)}]}}))
 
 (defn- breakdown-chart [description values field label-title]
   (merge (base-chart description values)
@@ -265,10 +265,10 @@
           :mark {:type "bar" :tooltip true :color chart-color :cornerRadiusEnd 3 :size 22}
           :encoding {:y {:field (name field) :type "nominal" :title nil :sort "-x"
                          :axis {:labelLimit 240}}
-                     :x {:field "count" :type "quantitative" :title "E-mails"
+                     :x {:field "count" :type "quantitative" :title (i18n/t :stats.emails)
                          :axis {:tickMinStep 1 :format "d"}}
                      :tooltip [{:field (name field) :type "nominal" :title label-title}
-                               {:field "count" :type "quantitative" :title "E-mails"}]}}))
+                               {:field "count" :type "quantitative" :title (i18n/t :stats.emails)}]}}))
 
 (defn- percentage-string [part total]
   (if (zero? total)
@@ -289,27 +289,27 @@
                                   (when (some? time-bucket)
                                     {:time-bucket (str time-bucket) :count (count-value row)})))
                           vec)
-        mime-values (normalized-breakdown mime-types :mime-type "Unknown")
-        language-values (normalized-breakdown languages :language "Not detected")
-        category-values (normalized-breakdown categories :name "Uncategorized")
+        mime-values (normalized-breakdown mime-types :mime-type (i18n/t :stats.unknown))
+        language-values (normalized-breakdown languages :language (i18n/t :stats.not-detected))
+        category-values (normalized-breakdown categories :name (i18n/t :stats.uncategorized))
         total-emails (sum-counts categories)
         categorized-emails (sum-counts (filter #(present-label? (:name %)) categories))
         detected-languages (count (set (keep #(when (present-label? (:language %)) (:language %)) languages)))
         known-mime-types (count (set (keep #(when (present-label? (:mime-type %)) (:mime-type %)) mime-types)))]
     (render "statistics.html"
             {:active-nav :statistics
-             :summary [{:label "Total e-mails" :value total-emails}
-                       {:label "Categorized" :value (percentage-string categorized-emails total-emails)}
-                       {:label "Detected languages" :value detected-languages}
-                       {:label "MIME types" :value known-mime-types}]
-             :charts [(chart-context "email-volume" "E-mail volume" "Number of stored e-mails per year."
+             :summary [{:label (i18n/t :stats.total) :value total-emails}
+                       {:label (i18n/t :stats.categorized) :value (percentage-string categorized-emails total-emails)}
+                       {:label (i18n/t :stats.languages-detected) :value detected-languages}
+                       {:label (i18n/t :stats.mime-types) :value known-mime-types}]
+             :charts [(chart-context "email-volume" (i18n/t :stats.volume) (i18n/t :stats.volume-help)
                                      email-values (volume-chart email-values))
-                      (chart-context "mime-types" "MIME types" "Message formats across stored e-mails."
-                                     mime-values (breakdown-chart "E-mails by MIME type" mime-values :mime-type "MIME type"))
-                      (chart-context "languages" "Languages" "Detected language across all stored e-mails."
-                                     language-values (breakdown-chart "E-mails by detected language" language-values :language "Language"))
-                      (chart-context "categories" "Categories" "Current category assignments, including uncategorized e-mails."
-                                     category-values (breakdown-chart "E-mails by category" category-values :name "Category"))]})))
+                      (chart-context "mime-types" (i18n/t :stats.mime-types) (i18n/t :stats.mime-help)
+                                     mime-values (breakdown-chart (i18n/t :stats.by-mime) mime-values :mime-type (i18n/t :stats.mime-type)))
+                      (chart-context "languages" (i18n/t :stats.language-chart) (i18n/t :stats.language-help)
+                                     language-values (breakdown-chart (i18n/t :stats.by-language) language-values :language (i18n/t :stats.language)))
+                      (chart-context "categories" (i18n/t :stats.category-chart) (i18n/t :stats.category-help)
+                                     category-values (breakdown-chart (i18n/t :stats.by-category) category-values :name (i18n/t :stats.category)))]})))
 
 (defn- with-flag-hex [category]
   (assoc category :flag_hex (:hex (first (filter #(= (:flag_color category) (:id %)) flags/colors)))))

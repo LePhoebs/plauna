@@ -1,291 +1,278 @@
 {% extends "base.html" %}
 
-
 {% block content %}
+<div id="account-texts" hidden
+     data-job-finished="{% t account.job-finished %}"
+     data-job-running="{% t account.job-running %}"></div>
 
-<h3 class="uppercase text-lg my-8">IMAP Connection for {{host}} - {{user}}</h3>
-<div class="flex flex-wrap gap-6">
-  <div class="grow-4">
-    <form id="update" class="space-y-4" actions="/admin/connections/{{id}}" method="POST">
-      <h4 class="text-lg">Connection Config</h4>
-      <div class="flex gap-2">
-        <label for="auth-type">Authentication</label>
-        <div class="form-control">
-          <select id="auth-select" class="select" name="auth-type">
-            <option value="basic" {% if auth-type = "basic" %}selected{% endif %}>BASIC</option>
-            <option value="oauth2" {% if auth-type = "oauth2" %}selected{% endif %}>OAUTH 2</option>
-          </select>
+<div class="max-w-6xl flex flex-col gap-5">
+  <nav class="text-xs text-base-content/60" aria-label="{% t category.breadcrumb %}">
+    <a class="link link-hover" href="/admin/connections">{% t nav.accounts %}</a> / {{user}}
+  </nav>
+  <header class="flex flex-col gap-1">
+    <h1 class="text-2xl font-bold break-words">{{user}}</h1>
+    <p class="text-base-content/70">{{host}}</p>
+  </header>
+
+  <div class="grid gap-4 lg:grid-cols-2 items-start">
+    <section class="card bg-base-100 border border-base-300" aria-labelledby="account-config-title">
+      <div class="card-body gap-3">
+        <h2 class="card-title text-base" id="account-config-title">{% t account.connection %}</h2>
+        <form id="update" class="flex flex-col gap-3" action="/admin/connections/{{id}}" method="POST">
+          <input name="id" type="hidden" value="{{id}}">
+          <label class="flex flex-col gap-1" for="auth-select"><span class="text-xs text-base-content/70">{% t account.auth %}</span>
+            <select id="auth-select" class="select select-sm w-full" name="auth-type">
+              <option value="basic" {% if auth-type = "basic" %}selected{% endif %}>{% t account.auth-basic %}</option>
+              <option value="oauth2" {% if auth-type = "oauth2" %}selected{% endif %}>OAuth 2</option>
+            </select></label>
+          <label class="flex flex-col gap-1 oauth-related" for="auth-provider"><span class="text-xs text-base-content/70">{% t account.provider %}</span>
+            <select id="auth-provider" class="select select-sm w-full" name="auth-provider">
+              <option value="" disabled {% if auth-provider = null %}selected{% endif %}>{% t account.choose %}</option>
+              {% for provider in auth-providers %}
+              <option value="{{provider.id}}" {% if auth-provider = provider.id %}selected{% endif %}>{{provider.name}}</option>
+              {% endfor %}
+            </select></label>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <label class="flex flex-col gap-1" for="host"><span class="text-xs text-base-content/70">{% t account.host %}</span>
+              <input id="host" class="input input-sm w-full" name="host" value="{{host}}"></label>
+            <label class="flex flex-col gap-1" for="user"><span class="text-xs text-base-content/70">{% t account.user %}</span>
+              <input id="user" class="input input-sm w-full" name="user" value="{{user}}"></label>
+          </div>
+          <label class="flex flex-col gap-1" for="secret"><span class="text-xs text-base-content/70">{% t account.secret %}</span>
+            <input id="secret" class="input input-sm w-full" name="secret" type="password" value="" placeholder="{% t account.secret-keep %}" autocomplete="new-password"></label>
+          <label class="flex flex-col gap-1" for="folder"><span class="text-xs text-base-content/70">{% t account.folder %}</span>
+            <input id="folder" class="input input-sm w-full" name="folder" value="{{folder}}"></label>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <label class="flex flex-col gap-1" for="security"><span class="text-xs text-base-content/70">{% t account.security %}</span>
+              <select id="security" class="select select-sm w-full" name="security">
+                <option value="ssl" {% if security = "ssl" %}selected{% endif %}>SSL</option>
+                <option value="starttls" {% if security = "starttls" %}selected{% endif %}>STARTTLS</option>
+                <option value="plain" {% if security = "plain" %}selected{% endif %}>PLAIN</option>
+              </select></label>
+            <label class="flex flex-col gap-1" for="port"><span class="text-xs text-base-content/70">{% t account.port %}</span>
+              <input id="port" class="input input-sm w-full" name="port" value="{{port}}" placeholder="{% t account.port-default %}"></label>
+          </div>
+          <label class="flex items-center gap-2" for="check-ssl-certs">
+            <input id="check-ssl-certs" class="checkbox checkbox-sm" name="check-ssl-certs" type="checkbox" value="false" {% if check-ssl-certs %} checked="true"{% endif %}>
+            <span>{% t account.check-certs %}</span></label>
+          <label class="flex items-center gap-2" for="debug">
+            <input id="debug" class="checkbox checkbox-sm" name="debug" type="checkbox" value="false" {% if debug %} checked="true"{% endif %}>
+            <span>{% t account.debug %}</span></label>
+        </form>
+        <div><button id="update-button" class="btn btn-primary btn-sm">{% t account.save %}</button></div>
+      </div>
+    </section>
+
+    {% if folders|not-empty %}
+    <div class="flex flex-col gap-4">
+      <section class="card bg-base-100 border border-base-300" aria-labelledby="rescan-title">
+        <div class="card-body gap-3">
+          <h2 class="card-title text-base" id="rescan-title">{% t account.rescan %}</h2>
+          <form id="rescan" class="flex flex-col gap-3" action="/admin/connections/{{id}}/controls" method="POST">
+            <input type="hidden" name="operation" value="rescan"/>
+            <input type="hidden" name="redirect-url" value="/admin/connections/{{id}}"/>
+            <p class="text-xs text-base-content/70">{% t account.rescan-help-1 %} <strong>{{monitored-folder}}</strong> {% t account.rescan-help-2 %}</p>
+            <div class="flex flex-wrap items-end gap-4">
+              <label class="flex flex-col gap-1" for="rescan-days"><span class="text-xs text-base-content/70">{% t account.days-back %}</span>
+                <input class="input input-sm w-24" id="rescan-days" name="since-days" type="number" min="1" max="36500" step="1" value="7" required></label>
+              <label class="flex items-center gap-2" for="rescan-move">
+                <input class="checkbox checkbox-sm" id="rescan-move" name="move" type="checkbox" checked>
+                <span>{% t account.move-after %}</span></label>
+            </div>
+            <div><button form="rescan" class="btn btn-sm btn-primary">{% t account.rescan-start %}</button></div>
+          </form>
         </div>
-      </div>
-      <div class="flex gap-2 oauth-related">
-        <label for="auth-provider">Authentication Provider</label>
-        <div class="form-control">
-          <select class="select" name="auth-provider">
-            <option value="" disabled {% if auth-provider = null %}selected{% endif %}>Please Select One</option>
-            {% for provider in auth-providers %}
-            <option value="{{provider.id}}" {% if auth-provider = provider.id %}selected{% endif %}>{{provider.name}}</option>
-            {% endfor %}
-          </select>
+      </section>
+
+      <section class="card bg-base-100 border border-base-300" aria-labelledby="parse-title">
+        <div class="card-body gap-3">
+          <h2 class="card-title text-base" id="parse-title">{% t account.parse %}</h2>
+          <form id="parse" class="flex flex-col gap-3" action="/admin/connections/{{id}}/controls" method="POST">
+            <input type="hidden" name="operation" value="parse"/>
+            <input type="hidden" name="redirect-url" value="/admin/connections/{{id}}"/>
+            <label class="flex flex-col gap-1" for="parse-folder"><span class="text-xs text-base-content/70">{% t account.parse-folder %}</span>
+              <select id="parse-folder" class="select select-sm w-full" name="folder">
+                {% for folder in folders %}
+                <option value="{{folder}}">{{folder}}</option>
+                {% endfor %}
+              </select></label>
+            <label class="flex items-center gap-2" for="parse-move">
+              <input id="parse-move" class="checkbox checkbox-sm" name="move" type="checkbox">
+              <span>{% t account.move-after %}</span></label>
+            <div class="grid gap-3 sm:grid-cols-2">
+              <label class="flex flex-col gap-1" for="batch-size"><span class="text-xs text-base-content/70">{% t account.batch-size %}</span>
+                <input class="input input-sm w-full" id="batch-size" name="batch-size" type="number" min="1" step="1" value="100" placeholder="{% t account.batch-size-all %}"></label>
+              <label class="flex flex-col gap-1" for="since-days"><span class="text-xs text-base-content/70">{% t account.since-days %}</span>
+                <input class="input input-sm w-full" id="since-days" name="since-days" type="number" min="1" max="36500" step="1" placeholder="{% t account.since-days-all %}"></label>
+            </div>
+            <p class="text-xs text-base-content/70">{% t account.batch-help %}</p>
+            <label class="flex flex-col gap-1" for="assigned-category"><span class="text-xs text-base-content/70">{% t account.assign-category %}</span>
+              <select id="assigned-category" class="select select-sm w-full" name="assigned-category">
+                {% for category in categories %}
+                <option value="{{category.id}}">{% if category.name %}{{category.name}}{% else %}{% t account.automatic %}{% endif %}</option>
+                {% endfor %}
+              </select></label>
+            <label class="flex items-start gap-2" for="recategorize-known">
+              <input class="checkbox checkbox-sm mt-0.5" id="recategorize-known" name="recategorize-known" type="checkbox">
+              <span>{% t account.recategorize %}<br><span class="text-xs text-base-content/70">{% t account.recategorize-help %}</span></span></label>
+            <div><button form="parse" class="btn btn-sm btn-primary">{% t account.parse-start %}</button></div>
+          </form>
         </div>
-      </div>
-      <div class="flex gap-2">
-        <label for="host">Host</label>
-        <input class="input" name="host" value="{{host}}">
-        <input name="id" type="hidden" value="{{id}}">
-      </div>
-      <div class="flex gap-2">
-        <label for="user">User</label>
-        <input class="input" name="user" value="{{user}}">
-      </div>
-      <div class="flex gap-2">
-        <label for="secret">Secret</label>
-        <input class="input" name="secret" type="password" value="" placeholder="Leave blank to keep the current secret" autocomplete="new-password">
-      </div>
-      <div class="flex gap-2">
-        <label for="folder">Folder to watch</label>
-        <input class="input" name="folder" value="{{folder}}">
-      </div>
-      <div class="flex gap-2">
-        <label for="port">Port (defaults to default port of "security")</label>
-        <input class="input" name="port" value="{{port}}">
-      </div>
-      <div class="flex gap-2">
-        <label for="security">Security</label>
-        <div class="form-control">
-          <select class="select" name="security">
-            <option value="ssl" {% if security = "ssl" %}selected{% endif %}>SSL</option>
-            <option value="starttls" {% if security = "starttls" %}selected{% endif %}>STARTTLS</option>
-            <option value="plain" {% if security = "plain" %}selected{% endif %}>PLAIN</option>
-          </select>
-        </div>
-      </div>
-      <div class="flex gap-2">
-        <label for="check-ssl-certs">Check ssl certificates</label>
-        <input class="checkbox" name="check-ssl-certs" type="checkbox" value="false" {% if check-ssl-certs %} checked="true"{% endif %}>
-      </div>
-      <div class="flex gap-2">
-        <label for="debug">Debug mode</label>
-        <input class="checkbox" name="debug" type="checkbox" value="false" {% if debug %} checked="true"{% endif %}>
-      </div>
-    </form>
-    <div class="form-field my-4">
-      <button id="update-button" class="btn btn-primary">Update Config</button>
+      </section>
     </div>
+    {% endif %}
   </div>
-  {% if folders|not-empty %}
-  <div class="grow-2">
-    <h4 class="text-lg">Re-scan Recent E-mails</h4>
-    <form id="rescan" class="space-y-4" action="/admin/connections/{{id}}/controls" method="POST">
-      <input type="hidden" name="operation" value="rescan"/>
-      <input type="hidden" name="redirect-url" value="/admin/connections/{{id}}"/>
-      <p class="text-sm opacity-70">Reads the e-mails that arrived in <strong>{{monitored-folder}}</strong> during the last days once more and processes only those Plauna does not know yet; everything already stored is skipped. Use it for e-mails that landed somewhere else first and were moved back afterwards, e.g. out of the spam folder. The days are counted from the day an e-mail reached the server, today included - moving it between folders does not change that.</p>
-      <div class="flex gap-2">
-        <label for="rescan-days">Days to look back</label>
-        <input class="input" id="rescan-days" name="since-days" type="number" min="1" max="36500" step="1" value="7" required>
-      </div>
-      <div class="flex gap-2">
-        <label for="rescan-move">Move e-mails after categorization</label>
-        <input class="checkbox" id="rescan-move" name="move" type="checkbox" checked>
-      </div>
-      <div class="form-field">
-        <button form="rescan" class="btn btn-primary">Re-scan E-mails</button>
-      </div>
-    </form>
-    <h4 class="text-lg mt-8">Parse E-mails from Folders</h4>
-    <form id="parse" class="space-y-4" action="/admin/connections/{{id}}/controls" method="POST">
-      <input type="hidden" name="operation" value="parse"/>
-      <input type="hidden" name="redirect-url" value="/admin/connections/{{id}}"/>
-      <div class="form-field">
-        <label for="folder">Folders</label>
-        <div class="form-control">
-          <select class="select" name="folder">
-            {% for folder in folders %}
-            <option value="{{folder}}">{{folder}}</option>
-            {% endfor %}
-          </select>
+
+  <section class="oauth-related card bg-base-100 border border-base-300">
+    <div class="card-body gap-3">
+      {% include "admin-provider.html" %}
+    </div>
+  </section>
+
+  {% if parse-failures|not-empty %}
+  <section class="card bg-base-100 border border-base-300" aria-labelledby="failures-title">
+    <div class="card-body gap-3">
+      <h2 class="card-title text-base" id="failures-title">{% t account.failures %}</h2>
+      <p class="text-xs text-base-content/70">{% t account.failures-help %}</p>
+      {% for group in parse-failures %}
+      <div class="flex flex-col gap-2">
+        <div class="flex flex-wrap items-center gap-3">
+          <h3 class="font-semibold">{{group.folder}} <span class="badge badge-ghost">{{group.count}}</span>{% if group.truncated? %} <span class="text-xs text-base-content/70">{% t account.failures-shown group.shown %}</span>{% endif %}</h3>
+          <form action="{{group.retry-url}}" method="post" class="flex items-center gap-2">
+            <input type="hidden" name="folder" value="{{group.folder}}" />
+            <input type="hidden" name="redirect-url" value="/admin/connections/{{id}}" />
+            <label class="flex items-center gap-1 text-xs"><input class="checkbox checkbox-xs" name="move" type="checkbox"> {% t account.move-after %}</label>
+            <button class="btn btn-outline btn-xs" type="submit">{% t account.retry group.count %}</button>
+          </form>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="table table-xs">
+            <thead>
+              <tr><th>UID</th><th>{% t account.number %}</th><th>Message-ID</th><th>{% t list.column-subject %}</th><th>{% t account.error %}</th><th class="text-right">{% t account.attempts %}</th><th>{% t account.last-seen %}</th><th></th></tr>
+            </thead>
+            <tbody>
+              {% for failure in group.failures %}
+              <tr>
+                <td>{{failure.uid|default:"?"}}</td>
+                <td>{{failure.message-number}}</td>
+                <td class="max-w-xs truncate" title="{{failure.message-id}}">{{failure.message-id|default:"?"}}</td>
+                <td class="max-w-xs truncate" title="{{failure.subject}}">{{failure.subject|default:"?"}}</td>
+                <td class="max-w-md truncate" title="{{failure.error}}">{{failure.error}}</td>
+                <td class="text-right">{{failure.attempts}}</td>
+                <td class="whitespace-nowrap">{{failure.last-seen-text}}</td>
+                <td>
+                  <form action="/admin/connections/{{id}}/failures/{{failure.id}}/dismiss" method="post" class="inline">
+                    <input type="hidden" name="redirect-url" value="/admin/connections/{{id}}" />
+                    <button class="btn btn-ghost btn-xs" type="submit" title="{% t account.dismiss-help %}">{% t account.dismiss %}</button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
         </div>
       </div>
-      <div class="flex gap-2">
-        <label for="move">Move e-mails after categorization</label>
-        <input class="checkbox" name="move" type="checkbox">
-      </div>
-      <div class="form-field">
-        <label for="batch-size">Batch size</label>
-        <div class="form-control">
-          <input class="input" id="batch-size" name="batch-size" type="number" min="1" step="1" value="100" placeholder="Leave blank for the whole folder">
-        </div>
-        <p class="text-sm opacity-70">Stop after this many new e-mails have been saved and categorized. E-mails that are already stored are skipped and do not count, so running the same parse again continues with the next batch. Leave blank to process the whole folder in one go.</p>
-      </div>
-      <div class="form-field">
-        <label for="since-days">Only e-mails of the last N days</label>
-        <div class="form-control">
-          <input class="input" id="since-days" name="since-days" type="number" min="1" max="36500" step="1" placeholder="Leave blank for all e-mails">
-        </div>
-        <p class="text-sm opacity-70">Only read e-mails that arrived in the folder within this many days (counted from the day they reached the server, today included). Combines with the batch size. Leave blank for no time limit.</p>
-      </div>
-      <label for="assigned-category">Assign following category for all e-mails in folder. Leave blank for automatic category detection.</label>
-        <div class="form-control">
-          <select class="select" name="assigned-category">
-            {% for category in categories %}
-            <option value="{{category.id}}">{{category.name}}</option>
-            {% endfor %}
-          </select>
-        </div>
-      <div class="form-field">
-        <div class="flex gap-2">
-          <input class="checkbox" id="recategorize-known" name="recategorize-known" type="checkbox">
-          <label for="recategorize-known">Also assign the category to e-mails Plauna has stored already</label>
-        </div>
-        <p class="text-sm opacity-70">Only with a category above. E-mails Plauna knows already (usually skipped) get that category, as if you had changed it by hand, and the folder is recorded as their place - for example to teach a new category with old e-mails from the trash. They stay where they are unless "Move e-mails after categorization" is ticked, which moves them into the category's folder (for a category kept in the inbox: back into the inbox).</p>
-      </div>
-      <div class="form-field">
-        <button form="parse" class="btn btn-primary">Parse E-mails</button>
-      </div>
-    </form>
+      {% endfor %}
+    </div>
+  </section>
   {% endif %}
-  </div>
-  <div class="grow-12 oauth-related">
-    {% include "admin-provider.html" %}
-  </div>
-</div>
 
-{% if parse-failures|not-empty %}
-<div class="my-8">
-  <h4 class="text-lg">Messages That Could Not Be Read</h4>
-  <p class="text-sm opacity-70">These messages failed while parsing a folder or catching up after a reconnect and were therefore never saved. "Retry" reads them again by their IMAP UID and lists the recovered e-mails as a reviewable batch. Entries disappear once the message is stored or no longer exists on the server; "Dismiss" removes one by hand.</p>
-  {% for group in parse-failures %}
-  <div class="my-4">
-    <div class="flex flex-wrap items-center gap-3">
-      <h5 class="font-semibold">{{group.folder}} <span class="badge badge-ghost">{{group.count}}</span>{% if group.truncated? %} <span class="text-sm opacity-70">showing the {{group.shown}} most recent</span>{% endif %}</h5>
-      <form action="{{group.retry-url}}" method="post" class="flex items-center gap-2">
-        <input type="hidden" name="folder" value="{{group.folder}}" />
-        <input type="hidden" name="redirect-url" value="/admin/connections/{{id}}" />
-        <label class="flex items-center gap-1 text-sm"><input class="checkbox checkbox-xs" name="move" type="checkbox"> Move after categorization</label>
-        <button class="btn btn-outline btn-xs" type="submit">Retry {{group.count}} message(s)</button>
-      </form>
+  {% if folder-emails|not-empty %}
+  <section class="card bg-base-100 border border-base-300" aria-labelledby="folder-emails-title">
+    <div class="card-body gap-3">
+      <h2 class="card-title text-base" id="folder-emails-title">{% t account.folder-emails %}</h2>
+      <p class="text-xs text-base-content/70">{% t account.folder-emails-help %}</p>
+      <div class="overflow-x-auto">
+        <table class="table table-sm">
+          <thead>
+            <tr><th>{% t account.folder-column %}</th><th class="text-right">{% t account.categorized %}</th><th class="text-right">{% t account.uncategorized %}</th><th></th></tr>
+          </thead>
+          <tbody>
+            {% for entry in folder-emails %}
+            <tr>
+              <td>{{entry.folder}}</td>
+              <td class="text-right">{{entry.categorized}}</td>
+              <td class="text-right">{{entry.uncategorized}}</td>
+              <td class="whitespace-nowrap">
+                {% if entry.move.status = "running" %}
+                <span class="badge badge-warning">{% t account.moving entry.move.moved entry.move.total %}</span>
+                {% else %}
+                {% if entry.move.status = "finished" %}<span class="badge badge-ghost mr-2" title="{% t account.moved-detail entry.move.in-place entry.move.not-found entry.move.failed %}">{% t account.moved entry.move.moved entry.move.total %}</span>{% endif %}
+                {% if entry.categorized > 0 %}
+                <form action="{{entry.move-url}}" method="post" class="inline" onsubmit="return confirm(this.dataset.confirm)" data-confirm="{% t account.move-folder-confirm %}">
+                  <input type="hidden" name="folder" value="{{entry.folder}}" />
+                  <input type="hidden" name="redirect-url" value="/admin/connections/{{id}}" />
+                  <button class="btn btn-outline btn-xs" type="submit">{% t account.move-folder entry.categorized %}</button>
+                </form>
+                {% endif %}
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </div>
-    <div class="overflow-x-auto">
-      <table class="table table-zebra table-xs">
-        <thead>
-          <tr><th>UID</th><th>No.</th><th>Message-ID</th><th>Subject</th><th>Error</th><th class="text-right">Attempts</th><th>Last seen</th><th></th></tr>
-        </thead>
-        <tbody>
-          {% for failure in group.failures %}
-          <tr>
-            <td>{{failure.uid|default:"?"}}</td>
-            <td>{{failure.message-number}}</td>
-            <td class="max-w-xs truncate" title="{{failure.message-id}}">{{failure.message-id|default:"unknown"}}</td>
-            <td class="max-w-xs truncate" title="{{failure.subject}}">{{failure.subject|default:"unknown"}}</td>
-            <td class="max-w-md truncate" title="{{failure.error}}">{{failure.error}}</td>
-            <td class="text-right">{{failure.attempts}}</td>
-            <td class="whitespace-nowrap">{{failure.last-seen-text}}</td>
-            <td>
-              <form action="/admin/connections/{{id}}/failures/{{failure.id}}/dismiss" method="post" class="inline">
-                <input type="hidden" name="redirect-url" value="/admin/connections/{{id}}" />
-                <button class="btn btn-ghost btn-xs" type="submit" title="Forget this entry">Dismiss</button>
-              </form>
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+  </section>
+  {% endif %}
+
+  {% if parse-batches|not-empty %}
+  <section class="card bg-base-100 border border-base-300" aria-labelledby="runs-title">
+    <div class="card-body gap-3">
+      <h2 class="card-title text-base" id="runs-title">{% t account.runs %}</h2>
+      {% if parse-running? %}<p class="text-xs text-base-content/70">{% t account.runs-running %}</p>{% endif %}
+      <p class="text-xs text-base-content/70">{% t account.runs-help %}</p>
+      <div class="overflow-x-auto">
+        <table class="table table-sm">
+          <thead>
+            <tr>
+              <th>{% t account.started %}</th>
+              <th>{% t account.folder-column %}</th>
+              <th>{% t account.status %}</th>
+              <th class="text-right">{% t account.batch-size %}</th>
+              <th class="text-right">{% t account.new %}</th>
+              <th class="text-right" title="{% t account.skipped-help %}">{% t account.skipped %}</th>
+              <th class="text-right">{% t account.errors %}</th>
+              <th class="text-right">{% t account.not-examined %}</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for batch in parse-batches %}
+            <tr>
+              <td class="whitespace-nowrap">{{batch.started}}</td>
+              <td>{{batch.folder}}</td>
+              <td>{% if batch.status = "running" %}<span class="badge badge-warning">{% t account.running %}</span>{% else %}{% if batch.status = "aborted" %}<span class="badge badge-error">{% t account.aborted %}</span>{% else %}<span class="badge badge-success">{% t account.finished %}</span>{% endif %}{% endif %}</td>
+              <td class="text-right">{% if batch.batch-size %}{{batch.batch-size}}{% else %}{% t account.all %}{% endif %}</td>
+              <td class="text-right">{{batch.processed}}</td>
+              <td class="text-right" title="{% t account.skipped-detail batch.skipped batch.skipped-elsewhere %}">{{batch.skipped}}{% if batch.skipped-elsewhere > 0 %} <span class="text-xs opacity-70">({% t account.elsewhere batch.skipped-elsewhere %})</span>{% endif %}</td>
+              <td class="text-right">{{batch.errors}}</td>
+              <td class="text-right">{{batch.remaining}}</td>
+              <td class="whitespace-nowrap">
+                {% if batch.processed > 0 %}
+                <a class="link link-primary" href="{{batch.emails-url}}">{% t account.review %}</a>
+                {% if batch.move.status = "running" %}
+                <span class="badge badge-warning ml-2">{% t account.moving batch.move.moved batch.move.total %}</span>
+                {% else %}
+                {% if batch.move.status = "finished" %}<span class="badge badge-ghost ml-2" title="{% t account.moved-detail batch.move.in-place batch.move.not-found batch.move.failed %}">{% t account.moved batch.move.moved batch.move.total %}</span>{% endif %}
+                {% ifunequal batch.status "running" %}
+                <form action="{{batch.move-url}}" method="post" class="inline ml-2" onsubmit="return confirm(this.dataset.confirm)" data-confirm="{% t list.batch-move-confirm %}">
+                  <input type="hidden" name="redirect-url" value="/admin/connections/{{id}}" />
+                  <button class="btn btn-outline btn-xs" type="submit">{% t account.move-batch %}</button>
+                </form>
+                {% endifunequal %}
+                {% endif %}
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </div>
-  </div>
-  {% endfor %}
+  </section>
+  {% endif %}
 </div>
-{% endif %}
-
-{% if folder-emails|not-empty %}
-<div class="my-8">
-  <h4 class="text-lg">E-mails Still in Their Original Folders</h4>
-  <p class="text-sm opacity-70">Stored e-mails grouped by the folder they were read from and are still recorded in. "Move" moves the categorized ones into their category folders - across all parse runs and the live monitor at once. E-mails without a category stay where they are until they get one; duplicates that Plauna knows from another folder are not listed here because they were never saved from this folder.</p>
-  <div class="overflow-x-auto">
-    <table class="table table-zebra table-sm">
-      <thead>
-        <tr><th>Folder</th><th class="text-right">Categorized</th><th class="text-right">Without category</th><th></th></tr>
-      </thead>
-      <tbody>
-        {% for entry in folder-emails %}
-        <tr>
-          <td>{{entry.folder}}</td>
-          <td class="text-right">{{entry.categorized}}</td>
-          <td class="text-right">{{entry.uncategorized}}</td>
-          <td class="whitespace-nowrap">
-            {% if entry.move.status = "running" %}
-            <span class="badge badge-warning">moving {{entry.move.moved}} / {{entry.move.total}}</span>
-            {% else %}
-            {% if entry.move.status = "finished" %}<span class="badge badge-ghost mr-2" title="{{entry.move.in-place|default:0}} already in place, {{entry.move.not-found}} not found, {{entry.move.failed}} failed">moved {{entry.move.moved}}{% if entry.move.in-place > 0 %} (+{{entry.move.in-place}} in place){% endif %} / {{entry.move.total}}</span>{% endif %}
-            {% if entry.categorized > 0 %}
-            <form action="{{entry.move-url}}" method="post" class="inline" onsubmit="return confirm('Move every categorized e-mail recorded in this folder into its category folder on the IMAP server?')">
-              <input type="hidden" name="folder" value="{{entry.folder}}" />
-              <input type="hidden" name="redirect-url" value="/admin/connections/{{id}}" />
-              <button class="btn btn-outline btn-xs" type="submit">Move {{entry.categorized}} to category folders</button>
-            </form>
-            {% endif %}
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</div>
-{% endif %}
-
-{% if parse-batches|not-empty %}
-<div class="my-8">
-  <h4 class="text-lg">Recent Folder Parse Runs</h4>
-  {% if parse-running? %}<p class="text-sm opacity-70">A run is in progress; this page reloads when it has finished (and meanwhile every 10 seconds unless you are editing a field).</p>{% endif %}
-  <p class="text-sm opacity-70">"Move to category folders" moves the categorized e-mails of a batch that was parsed without "Move e-mails after categorization" into their category folders now. E-mails without a category stay where they are.</p>
-  <div class="overflow-x-auto">
-    <table class="table table-zebra table-sm">
-      <thead>
-        <tr>
-          <th>Started</th>
-          <th>Folder</th>
-          <th>Status</th>
-          <th class="text-right">Batch size</th>
-          <th class="text-right">New</th>
-          <th class="text-right" title="Already stored e-mails. 'elsewhere' = duplicates of e-mails stored from another folder; the rest were saved by earlier runs of this folder and are still waiting to be moved">Skipped</th>
-          <th class="text-right">Errors</th>
-          <th class="text-right">Not examined</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for batch in parse-batches %}
-        <tr>
-          <td>{{batch.started}}</td>
-          <td>{{batch.folder}}</td>
-          <td>{% if batch.status = "running" %}<span class="badge badge-warning">running</span>{% else %}{% if batch.status = "aborted" %}<span class="badge badge-error">aborted</span>{% else %}<span class="badge badge-success">finished</span>{% endif %}{% endif %}</td>
-          <td class="text-right">{{batch.batch-size|default:"all"}}</td>
-          <td class="text-right">{{batch.processed}}</td>
-          <td class="text-right" title="Already stored e-mails: {{batch.skipped|add:0}} in total, of which {{batch.skipped-elsewhere}} were duplicates of e-mails stored from other folders">{{batch.skipped}}{% if batch.skipped-elsewhere > 0 %} <span class="text-xs opacity-70">({{batch.skipped-elsewhere}} elsewhere)</span>{% endif %}</td>
-          <td class="text-right">{{batch.errors}}</td>
-          <td class="text-right">{{batch.remaining}}</td>
-          <td class="whitespace-nowrap">
-            {% if batch.processed > 0 %}
-            <a class="link link-primary" href="{{batch.emails-url}}">Review e-mails</a>
-            {% if batch.move.status = "running" %}
-            <span class="badge badge-warning ml-2">moving {{batch.move.moved}} / {{batch.move.total}}</span>
-            {% else %}
-            {% if batch.move.status = "finished" %}<span class="badge badge-ghost ml-2" title="{{batch.move.in-place|default:0}} already in place, {{batch.move.not-found}} not found, {{batch.move.failed}} failed">moved {{batch.move.moved}}{% if batch.move.in-place > 0 %} (+{{batch.move.in-place}} in place){% endif %} / {{batch.move.total}}</span>{% endif %}
-            {% ifunequal batch.status "running" %}
-            <form action="{{batch.move-url}}" method="post" class="inline ml-2" onsubmit="return confirm('Move every categorized e-mail of this batch into its category folder on the IMAP server?')">
-              <input type="hidden" name="redirect-url" value="/admin/connections/{{id}}" />
-              <button class="btn btn-outline btn-xs" type="submit">Move to category folders</button>
-            </form>
-            {% endifunequal %}
-            {% endif %}
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</div>
-{% endif %}
 
   <script>
     // Background activity (parse, retry, batch move): poll a tiny status endpoint and reload the page
@@ -307,11 +294,12 @@
         if (!notice) {
           notice = document.createElement('div');
           notice.id = 'background-activity-notice';
-          notice.className = 'alert alert-info my-2';
-          document.body.insertBefore(notice, document.body.firstChild);
+          notice.className = 'alert alert-info alert-soft my-2';
+          var main = document.querySelector('main');
+          main.insertBefore(notice, main.firstChild);
         }
-        notice.textContent = (finished ? 'The background job has finished.' : 'The background job is still running.')
-          + ' Reload the page to see the results - unsaved changes on this page would be lost.';
+        var texts = document.getElementById('account-texts').dataset;
+        notice.textContent = finished ? texts.jobFinished : texts.jobRunning;
       }
       function poll() {
         fetch('/admin/connections/{{id}}/activity', {cache: 'no-store'})
@@ -361,11 +349,3 @@
      });
   </script>
 {% endblock %}
-
-
-
-
-
-
-
-

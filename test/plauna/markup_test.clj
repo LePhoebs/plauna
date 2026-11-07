@@ -328,14 +328,14 @@
                  :parse-running? true}
                 []
                 [])]
-      (is (str/includes? html "Recent Folder Parse Runs"))
+      (is (str/includes? html "Recent folder parse runs"))
       (is (str/includes? html "href=\"/emails?batch=run-1\""))
       (is (not (str/includes? html "href=\"/emails?batch=run-2\"")) "A run without new e-mails offers no review link")
       (is (str/includes? html "var running = true;") "The page polls and reloads while a run is in progress")
       (is (not (str/includes? html "http-equiv=\"refresh\"")) "No blind meta refresh that would discard form input")))
   (with-redefs [client/disconnected-connections (fn [] [])]
     (let [html (markup/connection {:id "connection-1" :host "h" :user "u" :parse-batches [] :parse-running? false} [] [])]
-      (is (not (str/includes? html "Recent Folder Parse Runs")))
+      (is (not (str/includes? html "Recent folder parse runs")))
       (is (str/includes? html "var running = false;")))))
 
 (deftest training-progress-page-polls-the-status-endpoint
@@ -377,13 +377,13 @@
                                    :failures [{:id 7 :uid 2327 :message-number 2327 :message-id nil :subject "Broken" :error "Failed to load IMAP envelope" :attempts 3 :last-seen 1756800000}
                                               {:id 8 :uid nil :message-number 12 :message-id "<x@y>" :subject nil :error "boom" :attempts 1 :last-seen nil}]}]}
                 [] [])]
-      (is (str/includes? html "Messages That Could Not Be Read"))
+      (is (str/includes? html "Messages that could not be read"))
       (is (str/includes? html "Retry 2 message(s)"))
       (is (str/includes? html "action=\"/admin/connections/connection-1/failures/retry\""))
       (is (str/includes? html "action=\"/admin/connections/connection-1/failures/7/dismiss\""))
       (is (str/includes? html "Failed to load IMAP envelope"))))
   (with-redefs [client/disconnected-connections (fn [] [])]
-    (is (not (str/includes? (markup/connection {:id "c" :host "h" :user "u" :parse-failures []} [] []) "Messages That Could Not Be Read")))))
+    (is (not (str/includes? (markup/connection {:id "c" :host "h" :user "u" :parse-failures []} [] []) "Messages that could not be read")))))
 
 (deftest connection-page-lists-folders-with-movable-emails
   (with-redefs [client/disconnected-connections (fn [] [])]
@@ -392,7 +392,7 @@
                  :folder-emails [{:folder "Newsletter_Alt" :categorized 640 :uncategorized 60 :move-url "/admin/connections/c1/folders/move" :move nil}
                                  {:folder "INBOX" :categorized 0 :uncategorized 3 :move-url "/admin/connections/c1/folders/move" :move nil}]}
                 [] [])]
-      (is (str/includes? html "E-mails Still in Their Original Folders"))
+      (is (str/includes? html "E-mails still in their original folders"))
       (is (str/includes? html "Move 640 to category folders"))
       (is (= 1 (count (re-seq #"to category folders</button>" html))) "A folder without categorized e-mails has no move button"))))
 

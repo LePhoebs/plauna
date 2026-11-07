@@ -6,7 +6,10 @@
 
 {% block content %}
 
-<h2 class="text-xl font-bold mb-4">Database</h2>
+<nav class="text-xs text-base-content/60 mb-3" aria-label="{% t category.breadcrumb %}">
+  <a class="link link-hover" href="/admin">{% t nav.system %}</a> / {% t system.database %}
+</nav>
+<h1 class="text-2xl font-bold mb-4">{% t system.database %}</h1>
 
 {% if message %}
 <div role="alert" class="alert {% if message.type = "success" %}alert-success{% else %}alert-error{% endif %} mb-4">
@@ -14,92 +17,81 @@
 </div>
 {% endif %}
 
-<div class="flex flex-col gap-4">
+<div class="flex flex-col gap-4 max-w-3xl">
 
   <!-- Current status -->
-  <div class="card card-border">
+  <div class="card bg-base-100 border border-base-300">
     <div class="card-body">
-      <h3 class="card-title">Current Status</h3>
-      <p>Active database: <strong>{{db-status.type}}</strong>
+      <h2 class="card-title text-base">{% t database.status %}</h2>
+      <p>{% t database.active %} <strong>{{db-status.type}}</strong>
         {% if db-status.type = "mariadb" %}
-          &mdash; {{db-status.host}}:{{db-status.port}}/{{db-status.name}} (user: {{db-status.user}})
+          &mdash; {{db-status.host}}:{{db-status.port}}/{{db-status.name}} ({% t database.user-is db-status.user %})
         {% endif %}
       </p>
       {% if db-status.type = "sqlite" %}
-      <p class="text-sm opacity-70">SQLite path: {{db-status.path}}</p>
+      <p class="text-sm opacity-70">{% t database.sqlite-path db-status.path %}</p>
       {% endif %}
     </div>
   </div>
 
   <!-- Configure MariaDB -->
-  <div class="card card-border">
+  <div class="card bg-base-100 border border-base-300">
     <div class="card-body">
-      <h3 class="card-title">Configure MariaDB</h3>
-      <p class="mb-3 text-sm opacity-80">
-        Changes are saved to <code>db-config.edn</code> in the data directory and take effect after
-        the next restart. Migrate your data first, then restart.
-        Environment variables (<code>PLAUNA_DB_TYPE</code>, <code>PLAUNA_DB_HOST</code>, etc.) always
-        override the saved file.
-      </p>
+      <h2 class="card-title text-base">{% t database.configure %}</h2>
+      <p class="mb-3 text-sm opacity-80">{% t database.configure-help %} <code>db-config.edn</code> · <code>PLAUNA_DB_TYPE</code>, <code>PLAUNA_DB_HOST</code> …</p>
       <form action="/admin/database/config" method="post" class="flex flex-col gap-3 max-w-md">
         <fieldset class="fieldset">
-          <legend class="fieldset-legend">Host</legend>
+          <legend class="fieldset-legend">{% t account.host %}</legend>
           <input class="input" type="text" name="host" value="{{saved-config.host}}" placeholder="localhost" required />
         </fieldset>
         <fieldset class="fieldset">
-          <legend class="fieldset-legend">Port</legend>
+          <legend class="fieldset-legend">{% t account.port %}</legend>
           <input class="input" type="number" name="port" value="{{saved-config.port|default:3306}}" placeholder="3306" required />
         </fieldset>
         <fieldset class="fieldset">
-          <legend class="fieldset-legend">Database name</legend>
+          <legend class="fieldset-legend">{% t database.name %}</legend>
           <input class="input" type="text" name="name" value="{{saved-config.name}}" placeholder="plauna" required />
         </fieldset>
         <fieldset class="fieldset">
-          <legend class="fieldset-legend">User</legend>
+          <legend class="fieldset-legend">{% t account.user %}</legend>
           <input class="input" type="text" name="user" value="{{saved-config.user}}" placeholder="plauna" required />
         </fieldset>
         <fieldset class="fieldset">
-          <legend class="fieldset-legend">Password</legend>
-          <input class="input" type="password" name="password" placeholder="leave blank to keep current" />
+          <legend class="fieldset-legend">{% t database.password %}</legend>
+          <input class="input" type="password" name="password" placeholder="{% t account.secret-keep %}" />
         </fieldset>
         <div class="flex gap-2">
-          <button class="btn btn-primary" type="submit">Save Configuration</button>
-          <button class="btn btn-outline" type="submit" formaction="/admin/database/test">Test Connection</button>
+          <button class="btn btn-primary btn-sm" type="submit">{% t database.save %}</button>
+          <button class="btn btn-outline btn-sm" type="submit" formaction="/admin/database/test">{% t database.test %}</button>
         </div>
       </form>
     </div>
   </div>
 
   <!-- Migration -->
-  <div class="card card-border">
+  <div class="card bg-base-100 border border-base-300">
     <div class="card-body">
-      <h3 class="card-title">Migrate SQLite &rarr; MariaDB</h3>
-      <p class="mb-3 text-sm opacity-80">
-        Copies all data from the local SQLite file to the configured MariaDB database.
-        The SQLite file is not deleted; once Plauna runs on MariaDB, this page offers to delete it.
-        It only runs into a MariaDB database without e-mails: copying again later would bring back
-        everything deleted since the switch. After a successful migration, save the config above and
-        restart Plauna.
-      </p>
+      <h2 class="card-title text-base">{% t database.migrate %}</h2>
+      <p class="mb-3 text-sm opacity-80">{% t database.migrate-help %}</p>
       {% if sqlite-exists %}
       <form action="/admin/database/migrate" method="post">
-        <button class="btn btn-warning" type="submit"
-                onclick="return confirm('This will copy all SQLite data to MariaDB. Continue?')">
-          Start Migration
+        <button class="btn btn-warning btn-sm" type="submit" data-confirm="{% t database.migrate-confirm %}"
+                onclick="return confirm(this.dataset.confirm)">
+          {% t database.migrate-start %}
         </button>
       </form>
       {% else %}
-      <p class="text-sm opacity-60">SQLite database file not found — nothing to migrate.</p>
+      <p class="text-sm opacity-60">{% t database.no-sqlite %}</p>
       {% endif %}
 
       {% if migration-counts %}
       <div class="mt-4">
-        <p class="font-semibold">Row counts per table:</p>
+        <p class="font-semibold">{% t database.row-counts %}</p>
         <ul class="list-disc ml-5 text-sm">
           {% for entry in migration-counts %}
-          <li>{{entry.table}}: {{entry.inserted}} inserted
-            {% if entry.skipped > 0 %}, <span class="text-error font-semibold">{{entry.skipped}} skipped</span>{% endif %}
-            ({{entry.total}} source rows)</li>
+          <li>{{entry.table}}: {% t database.inserted entry.inserted %}
+            {% if entry.skipped > 0 %}, <span class="text-error font-semibold">{% t database.skipped entry.skipped %}</span>{% endif %}
+            ({% t database.source-rows entry.total %})</li>
           {% endfor %}
         </ul>
       </div>
@@ -109,18 +101,13 @@
 
   {% if old-sqlite %}
   <!-- Old SQLite file -->
-  <div class="card card-border border-warning">
+  <div class="card bg-base-100 border border-warning">
     <div class="card-body">
-      <h3 class="card-title">Old SQLite Database</h3>
-      <p class="mb-3 text-sm opacity-80">
-        Plauna uses MariaDB, but the SQLite file from before the migration still exists
-        (<code>{{old-sqlite.path}}</code>, {{old-sqlite.size}}). Plauna no longer reads it. Once you have
-        checked that everything arrived in MariaDB, you can delete it to free the space.
-        This cannot be undone.
-      </p>
+      <h2 class="card-title text-base">{% t database.old %}</h2>
+      <p class="mb-3 text-sm opacity-80">{% t database.old-help old-sqlite.path old-sqlite.size %}</p>
       <table class="table table-sm w-auto mb-3">
         <thead>
-          <tr><th></th><th class="text-right">SQLite (old)</th><th class="text-right">MariaDB (active)</th></tr>
+          <tr><th></th><th class="text-right">{% t database.sqlite-old %}</th><th class="text-right">{% t database.mariadb-active %}</th></tr>
         </thead>
         <tbody>
           {% for row in old-sqlite.counts %}
@@ -134,11 +121,11 @@
       </table>
       <form action="/admin/database/delete-sqlite" method="post" class="flex flex-col gap-3 max-w-md">
         <fieldset class="fieldset">
-          <legend class="fieldset-legend">Enter “{{sqlite-delete-confirmation}}” to confirm</legend>
+          <legend class="fieldset-legend">{% t database.delete-confirm sqlite-delete-confirmation %}</legend>
           <input id="sqlite-delete-confirmation" class="input" type="text" name="confirmation" autocomplete="off" />
         </fieldset>
         <div>
-          <button id="sqlite-delete-submit" class="btn btn-error" type="submit" disabled>Delete SQLite file</button>
+          <button id="sqlite-delete-submit" class="btn btn-error btn-sm" type="submit" disabled>{% t database.delete %}</button>
         </div>
       </form>
       <script>

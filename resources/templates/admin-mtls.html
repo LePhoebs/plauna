@@ -1,116 +1,93 @@
 {% extends "base.html" %}
 
 {% block content %}
+<div class="max-w-3xl flex flex-col gap-5">
+  <nav class="text-xs text-base-content/60" aria-label="{% t category.breadcrumb %}">
+    <a class="link link-hover" href="/admin">{% t nav.system %}</a> / {% t system.mtls %}
+  </nav>
+  <h1 class="text-2xl font-bold">{% t system.mtls %}</h1>
 
-<h2 class="uppercase text-lg my-8">mTLS Login</h2>
-
-{% if environment-managed %}
-<div role="alert" class="alert alert-warning alert-outline mb-6 max-w-3xl">
-  <span>
-    mTLS login is managed by the <code>PLAUNA_MTLS_TRUSTED_CERT_SHA256</code> and
-    <code>PLAUNA_MTLS_PROXY_SECRET</code> environment variables. Remove them and restart Plauna
-    before managing these values here.
-  </span>
-</div>
-{% endif %}
-
-<div class="alert {% if enabled %}alert-success{% else %}alert-info{% endif %} alert-outline mb-6 max-w-3xl" role="status">
-  <span>
-    Passwordless certificate login is currently <strong>{% if enabled %}enabled{% else %}disabled{% endif %}</strong>.
-    {% if secret-configured %}A proxy secret is configured.{% else %}No proxy secret is configured.{% endif %}
-  </span>
-</div>
-
-{% if current-certificate %}
-<div class="alert alert-info alert-outline mb-6 max-w-3xl" role="status">
-  <span>
-    NGINX verified the client certificate used for this request.<br>
-    SHA-256: <code class="break-all">{{current-certificate.fingerprint}}</code><br>
-    {% if current-certificate.trusted %}
-    This certificate is already trusted for passwordless login.
-    {% else %}
-    This certificate is not currently trusted.
-    {% if current-certificate.environment-managed %}
-    Add its fingerprint to <code>PLAUNA_MTLS_TRUSTED_CERT_SHA256</code> and restart Plauna.
-    {% endif %}
-    {% endif %}
-  </span>
-</div>
-{% endif %}
-
-<form action="/admin/mtls" method="POST" class="flex flex-col gap-5 max-w-3xl">
-  <input type="hidden" name="redirect-url" value="/admin/mtls">
-
-  <div>
-    <label class="block mb-2 text-sm font-medium text-gray-900" for="trusted-cert-sha256">
-      Trusted client certificate SHA-256 fingerprints
-    </label>
-    <textarea id="trusted-cert-sha256" class="textarea w-full font-mono" name="trusted-cert-sha256"
-              rows="7" placeholder="AA:BB:...:FF (one per line)" {% if environment-managed %}disabled{% endif %}>{{trusted-cert-sha256}}</textarea>
-    <div class="text-xs text-gray-500 mt-1">
-      Separate fingerprints with new lines, commas, semicolons or whitespace. An empty list disables
-      mTLS login. Obtain a fingerprint with
-      <code>openssl x509 -in client.crt -noout -fingerprint -sha256</code>.
-    </div>
+  {% if environment-managed %}
+  <div role="alert" class="alert alert-warning alert-soft">
+    <span>{% t mtls.env-managed %} <code>PLAUNA_MTLS_TRUSTED_CERT_SHA256</code>, <code>PLAUNA_MTLS_PROXY_SECRET</code></span>
   </div>
+  {% endif %}
 
-  <div>
-    <label class="block mb-2 text-sm font-medium text-gray-900" for="proxy-secret">Proxy secret</label>
-    <input id="proxy-secret" class="input w-full font-mono" name="proxy-secret" type="password"
-           autocomplete="new-password" minlength="32"
-           placeholder="{% if secret-configured %}Leave blank to keep the current secret{% else %}At least 32 characters{% endif %}"
-           {% if environment-managed %}disabled{% endif %}>
-    <div class="text-xs text-gray-500 mt-1">
-      Configure the same secret in NGINX as <code>X-Plauna-Proxy-Secret</code>. The stored value is
-      never sent back to the browser. Generate a strong value with <code>openssl rand -hex 32</code>.
-    </div>
-  </div>
-
-  {% if current-certificate.can-add %}
-  <label class="label cursor-pointer justify-start items-start gap-3">
-    <input class="checkbox mt-1" type="checkbox" name="add-current-certificate" value="true">
+  <div class="alert {% if enabled %}alert-success{% else %}alert-info{% endif %} alert-soft" role="status">
     <span>
-      Add the certificate used for this request to the trusted list
-      <span class="block text-xs text-gray-500 mt-1">
-        Its fingerprint is derived from NGINX's verified certificate header and cannot be supplied by the browser.
-      </span>
-    </span>
-  </label>
-  {% endif %}
-
-  {% if secret-configured %}
-  {% if not environment-managed %}
-  <label class="label cursor-pointer justify-start gap-3">
-    <input class="checkbox" type="checkbox" name="clear-proxy-secret" value="true">
-    <span>Delete the stored proxy secret</span>
-  </label>
-  {% endif %}
-  {% endif %}
-
-  <div>
-    <label class="block mb-2 text-sm font-medium text-gray-900" for="current-password">
-      Current admin password
-    </label>
-    <input id="current-password" class="input w-full" name="current-password" type="password"
-           autocomplete="current-password" required
-           placeholder="Required to authorize every mTLS configuration change"
-           {% if environment-managed %}disabled{% endif %}>
-    <div class="text-xs text-gray-500 mt-1">
-      Plauna verifies the password again before changing either the certificate allowlist or proxy secret.
-    </div>
-  </div>
-
-  <div class="alert alert-warning alert-outline" role="alert">
-    <span>
-      Only NGINX should be able to reach Plauna's HTTP port. NGINX must overwrite
-      <code>X-Plauna-Client-Verify</code>, <code>X-Plauna-Client-Cert</code> and
-      <code>X-Plauna-Proxy-Secret</code> on every proxied request.
+      {% if enabled %}{% t mtls.enabled %}{% else %}{% t mtls.disabled %}{% endif %}
+      {% if secret-configured %}{% t mtls.secret-set %}{% else %}{% t mtls.secret-unset %}{% endif %}
     </span>
   </div>
 
-  <button class="btn btn-primary self-start" type="submit" {% if environment-managed %}disabled{% endif %}>
-    Save mTLS configuration
-  </button>
-</form>
+  {% if current-certificate %}
+  <div class="alert alert-info alert-soft" role="status">
+    <span>
+      {% t mtls.current %}<br>
+      SHA-256: <code class="break-all">{{current-certificate.fingerprint}}</code><br>
+      {% if current-certificate.trusted %}
+      {% t mtls.current-trusted %}
+      {% else %}
+      {% t mtls.current-untrusted %}
+      {% if current-certificate.environment-managed %}
+      {% t mtls.current-add-env %} <code>PLAUNA_MTLS_TRUSTED_CERT_SHA256</code>
+      {% endif %}
+      {% endif %}
+    </span>
+  </div>
+  {% endif %}
 
+  <form action="/admin/mtls" method="POST" class="card bg-base-100 border border-base-300">
+    <div class="card-body gap-4">
+      <input type="hidden" name="redirect-url" value="/admin/mtls">
+
+      <label class="flex flex-col gap-1" for="trusted-cert-sha256">
+        <span class="font-semibold">{% t mtls.fingerprints %}</span>
+        <textarea id="trusted-cert-sha256" class="textarea w-full font-mono" name="trusted-cert-sha256"
+                  rows="7" placeholder="AA:BB:...:FF" {% if environment-managed %}disabled{% endif %}>{{trusted-cert-sha256}}</textarea>
+        <span class="text-xs text-base-content/70">{% t mtls.fingerprints-help %} <code>openssl x509 -in client.crt -noout -fingerprint -sha256</code></span>
+      </label>
+
+      <label class="flex flex-col gap-1" for="proxy-secret">
+        <span class="font-semibold">{% t mtls.proxy-secret %}</span>
+        <input id="proxy-secret" class="input w-full font-mono" name="proxy-secret" type="password"
+               autocomplete="new-password" minlength="32"
+               placeholder="{% if secret-configured %}{% t account.secret-keep %}{% else %}{% t mtls.secret-min %}{% endif %}"
+               {% if environment-managed %}disabled{% endif %}>
+        <span class="text-xs text-base-content/70">{% t mtls.proxy-secret-help %} <code>X-Plauna-Proxy-Secret</code> · <code>openssl rand -hex 32</code></span>
+      </label>
+
+      {% if current-certificate.can-add %}
+      <label class="flex items-start gap-3" for="add-current-certificate">
+        <input id="add-current-certificate" class="checkbox checkbox-sm mt-0.5" type="checkbox" name="add-current-certificate" value="true">
+        <span>{% t mtls.add-current %}
+          <span class="block text-xs text-base-content/70">{% t mtls.add-current-help %}</span>
+        </span>
+      </label>
+      {% endif %}
+
+      {% if secret-configured %}
+      {% if not environment-managed %}
+      <label class="flex items-center gap-3" for="clear-proxy-secret">
+        <input id="clear-proxy-secret" class="checkbox checkbox-sm" type="checkbox" name="clear-proxy-secret" value="true">
+        <span>{% t mtls.clear-secret %}</span>
+      </label>
+      {% endif %}
+      {% endif %}
+
+      <label class="flex flex-col gap-1" for="current-password">
+        <span class="font-semibold">{% t mtls.password %}</span>
+        <input id="current-password" class="input w-full sm:w-80" name="current-password" type="password"
+               autocomplete="current-password" required {% if environment-managed %}disabled{% endif %}>
+        <span class="text-xs text-base-content/70">{% t mtls.password-help %}</span>
+      </label>
+
+      <div class="alert alert-warning alert-soft" role="alert">
+        <span>{% t mtls.nginx %} <code>X-Plauna-Client-Verify</code>, <code>X-Plauna-Client-Cert</code>, <code>X-Plauna-Proxy-Secret</code></span>
+      </div>
+
+      <div><button class="btn btn-primary btn-sm" type="submit" {% if environment-managed %}disabled{% endif %}>{% t mtls.save %}</button></div>
+    </div>
+  </form>
+</div>
 {% endblock %}
