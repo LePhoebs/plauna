@@ -172,6 +172,21 @@
       (is (not (str/includes? html "\"format\":{\"type\":\"csv\"")))))
   "Charts use small JSON value arrays directly and size themselves to their cards")
 
+(deftest email-list-marks-a-cut-off-sender-checklist-for-the-server-search
+  (with-redefs [client/disconnected-connections (fn [] [])]
+    (let [render (fn [truncated?]
+                   (markup/list-emails [] {:filter "all" :size 20 :page 1 :total-pages 0}
+                                       {:categories [] :category-filter-options [] :subjects [] :recipients []
+                                        :senders [{:contact_key "k" :name "Zed" :address "zed@example.com" :checked? true}]
+                                        :senders-truncated? truncated?}))
+          cut-off (render true)
+          complete (render false)]
+      (is (str/includes? cut-off "data-column=\"from\""))
+      (is (str/includes? cut-off "data-input-name=\"from-keys\" data-master-id=\"from-filter-select-all\" data-truncated=\"true\""))
+      (is (str/includes? cut-off "Only the senders of the newest e-mails are listed."))
+      (is (str/includes? complete "data-input-name=\"from-keys\" data-master-id=\"from-filter-select-all\" data-truncated=\"false\""))
+      (is (not (str/includes? complete "Only the senders of the newest e-mails are listed."))))))
+
 (deftest email-list-renders-explicit-column-filter-workflow-and-active-chips
   (with-redefs [client/disconnected-connections (fn [] [])]
     (let [html (markup/list-emails

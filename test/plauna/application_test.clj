@@ -1023,6 +1023,48 @@
       (is (not (some #{"Invoice"} flat)) "The Subject filter's own selection is not applied to its own checklist")))
   "The Subject checklist is scoped by From but not by its own selection")
 
+(defn- sender-db
+  "A DB whose sender lookup answers from senders (rows of contacts) and records each where-clause."
+  [senders calls]
+  (reify int/DB
+    (fetch-categories [_] [])
+    (fetch-distinct-subjects [_ _] [])
+    (fetch-distinct-senders [_ where] (swap! calls conj where)
+      (if (some #{:communications.contact-key} (tree-seq coll? seq where))
+        (filterv #(= "zed" (:contact_key %)) [{:contact_key "zed" :name "Zed" :address "zed@example.com"}])
+        senders))
+    (fetch-distinct-recipients [_ _] [])
+    (fetch-header-categories [_ _] [])
+    (fetch-emails [_ _ _] {:data [] :total 0})))
+
+(deftest fetch-emails-keeps-a-selected-sender-that-fell-off-a-cut-off-list
+  ;; A sender found through the server-side search and applied must still be in the checklist after
+  ;; the reload - otherwise the next Apply would submit it as unchecked.
+  (let [calls (atom [])
+        senders [{:contact_key "a" :name "A" :address "a@example.com"} {:contact_key "b" :name "B" :address "b@example.com"}]]
+    (with-redefs [int/distinct-value-limit 2]
+      (let [optional (:optional (app/fetch-emails {:db (sender-db senders calls)} {:filter "all" :from-keys ["zed"] :page 1 :size 20}))]
+        (is (= [["a" false] ["b" false] ["zed" true]] (mapv (juxt :contact_key :checked?) (:senders optional))))
+        (is (true? (:senders-truncated? optional)))
+        (is (= 2 (count @calls)) "One lookup for the list, one for the selected sender that was missing")))
+    (reset! calls [])
+    (let [optional (:optional (app/fetch-emails {:db (sender-db senders calls)} {:filter "all" :from-keys ["a"] :page 1 :size 20}))]
+      (is (false? (:senders-truncated? optional)))
+      (is (= 1 (count @calls)) "A complete list needs no extra lookup"))))
+
+(deftest filter-options-searches-the-column-scoped-by-the-other-filters
+  (let [calls (atom [])
+        db (sender-db [{:contact_key "zed" :name "Zed" :address "zed@example.com"}] calls)
+        options (app/filter-options {:db db} {:filter "all" :category-ids ["1"] :from-keys ["other"] :page 1 :size 20} :from " ZeD ")]
+    (is (= [{:value "zed" :label "Zed - zed@example.com" :checked false}] options)
+        "Labelled like the checklist, unchecked because the applied From filter includes only another sender")
+    (let [flat (tree-seq coll? seq (first @calls))]
+      (is (some #{[:in :metadata.category [1]]} flat) "Scoped by the category filter")
+      (is (some #{"zed"} flat) "The search text is trimmed and lowercased")
+      (is (not (some #{"other"} flat)) "The From filter's own selection does not narrow its own search")))
+  (is (= [] (app/filter-options {:db nil} {} :from "  ")) "A blank search finds nothing")
+  (is (= [] (app/filter-options {:db nil} {} nil "x")) "An unknown column finds nothing"))
+
 (deftest fetch-emails-scopes-category-checklist-to-other-active-filters
   (let [captured-where (atom :not-called)
         db (reify int/DB

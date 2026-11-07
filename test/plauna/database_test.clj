@@ -140,6 +140,31 @@
       (is (contains? scoped "facet-sender-key-a"))
       (is (not (contains? scoped "facet-sender-key-b")) "A sender outside the scoping filter is excluded"))))
 
+(deftest capped-distinct-senders-keep-the-newest-and-sort-by-address
+  ;; A mailbox with more senders than the cap used to show the alphabetically first ones, so a
+  ;; sender who just wrote was missing from the From filter whenever their address sorted late.
+  (db/save-headers [{:mime-type "text/plain" :subject "Cap Old" :message-id "cap-old" :date 100 :in-reply-to nil}
+                     {:mime-type "text/plain" :subject "Cap New" :message-id "cap-new" :date 300 :in-reply-to nil}
+                     {:mime-type "text/plain" :subject "Cap Mid" :message-id "cap-mid" :date 200 :in-reply-to nil}])
+  (db/save-contacts [{:contact-key "cap-a" :name "A" :address "aaa-cap@example.com"}
+                      {:contact-key "cap-z" :name "Z" :address "zzz-cap@example.com"}
+                      {:contact-key "cap-m" :name "M" :address "mmm-cap@example.com"}])
+  (db/save-communications [{:message-id "cap-old" :contact-key "cap-a" :type :sender}
+                            {:message-id "cap-new" :contact-key "cap-z" :type :sender}
+                            {:message-id "cap-mid" :contact-key "cap-m" :type :sender}])
+  (let [scope [:in :headers.message-id ["cap-old" "cap-new" "cap-mid"]]]
+    (with-redefs [db/distinct-value-limit 2]
+      (is (= ["mmm-cap@example.com" "zzz-cap@example.com"] (mapv :address (db/distinct-senders scope)))
+          "The two senders with the newest mail are kept, listed by address")
+      (is (= ["Cap Mid" "Cap New"] (mapv :subject (db/distinct-subjects scope)))
+          "Subjects are capped the same way"))
+    (is (= ["aaa-cap@example.com" "mmm-cap@example.com" "zzz-cap@example.com"] (mapv :address (db/distinct-senders scope)))
+        "Below the cap, every sender is listed by address")
+    (is (= [{:contact_key "cap-z" :name "Z" :address "zzz-cap@example.com"}]
+           (db/distinct-senders [:and scope [:or [:> [:instr [:lower :contacts.address] "zzz"] 0]
+                                                 [:> [:instr [:lower :contacts.name] "zzz"] 0]]]))
+        "The rows hold only the contact columns, and the checklist search condition works on SQLite")))
+
 (deftest distinct-header-categories-returns-reachable-categories
   (db/save-headers [{:mime-type "text/plain" :subject "s" :message-id "facet-cat-1" :date 0 :in-reply-to nil}
                      {:mime-type "text/plain" :subject "s" :message-id "facet-cat-2" :date 0 :in-reply-to nil}])

@@ -462,17 +462,10 @@
     (java.time.ZoneId/of configured-zone)
     (preferences/zone-id)))
 
-(defn fetch-emails
-  "Returns a list of emails. Customizable by parameters which can contain the following keys:
-   :size, :page, :filter (all, enrieched-only, or without-category), :search-text (matches the
-   e-mail body content), :date-from, :date-to, and for each Excel-style column filter (subject,
-   from, to, category) an :xxx-values/:xxx-values-exclude (or :xxx-keys/:xxx-keys-exclude, or
-   :category-ids/:category-ids-exclude) pair of collections — the checklist UI submits whichever
-   one is shorter, so only one side is ever populated for a given filter.
-
-   Each column filter's checklist of possible values is scoped to what's still reachable given every
-   OTHER active filter (see other-filters-where), except the per-row category reassignment dropdown
-   (:categories in the result), which always offers every category regardless of the list's filter."
+(defn- filter-scope
+  "Everything the e-mail list and its column checklists share: the parsed selection of every column
+   filter, the date and body-search where-clauses, and other-where — a function of a column (:category
+   :subject :from :to) returning the where-clause of every active filter EXCEPT that column's own."
   [context parameters]
   (let [db (:db context)
         category-selection (checklist-selection parameters :category-ids :category-ids-exclude :category-ids-none)
@@ -490,14 +483,92 @@
         ;; is the most expensive predicate of the list.
         content-where (content->where search-text date-filter-active? fulltext-min-token-length
                                       (when-not (or (str/blank? (literal-search-text search-text)) fulltext-min-token-length)
-                                        (resolve-search-ids db (:db-type context) search-text)))
-        other-where (partial other-filters-where parameters date-filter content-where)
+                                        (resolve-search-ids db (:db-type context) search-text)))]
+    {:db db
+     :selections {:category category-selection :subject subject-selection :from from-selection :to to-selection}
+     :date-filter date-filter
+     :date-filter-active? date-filter-active?
+     :content-where content-where
+     :other-where (fn [excluding]
+                    (other-filters-where parameters date-filter content-where excluding
+                                         category-selection subject-selection from-selection to-selection))}))
+
+(defn- contact-label [{:keys [name address]}]
+  (if (str/blank? name) (str address) (str name " - " address)))
+
+(defn- contact-sort-key [item]
+  [(str/lower-case (str (:address item))) (str/lower-case (str (:name item))) (str (:contact_key item))])
+
+(def ^:private checklist-columns
+  "The column filters whose checklist values come from the e-mails themselves and are therefore capped
+   at int/distinct-value-limit: how to fetch them, the key a checkbox submits, the column that key is
+   stored in, and the columns the server-side search of the checklist looks at."
+  {:subject {:fetch int/fetch-distinct-subjects :key-fn :subject :label-fn :subject
+             :key-column :headers.subject :search-columns [:headers.subject]
+             :sort-key (fn [item] [(str/lower-case (str (:subject item))) (str (:subject item))])}
+   :from {:fetch int/fetch-distinct-senders :key-fn :contact_key :label-fn contact-label
+          :key-column :communications.contact-key :search-columns [:contacts.address :contacts.name]
+          :sort-key contact-sort-key}
+   :to {:fetch int/fetch-distinct-recipients :key-fn :contact_key :label-fn contact-label
+        :key-column :communications.contact-key :search-columns [:contacts.address :contacts.name]
+        :sort-key contact-sort-key}})
+
+(defn- checklist-values
+  "The values a column's checklist offers, annotated with :checked?, and whether the list was cut off
+   at int/distinct-value-limit. A cut-off list keeps the values of the newest e-mails (see
+   db/distinct-subjects). The values of the column's own selection are added when they fell off, so
+   an applied filter on a value found through the server-side search (see filter-options) is still
+   shown - and submitted again with the next Apply."
+  [db {:keys [fetch key-fn key-column sort-key]} where selection]
+  (let [items (vec (fetch db where))
+        truncated? (>= (count items) int/distinct-value-limit)
+        present (into #{} (map (comp str key-fn)) items)
+        missing (vec (distinct (remove present (map str (concat (:include selection) (:exclude selection))))))
+        extra (when (and truncated? (seq missing))
+                (remove #(contains? present (str (key-fn %)))
+                        (fetch db (combine-wheres [where [:in key-column missing]]))))
+        all-items (if (seq extra) (vec (sort-by sort-key (concat items extra))) items)]
+    {:items (annotate-checked-by all-items selection key-fn)
+     :truncated? truncated?}))
+
+(defn filter-options
+  "The values of the column filter column (:subject :from :to) that contain query, ignoring case,
+   scoped like that column's checklist (see fetch-emails). The page's checklist is cut off at
+   int/distinct-value-limit values; its search box asks for the values that did not fit.
+   Returns at most int/distinct-value-limit [{:value :label :checked?}], where :checked? follows
+   the column's applied selection."
+  [context parameters column query]
+  (let [{:keys [fetch key-fn label-fn search-columns] :as spec} (get checklist-columns column)
+        needle (some-> query str str/trim str/lower-case)]
+    (if (or (nil? spec) (str/blank? needle))
+      []
+      (let [{:keys [db selections other-where]} (filter-scope context parameters)
+            search-where (into [:or] (map (fn [column-name] [:> [:instr [:lower column-name] needle] 0])) search-columns)
+            items (vec (fetch db (combine-wheres [(other-where column) search-where])))]
+        (mapv (fn [item] {:value (str (key-fn item)) :label (str (label-fn item)) :checked (boolean (:checked? item))})
+              (annotate-checked-by items (get selections column) key-fn))))))
+
+(defn fetch-emails
+  "Returns a list of emails. Customizable by parameters which can contain the following keys:
+   :size, :page, :filter (all, enrieched-only, or without-category), :search-text (matches the
+   e-mail body content), :date-from, :date-to, and for each Excel-style column filter (subject,
+   from, to, category) an :xxx-values/:xxx-values-exclude (or :xxx-keys/:xxx-keys-exclude, or
+   :category-ids/:category-ids-exclude) pair of collections — the checklist UI submits whichever
+   one is shorter, so only one side is ever populated for a given filter.
+
+   Each column filter's checklist of possible values is scoped to what's still reachable given every
+   OTHER active filter (see other-filters-where), except the per-row category reassignment dropdown
+   (:categories in the result), which always offers every category regardless of the list's filter."
+  [context parameters]
+  (let [{:keys [db selections date-filter date-filter-active? content-where other-where]} (filter-scope context parameters)
+        {category-selection :category subject-selection :subject from-selection :from to-selection :to} selections
         cat-list (annotate-checked-by (categories db) category-selection #(or (:id %) uncategorized-token))
-        reachable-categories (reachable-category-tokens db (other-where :category category-selection subject-selection from-selection to-selection))
+        reachable-categories (reachable-category-tokens db (other-where :category))
         category-filter-options (filterv #(contains? reachable-categories (str (or (:id %) uncategorized-token))) cat-list)
-        subject-list (annotate-checked-by (int/fetch-distinct-subjects db (other-where :subject category-selection subject-selection from-selection to-selection)) subject-selection :subject)
-        sender-list (annotate-checked-by (int/fetch-distinct-senders db (other-where :from category-selection subject-selection from-selection to-selection)) from-selection :contact_key)
-        recipient-list (annotate-checked-by (int/fetch-distinct-recipients db (other-where :to category-selection subject-selection from-selection to-selection)) to-selection :contact_key)
+        column-values (fn [column] (checklist-values db (get checklist-columns column) (other-where column) (get selections column)))
+        subjects (column-values :subject)
+        senders (column-values :from)
+        recipients (column-values :to)
         batch-where (batch->where (:batch parameters))
         where (combine-wheres [date-filter
                                batch-where
@@ -563,7 +634,10 @@
                   :any-filter-active? (boolean (or search-active? date-active? metadata-active? batch-active?
                                                    subject-active? from-active? to-active? category-active?))}
        :optional {:categories cat-list :category-filter-options category-filter-options
-                  :subjects subject-list :senders sender-list :recipients recipient-list}})))
+                  :subjects (:items subjects) :senders (:items senders) :recipients (:items recipients)
+                  :subjects-truncated? (:truncated? subjects)
+                  :senders-truncated? (:truncated? senders)
+                  :recipients-truncated? (:truncated? recipients)}})))
 
 (defn category-name-problem
   "Why a category name cannot be used, or nil when it is fine. Category names become IMAP folder names

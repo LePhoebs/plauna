@@ -1,5 +1,12 @@
 (ns plauna.interfaces)
 
+(def distinct-value-limit
+  "Cap the Subject/From/To filter dropdowns to this many distinct values. They're rendered as
+   checkboxes in the page, so an unbounded list could mean tens of thousands of DOM nodes on a large
+   mailbox. A list of exactly this length is treated as cut off: its search box then also asks the
+   server (see plauna.application/filter-options), so every value stays reachable."
+  500)
+
 (defprotocol DB
   "Database protocol"
   (fetch-connection [this id] "Get connection for id.")

@@ -502,6 +502,8 @@ The "Subject", "From", "To", and "Category" column headers each have an Excel-st
 - "Reset" to select every value in that checklist again.
 - "Cancel" to discard changes made since the popover was opened.
 
+The "Subject", "From" and "To" checklists hold at most 500 values each, so that a large mailbox does not make the page slow. When a column has more values, its checklist lists those of the newest e-mails, alphabetically, and says so below the list. Its search field then also searches every other value on the server (from two characters on) and adds the matches to the checklist, so a sender or recipient that did not fit can still be picked. A value selected that way stays in the checklist after "Apply".
+
 "Select all visible" ("Select all" in the category filter) only changes the checkboxes currently shown, which is useful after narrowing a long checklist with its search field. It does not apply the filter by itself. Checklist changes remain local until "Apply" is pressed.
 
 Each checklist only offers values still reachable given your *other* active filters - for example, once you've picked a category, the "From" checklist only lists senders who actually have mail in that category, narrowing further as you add more filters. This matches how Excel's own column filters behave. The one exception is the category dropdown on each e-mail row (used to recategorize that e-mail): it always offers every category, regardless of the list's current filter.

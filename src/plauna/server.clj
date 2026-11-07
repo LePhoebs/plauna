@@ -2147,6 +2147,15 @@
                      (and (some? batch-id) (some? (db/parse-batch batch-id))) (assoc :batch-move-url (batch-move-url batch-id)))]
        (success-html-with-body (result-with-messages (markup/list-emails (:data result) (:parameters result) options) global-messages))))
 
+   ;; The search box of a cut-off Subject/From/To checklist: the values that did not fit into the page.
+   ;; Declared before /emails/:id, which would otherwise take "filter-options" for a message id.
+   (comp/GET "/emails/filter-options" {params :params}
+     (let [parse-fn (template->request-parameters emails-template)
+           column (get {"subject" :subject "from" :from "to" :to} (:column params))]
+       {:status 200
+        :headers {"Content-Type" "application/json; charset=UTF-8" "Cache-Control" "no-store"}
+        :body (generate-string (app/filter-options context (parse-fn params) column (:q params)))}))
+
    (comp/POST "/admin/connections/:id/folders/move" request
      (let [id (:id (:route-params request))
            folder (:folder (:params request))

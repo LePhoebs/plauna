@@ -1016,51 +1016,61 @@
   (jdbc/execute-one! (ds) (honey/format {:select [:*] :from :categories :where [:= :id id]}) builder-function))
 
 (def distinct-value-limit
-  "Cap the Subject/From/To filter dropdowns to this many distinct values. They're rendered as
-   checkboxes in the page (with a client-side search box to narrow them), so an unbounded list
-   could mean tens of thousands of DOM nodes on a large mailbox."
-  500)
+  "Cap the Subject/From/To filter dropdowns to this many distinct values (see
+   plauna.interfaces/distinct-value-limit)."
+  int/distinct-value-limit)
+
+(defn- most-recent-first
+  "Order a grouped distinct-value query by the newest e-mail of each value, so the capped list keeps
+   the values of current mail rather than the alphabetically first ones: a sender who just wrote must
+   be in the dropdown even on a mailbox with thousands of senders."
+  [query]
+  (assoc query :order-by [[[:max :headers.date] :desc]] :limit distinct-value-limit))
+
+(defn- sort-key [value] (string/lower-case (or value "")))
 
 (defn distinct-subjects
   "Distinct, non-blank subjects. other-filters-where (a honeysql where-clause built from the OTHER
    active column filters, or nil) scopes the list to subjects that are still reachable given those
    filters — e.g. once a category is picked, only subjects that occur in that category are offered —
    the same way Excel's own AutoFilter narrows a column's dropdown as other filters are applied.
-   The join to metadata exists only so other-filters-where can reference metadata columns."
+   The join to metadata exists only so other-filters-where can reference metadata columns.
+   Capped to the distinct-value-limit subjects with the newest e-mail, returned alphabetically."
   ([] (distinct-subjects nil))
   ([other-filters-where]
    (let [base-cond [:and [:is-not :headers.subject nil] [:<> :headers.subject ""]]
-         result (jdbc/execute! (ds) (honey/format {:select-distinct [:headers.subject]
+         result (jdbc/execute! (ds) (honey/format (most-recent-first
+                                                   {:select [:headers.subject]
                                                     :from [:headers]
                                                     :left-join [:metadata [:= :headers.message-id :metadata.message-id]]
                                                     :where (if other-filters-where [:and base-cond other-filters-where] base-cond)
-                                                    :order-by [[:headers.subject :asc]]
-                                                    :limit distinct-value-limit})
+                                                    :group-by [:headers.subject]}))
                                 builder-function)]
      (when (= distinct-value-limit (count result))
-       (t/log! :info ["Subject filter: more than" distinct-value-limit "distinct subjects exist; showing only the first" distinct-value-limit]))
-     result)))
+       (t/log! :info ["Subject filter: more than" distinct-value-limit "distinct subjects exist; showing the" distinct-value-limit "with the newest e-mails"]))
+     (vec (sort-by (juxt (comp sort-key :subject) :subject) result)))))
 
 (defn- distinct-contacts-by-type
   "Distinct (contact-key, name, address) contacts that appear with any of participant-types
    (e.g. [\"sender\" \":sender\"] — legacy rows may store the type with a leading colon, see the
    defensive strip in core.email/construct-participants). other-filters-where scopes the list to
-   contacts still reachable given the OTHER active column filters — see distinct-subjects."
+   contacts still reachable given the OTHER active column filters — see distinct-subjects.
+   Capped to the distinct-value-limit contacts with the newest e-mail, returned by address."
   ([participant-types] (distinct-contacts-by-type participant-types nil))
   ([participant-types other-filters-where]
    (let [type-cond [:in :communications.type participant-types]
-         result (jdbc/execute! (ds) (honey/format {:select-distinct [:contacts.contact-key :contacts.name :contacts.address]
+         result (jdbc/execute! (ds) (honey/format (most-recent-first
+                                                   {:select [:contacts.contact-key :contacts.name :contacts.address]
                                                     :from [:contacts]
                                                     :join [:communications [:= :communications.contact-key :contacts.contact-key]
                                                            :headers [:= :headers.message-id :communications.message-id]]
                                                     :left-join [:metadata [:= :headers.message-id :metadata.message-id]]
                                                     :where (if other-filters-where [:and type-cond other-filters-where] type-cond)
-                                                    :order-by [[:contacts.address :asc]]
-                                                    :limit distinct-value-limit})
+                                                    :group-by [:contacts.contact-key :contacts.name :contacts.address]}))
                                 builder-function)]
      (when (= distinct-value-limit (count result))
-       (t/log! :info ["Contact filter: more than" distinct-value-limit "distinct contacts exist for types" participant-types "; showing only the first" distinct-value-limit]))
-     result)))
+       (t/log! :info ["Contact filter: more than" distinct-value-limit "distinct contacts exist for types" participant-types "; showing the" distinct-value-limit "with the newest e-mails"]))
+     (vec (sort-by (juxt (comp sort-key :address) (comp sort-key :name) :contact_key) result)))))
 
 (defn distinct-senders
   ([] (distinct-contacts-by-type ["sender" ":sender" "from"]))
