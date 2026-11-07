@@ -7,7 +7,9 @@
             [plauna.client :as client]
             [plauna.core.email :as core-email]
             [plauna.core.flags :as flags]
-            [plauna.preferences :as preferences])
+            [plauna.i18n :as i18n]
+            [plauna.preferences :as preferences]
+            [taoensso.telemere :as t])
   (:import
    (java.time Instant LocalDateTime)
    (java.util Locale)))
@@ -19,47 +21,76 @@
 (comment
   (selmer.parser/cache-off!))
 
+(defonce shell-provider
+  ;; What the page shell (sidebar, phone bar) shows on every page besides the page itself: the
+  ;; categories with their counts, for example. The server installs a provider that reads the
+  ;; database; without one (tests) the shell shows no categories.
+  (atom (constantly {})))
+
+(defn- shell-context []
+  (try (@shell-provider)
+       (catch Exception e
+         (t/log! {:level :warn :error e} "Could not load the sidebar data; the page is shown without it.")
+         {})))
+
 (defn- render
-  "render-file wrapper that injects disconnected-connections into every authenticated page."
+  "render-file wrapper that injects the shell data - the inactive connections, the sidebar's
+   categories, the interface language - into every authenticated page."
   [template ctx]
-  (render-file template (merge {:disconnected (seq (client/disconnected-connections))} ctx)))
+  (let [disconnected (seq (client/disconnected-connections))
+        context (merge {:disconnected disconnected
+                        :disconnected-count (count disconnected)
+                        :disconnected-text (str/join ", " (map #(str (:user %) "@" (:host %)) disconnected))
+                        :lang (name i18n/*lang*)
+                        :ui-language (preferences/ui-language)}
+                       (shell-context)
+                       ctx)]
+    ;; The phone bar shows Accounts, Statistics and System under "More".
+    (render-file template (assoc context :more-active? (contains? #{:accounts :statistics :system} (:active-nav context))))))
+
+(defn page
+  "Render a page template inside the shell (see render) - for pages assembled outside this namespace."
+  [template ctx]
+  (render template ctx))
 
 (defn timestamp->date [timestamp]
   (if (nil? timestamp)
     nil
     (LocalDateTime/ofInstant (Instant/ofEpochSecond timestamp) (preferences/zone-id))))
 
-(defn type->toast-role [message]
-  (cond
-    (= :alert (:type message)) (conj message {:path "M10 .5a9.5 9.5 0 1 0 9.5 9.5A9.51 9.51 0 0 0 10 .5Zm3.707 11.793a1 1 0 1 1-1.414 1.414L10 11.414l-2.293 2.293a1 1 0 0 1-1.414-1.414L8.586 10 6.293 7.707a1 1 0 0 1 1.414-1.414L10 8.586l2.293-2.293a1 1 0 0 1 1.414 1.414L11.414 10l2.293 2.293Z"
-                                              :color "text-red-500"
-                                              :bg-color "bg-red-100"
-                                              :id (str "toast-" (hash message))})
-    (= :success (:type message)) (conj message {:path "M10 .5a9.5 9.5 0 1 0 9.5 9.5A9.51 9.51 0 0 0 10 .5Zm3.707 8.207-4 4a1 1 0 0 1-1.414 0l-2-2a1 1 0 0 1 1.414-1.414L9 10.586l3.293-3.293a1 1 0 0 1 1.414 1.414Z"
-                                                :color "text-green-500"
-                                                :bg-color "bg-green-100"
-                                                :id (str "toast-" (hash message))})
-    (= :info (:type message)) (conj message {:path "M10 .5a9.5 9.5 0 1 0 9.5 9.5A9.51 9.51 0 0 0 10 .5ZM10 15a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm1-4a1 1 0 0 1-2 0V6a1 1 0 0 1 2 0v5Z"
-                                             :color "text-orange-500"
-                                             :bg-color "bg-orange-100"
-                                             :id (str "toast-" (hash message))})
-    :else message))
+(def ^:private toast-icons
+  {:alert "M10 .5a9.5 9.5 0 1 0 9.5 9.5A9.51 9.51 0 0 0 10 .5Zm3.707 11.793a1 1 0 1 1-1.414 1.414L10 11.414l-2.293 2.293a1 1 0 0 1-1.414-1.414L8.586 10 6.293 7.707a1 1 0 0 1 1.414-1.414L10 8.586l2.293-2.293a1 1 0 0 1 1.414 1.414L11.414 10l2.293 2.293Z"
+   :success "M10 .5a9.5 9.5 0 1 0 9.5 9.5A9.51 9.51 0 0 0 10 .5Zm3.707 8.207-4 4a1 1 0 0 1-1.414 0l-2-2a1 1 0 0 1 1.414-1.414L9 10.586l3.293-3.293a1 1 0 0 1 1.414 1.414Z"
+   :info "M10 .5a9.5 9.5 0 1 0 9.5 9.5A9.51 9.51 0 0 0 10 .5ZM10 15a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm1-4a1 1 0 0 1-2 0V6a1 1 0 0 1 2 0v5Z"})
+
+(defn type->toast-role
+  "Prepare a message for the toast area: its icon, its tone (error / success / info) and whether it
+   closes by itself (everything but errors). A message with :key is translated now, in the language
+   of the page that shows it - messages of background jobs are created without a request."
+  [message]
+  (let [message (cond-> message
+                  (:key message) (assoc :content (i18n/t (:key message) (:args message))))
+        tone (case (:type message) :alert "error" :success "success" :info "info" nil)]
+    (if tone
+      (assoc message :path (get toast-icons (:type message)) :tone tone :sticky? (= "error" tone)
+             :id (str "toast-" (hash message)))
+      message)))
 
 (defn administration
-  ([data] (render "admin.html" {:active-nav :admin :data data}))
-  ([data messages] (render "admin.html" {:messages (mapv type->toast-role messages) :active-nav :admin :data data})))
+  ([data] (render "admin.html" {:active-nav :system :data data}))
+  ([data messages] (render "admin.html" {:messages (mapv type->toast-role messages) :active-nav :system :data data})))
 
 (defn login-page
   ([] (login-page {}))
   ([data] (render-file "login.html" data)))
 
-(defn password-page [data] (render "admin-password.html" (conj {:active-nav :admin} data)))
+(defn password-page [data] (render "admin-password.html" (conj {:active-nav :system} data)))
 
 (defn mtls-page
-  ([data] (render "admin-mtls.html" (assoc data :active-nav :admin)))
+  ([data] (render "admin-mtls.html" (assoc data :active-nav :system)))
   ([data messages]
    (render "admin-mtls.html"
-           (assoc data :active-nav :admin :messages (mapv type->toast-role messages)))))
+           (assoc data :active-nav :system :messages (mapv type->toast-role messages)))))
 
 (defn concat-string [contact]
   (if (nil? (:name contact))
@@ -257,18 +288,28 @@
   ([categories messages]
    (render "admin-categories.html" (cond-> {:categories (mapv with-flag-hex categories)
                                             :flag-colors flags/colors
-                                            :active-nav :admin}
+                                            :active-nav :categories}
                                      (some? messages) (assoc :messages (mapv type->toast-role messages))))))
+
+(defn category-page
+  "A category's own page (see plauna.server/category-page for data)."
+  [data]
+  (render "category.html" (assoc data :active-nav :categories :active-category (get-in data [:category :id]))))
+
+(defn model-page
+  "The Model area: training, scoring, and links to its settings."
+  [data]
+  (render "model.html" (assoc data :active-nav :model)))
 
 (defn languages-admin-page
   ([language-preferences] (languages-admin-page language-preferences nil))
   ([language-preferences messages]
-   (render "admin-languages.html" (cond-> {:language-preferences language-preferences :active-nav :admin}
+   (render "admin-languages.html" (cond-> {:language-preferences language-preferences :active-nav :model}
                                     (seq messages) (assoc :messages (mapv type->toast-role messages))))))
 
 (defn connections-list
-  ([connections] (render "admin-connections.html" {:configs connections :active-nav :admin}))
-  ([connections messages] (render "admin-connections.html" {:configs connections :active-nav :admin :messages (mapv type->toast-role messages)})))
+  ([connections] (render "admin-connections.html" {:configs connections :active-nav :accounts}))
+  ([connections messages] (render "admin-connections.html" {:configs connections :active-nav :accounts :messages (mapv type->toast-role messages)})))
 
 
 (defn- format-timestamp [epoch-seconds]
@@ -284,7 +325,7 @@
 
 (defn- connection-context [config folders categories]
   (merge config {:folders folders
-                 :active-nav :admin
+                 :active-nav :accounts
                  :categories (cons nil categories)
                  :parse-batches (mapv format-parse-batch (:parse-batches config))
                  :parse-failures (mapv format-parse-failure-group (:parse-failures config))}))
@@ -296,7 +337,7 @@
 (defn training-progress-page
   "The live progress view of a model training run; back is the same-origin path to return to."
   [back]
-  (render "training-progress.html" {:active-nav :emails :back back}))
+  (render "training-progress.html" {:active-nav :model :back back}))
 
 (defn preferences-page
   ([data] (preferences-page data nil))
@@ -304,10 +345,10 @@
    (let [log-levels {:log-level-options [{:key :error :name "Error"}
                                          {:key :info :name "Info"}
                                          {:key :debug :name "Debug"}]
-                     :active-nav :admin}]
+                     :active-nav :system}]
      (render "admin-preferences.html"
              (cond-> (conj data log-levels)
                (seq messages) (assoc :messages (mapv type->toast-role messages)))))))
 
 (defn new-connection [providers]
-  (render "admin-new-connection.html" {:auth-providers providers}))
+  (render "admin-new-connection.html" {:auth-providers providers :active-nav :accounts}))

@@ -2,8 +2,85 @@
 
 @import "tailwindcss";
 @source not "../js/vendor";
+/* Plauna's own themes (docs/redesign.org): neutral surfaces with a slight red tint, the burgundy of
+   the logo as the only accent. Plauna follows the system's light or dark setting. */
 @plugin "daisyui" {
-  themes: autumn --default;
+  themes: false;
+}
+
+@plugin "daisyui/theme" {
+  name: "plauna";
+  default: true;
+  prefersdark: false;
+  color-scheme: light;
+  --color-base-100: #ffffff;
+  --color-base-200: #f6f4f4;
+  --color-base-300: #e4dcde;
+  --color-base-content: #1f1a1c;
+  --color-primary: #8c0327;
+  --color-primary-content: #ffffff;
+  --color-secondary: #75696d;
+  --color-secondary-content: #ffffff;
+  --color-accent: #b4536a;
+  --color-accent-content: #ffffff;
+  --color-neutral: #1f1a1c;
+  --color-neutral-content: #f6f4f4;
+  --color-info: #2563eb;
+  --color-info-content: #ffffff;
+  --color-success: #2f7d4f;
+  --color-success-content: #ffffff;
+  --color-warning: #b45309;
+  --color-warning-content: #ffffff;
+  --color-error: #b91c1c;
+  --color-error-content: #ffffff;
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@plugin "daisyui/theme" {
+  name: "plauna-dark";
+  default: false;
+  prefersdark: true;
+  color-scheme: dark;
+  --color-base-100: #1c1719;
+  --color-base-200: #141112;
+  --color-base-300: #342c2f;
+  --color-base-content: #eee7e9;
+  --color-primary: #e0607d;
+  --color-primary-content: #1a0d11;
+  --color-secondary: #a3969a;
+  --color-secondary-content: #141112;
+  --color-accent: #f07a93;
+  --color-accent-content: #1a0d11;
+  --color-neutral: #eee7e9;
+  --color-neutral-content: #1c1719;
+  --color-info: #60a5fa;
+  --color-info-content: #0b1220;
+  --color-success: #5cc28a;
+  --color-success-content: #0b1a12;
+  --color-warning: #f59e0b;
+  --color-warning-content: #1a1205;
+  --color-error: #f87171;
+  --color-error-content: #1f0a0a;
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+/* Tabular figures wherever numbers line up: dates, counts, percentages. */
+body {
+  font-variant-numeric: tabular-nums;
 }
 
 /* Since 5.1 daisyUI renders .select with the customizable `appearance: base-select` where the browser
@@ -68,4 +145,18 @@ html.plauna-ptr {
 
 @keyframes plauna-ptr-spin {
   to { transform: rotate(360deg); }
+}
+
+/* The active navigation entry: a raised surface with the accent on its icon, as in the redesign
+   proposal - daisyUI's default fills it with the near-black neutral color. */
+.menu :where(li > a).menu-active,
+.menu :where(li > a).menu-active:hover {
+  background-color: var(--color-base-100);
+  color: var(--color-base-content);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--color-base-300);
+}
+.menu :where(li > a).menu-active svg {
+  color: var(--color-primary);
+  opacity: 1;
 }

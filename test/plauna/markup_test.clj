@@ -2,6 +2,7 @@
   (:require [clojure.string :as str]
             [clojure.test :refer :all]
             [plauna.client :as client]
+            [plauna.i18n :as i18n]
             [plauna.markup :as markup]
             [plauna.preferences :as preferences]))
 
@@ -41,13 +42,14 @@
 (deftest disconnected-banner-is-hidden-when-no-connections-are-disconnected
   (with-redefs [client/disconnected-connections (fn [] [])]
     (let [html (markup/administration {:repl {:status false}})]
-      (is (false? (str/includes? html "IMAP connection not active:"))))))
+      (is (false? (str/includes? html "Not connected:")))
+      (is (str/includes? html "No connection problems")))))
 
 (deftest disconnected-banner-shows-disconnected-accounts
   (with-redefs [client/disconnected-connections (fn [] [{:user "me" :host "imap.example.com"}])]
     (let [html (markup/administration {:repl {:status false}})]
-      (is (str/includes? html "IMAP connection not active:"))
-      (is (str/includes? html "me@imap.example.com")))))
+      (is (str/includes? html "Not connected: me@imap.example.com."))
+      (is (str/includes? html "Accounts not connected: 1")))))
 
 (deftest connection-pages-never-render-stored-secrets-or-statistics-scripts
   (with-redefs [client/disconnected-connections (fn [] [])]
@@ -172,28 +174,71 @@
       (is (not (str/includes? html "\"format\":{\"type\":\"csv\"")))))
   "Charts use small JSON value arrays directly and size themselves to their cards")
 
-(deftest email-list-renders-the-suggestion-filter
+(deftest email-list-keeps-an-active-suggestion-filter
+  ;; The suggestion filter is set on a category's page; the list only shows it as a chip, keeps it
+  ;; when other filters change and preselects the category for assigning.
   (with-redefs [client/disconnected-connections (fn [] [])]
-    (let [options {:categories [{:id 3 :name "Temporary"} {:id nil :name "n/a"}] :category-filter-options []
-                   :subjects [] :senders [] :recipients []}
-          render (fn [page model-scores]
-                   (markup/list-emails [] (merge {:filter "all" :size 20 :page 2 :total-pages 3} page)
-                                       (assoc options :model-scores model-scores)))
-          model (render {:suggest-category 3 :suggest-by "model" :suggest-min 40
-                         :any-filter-active? true :suggestion-active? true
-                         :suggestion-filter-label "Suggested for Temporary (model ≥ 40 %)"}
-                        {:at-text "07.11.2026 14:03" :emails 120 :stale? true :running? false})
-          sender (render {:suggest-by "sender"} {:running? true})]
-      (is (str/includes? model "<option value=\"3\" selected>Temporary</option>"))
-      (is (not (str/includes? model "<option value=\"\">n/a</option>")) "n/a cannot be suggested")
-      (is (str/includes? model "<option value=\"model\" selected>Model</option>"))
-      (is (str/includes? model "name=\"suggest-min\" min=\"1\" max=\"99\" class=\"input w-20\" value=\"40\""))
-      (is (str/includes? model "Scores from 07.11.2026 14:03 (120 e-mails) – the model was trained since."))
-      (is (str/includes? model "Suggested for Temporary (model ≥ 40 %)"))
-      (is (str/includes? model "<input type=\"hidden\" name=\"suggest-by\" value=\"model\" />") "Pagination keeps the filter")
-      (is (str/includes? sender "id=\"suggest-min-field\" class=\"flex items-center gap-1 text-sm\" hidden"))
-      (is (str/includes? sender "data-running=\"true\""))
-      (is (str/includes? sender "Scoring the e-mails…")))))
+    (let [email {:header {:message-id "s-m" :subject "Hello" :date 0} :metadata {:category-id nil} :participants []}
+          html (markup/list-emails [email]
+                                   {:filter "all" :size 20 :page 2 :total-pages 3
+                                    :suggest-category 3 :suggest-by "model" :suggest-min 40
+                                    :any-filter-active? true :suggestion-active? true
+                                    :suggestion-filter-label "Suggested for Temporary (model ≥ 40 %)"}
+                                   {:categories [{:id 3 :name "Temporary"} {:id nil :name "n/a"}] :category-filter-options []
+                                    :subjects [] :senders [] :recipients []})]
+      (is (not (str/includes? html "Suggest for Category")) "No suggestion controls on the list any more")
+      (is (not (str/includes? html "Data Training")) "Training moved to the Model page")
+      (is (str/includes? html "name=\"suggest-category\" id=\"suggest-category-input\" value=\"3\""))
+      (is (str/includes? html "<input type=\"hidden\" name=\"suggest-by\" value=\"model\" />") "Pagination keeps the filter")
+      (is (str/includes? html "Suggested for Temporary (model ≥ 40 %)"))
+      (is (str/includes? html "href=\"/categories/3?by=model&amp;min=40\""))
+      (is (re-find #"<option value=\"3\"\s*selected\s*>Temporary</option>" html) "The bulk bar preselects the category"))))
+
+(deftest category-page-shows-suggestion-counts-and-the-review-link
+  (with-redefs [client/disconnected-connections (fn [] [])]
+    (let [render (fn [method]
+                   (markup/category-page {:category {:id 3 :name "Temporary" :color "#d97706" :destination_folder "INBOX"
+                                                     :retention_days 30 :flag_hex "#ff9500" :flag_label "Orange"}
+                                          :email-count 214 :method method :min-percent 60
+                                          :counts {:sender 37 :domain 85 :model 0} :selected-count (if (= method "model") 0 37)
+                                          :review-url "/emails?size=50&suggest-category=3&suggest-by=sender&suggest-min=60"
+                                          :model-scores {:at-text "07.11.2026 14:03" :emails 120 :stale? true :running? false}}))
+          sender (render "sender")
+          model (render "model")]
+      (is (str/includes? sender "E-mails: 214"))
+      (is (str/includes? sender "Folder: INBOX"))
+      (is (str/includes? sender "To the trash after 30 days"))
+      (is (str/includes? sender "aria-checked=\"true\""))
+      (is (str/includes? sender "Review e-mails (37)"))
+      (is (str/includes? sender "href=\"/emails?size=50&amp;suggest-category=3&amp;suggest-by=sender&amp;suggest-min=60\""))
+      (is (not (str/includes? sender "Score e-mails now")) "Scoring only shows for the model method")
+      (is (str/includes? model "name=\"min\" min=\"1\" max=\"99\" value=\"60\""))
+      (is (str/includes? model "Scores from 07.11.2026 14:03 (120 e-mails). The model was trained since"))
+      (is (re-find #"<button class=\"btn btn-primary\" type=\"button\" disabled>Review e-mails \(0\)</button>" model))
+      (is (str/includes? model "menu-active") "The category is highlighted in the sidebar"))))
+
+(deftest model-page-offers-training-and-scoring
+  (with-redefs [client/disconnected-connections (fn [] [])]
+    (let [idle (markup/model-page {:training-running? false :last-training "07.11.2026 02:00" :training-time "02:00"
+                                   :model-type "naive-bayes" :model-scores {:running? false}})
+          busy (markup/model-page {:training-running? true :model-scores {:running? true}})]
+      (is (str/includes? idle "07.11.2026 02:00"))
+      (is (str/includes? idle "action=\"/training\""))
+      (is (str/includes? idle "No e-mails have been scored yet."))
+      (is (str/includes? idle "action=\"/model/score\""))
+      (is (str/includes? busy "href=\"/training/progress?back=/model\""))
+      (is (str/includes? busy "data-running=\"true\""))
+      (is (str/includes? busy "Scoring the e-mails…")))))
+
+(deftest shell-is-bilingual
+  (with-redefs [client/disconnected-connections (fn [] [])]
+    (let [english (markup/model-page {:model-scores {}})
+          german (binding [i18n/*lang* :de] (markup/model-page {:model-scores {}}))]
+      (is (str/includes? english "<html lang=\"en\">"))
+      (is (str/includes? english ">Categories</a>"))
+      (is (str/includes? german "<html lang=\"de\">"))
+      (is (str/includes? german ">Kategorien</a>"))
+      (is (str/includes? german "Jetzt trainieren")))))
 
 (deftest email-list-offers-a-bulk-category-change-for-selected-e-mails
   (with-redefs [client/disconnected-connections (fn [] [])]
@@ -207,8 +252,8 @@
       (is (str/includes? html "id=\"email-select-all\""))
       (is (= 1 (count (re-seq #"email-select-checkbox\" autocomplete" html)))
           "One checkbox per e-mail row")
-      (is (str/includes? html "<option value=\"1\">Bills</option>"))
-      (is (str/includes? html "<option value=\"\">n/a</option>") "n/a clears the category, like the row dropdown")
+      (is (re-find #"<option value=\"1\"\s*>Bills</option>" html))
+      (is (re-find #"<option value=\"\"\s*>n/a</option>" html) "n/a clears the category, like the row dropdown")
       (is (not (str/includes? empty-html "id=\"bulk-category-bar\"")) "No bar without e-mails"))))
 
 (deftest email-list-marks-a-cut-off-sender-checklist-for-the-server-search

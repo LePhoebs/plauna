@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="{{lang}}">
   <head>
     <link rel="stylesheet" href="/css/tailwind.css" type="text/css"/>
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png"/>
@@ -41,72 +41,121 @@
     <script src="/js/pull-to-refresh.js" defer></script>
     {% block head-extra %}{% endblock %}
   </head>
-  <body class="mx-2 sm:mx-8 my-4">
-    {% if messages %}
-    <div class="top-5 inset-x-0">
-      {% for message in messages %}
-    <div id="{{ message.id }}" class="alert alert-info alert-outline" role="alert">
-      <div class="inline-flex items-center justify-center shrink-0 w-8 h-8 {{ message.color }} {{ message.bg-color }} rounded-lg">
-        <svg class="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 20 20">
-          <path d="{{ message.path }}" />
-        </svg>
-        <span class="sr-only">Check icon</span>
-      </div>
-      <div class="ms-3 text-sm font-normal">{{ message.content }}{% if message.link %} <a class="link link-primary font-semibold" href="{{ message.link }}">{{ message.link-text }}</a>{% endif %}</div>
-      <button type="button" class="ms-auto -mx-1.5 -my-1.5 bg-white text-gray-400 hover:text-gray-900 rounded-lg focus:ring-2 focus:ring-gray-300 p-1.5 hover:bg-gray-100 inline-flex items-center justify-center h-8 w-8" onClick="document.getElementById('{{ message.id }}').style.display = 'none'" aria-label="Close">
-        <span class="sr-only">Close</span>
-        <svg class="w-3 h-3" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 14">
-          <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 1 6 6m0 0 6 6M7 7l6-6M7 7l-6 6"/>
-        </svg>
-      </button>
-    </div>
-    {% endfor %}
-    </div>
-    {% endif %}
-    <div class="navbar lg:hidden">
-	  <div class="navbar-start flex-nowrap">
-		<a href="/"><img src="/plauna-banner.png" style="height: 30px"/></a>
-	  </div>
-      <div class="navbar-end dropdown">
-        <div tabindex="0" role="button" class="btn btn-ghost lg:hidden">
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"> <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h8m-8 6h16" /> </svg>
+  <body class="bg-base-200 text-base-content text-sm">
+    <div class="lg:grid lg:grid-cols-[13.5rem_minmax(0,1fr)] min-h-screen">
+
+      <!-- Sidebar (desktop) -->
+      <aside class="hidden lg:flex flex-col gap-4 sticky top-0 h-screen overflow-y-auto bg-base-200 border-r border-base-300 px-2 py-4" aria-label="{% t nav.main %}">
+        <a href="/emails" class="px-3"><img src="/plauna-banner.png" alt="Plauna" style="height: 28px"/></a>
+        <ul class="menu menu-sm w-full p-0 gap-0.5">
+          <li><a href="/emails" class="{% if active-nav = :emails %}menu-active{% endif %}"><svg class="size-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16v12H4z"/><path d="m4 7 8 6 8-6"/></svg>{% t nav.emails %}</a></li>
+          <li><a href="/categories" class="{% if active-nav = :categories %}menu-active{% endif %}"><svg class="size-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h7v7H4zM13 5h7v7h-7zM4 14h7v5H4zM13 14h7v5h-7z"/></svg>{% t nav.categories %}</a></li>
+          <li><a href="/model" class="{% if active-nav = :model %}menu-active{% endif %}"><svg class="size-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="5"/></svg>{% t nav.model %}</a></li>
+          <li><a href="/admin/connections" class="{% if active-nav = :accounts %}menu-active{% endif %}"><svg class="size-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14c2 .7 3 2.8 3 6"/></svg>{% t nav.accounts %}</a></li>
+          <li><a href="/statistics" class="{% if active-nav = :statistics %}menu-active{% endif %}"><svg class="size-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>{% t nav.statistics %}</a></li>
+          <li><a href="/admin" class="{% if active-nav = :system %}menu-active{% endif %}"><svg class="size-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14 3h-4l-.5 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.6 2 3.4 2.4-1c.6.5 1.3.9 2 1.2L10 21h4l.5-2.6c.7-.3 1.4-.7 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z"/></svg>{% t nav.system %}</a></li>
+        </ul>
+        {% if nav-categories %}
+        <div class="flex flex-col gap-1">
+          <span class="px-3 text-xs uppercase tracking-wide text-base-content/60">{% t nav.category-list %}</span>
+          <ul class="menu menu-sm w-full p-0 gap-0.5">
+            {% for category in nav-categories %}
+            <li><a href="/categories/{{category.id}}" class="{% if active-category = category.id %}menu-active{% endif %}">
+              <span class="inline-block size-2 rounded-full shrink-0" style="background-color: {{category.color|category-color}};"></span>
+              <span class="truncate">{{category.name}}</span>
+              <span class="ml-auto text-xs text-base-content/60">{{category.email_count}}</span>
+            </a></li>
+            {% endfor %}
+          </ul>
         </div>
-        <ul class="menu menu-sm dropdown-content rounded-box bg-base-100 z-1 mt-3 w-32 p-2 shadow">
-          <li><a class="{% if active-nav = :admin %}menu-active{% endif %}" href="/admin">Administration</a></li>
-          <li><a class="{% if active-nav = :statistics %}menu-active{% endif %}" href="/statistics">Statistics</a></li>
-          <li><a class="{% if active-nav = :emails %}menu-active{% endif %}" href="/emails">Emails</a></li>
-          <li><a href="/logout">Logout</a></li>
-        </ul>
+        {% endif %}
+        <div class="mt-auto flex flex-col gap-3 px-3 text-xs">
+          {% if disconnected %}
+          <a href="/admin/connections" class="flex items-center gap-2 text-error font-semibold"><span class="inline-block size-2 rounded-full bg-error"></span>{% t shell.connections-down disconnected-count %}</a>
+          {% else %}
+          <span class="flex items-center gap-2 text-base-content/70"><span class="inline-block size-2 rounded-full bg-success"></span>{% t shell.connections-ok %}</span>
+          {% endif %}
+          <form action="/ui-language" method="post" class="flex items-center gap-2">
+            <label for="ui-language-side" class="text-xs text-base-content/60">{% t shell.language %}</label>
+            <select id="ui-language-side" name="ui-language" class="select select-xs w-auto" onchange="this.form.submit()">
+              <option value="auto" {% if ui-language = "auto" %}selected{% endif %}>{% t shell.language-auto %}</option>
+              <option value="de" {% if ui-language = "de" %}selected{% endif %}>Deutsch</option>
+              <option value="en" {% if ui-language = "en" %}selected{% endif %}>English</option>
+            </select>
+            <noscript><button class="btn btn-xs" type="submit">OK</button></noscript>
+          </form>
+          <a href="/logout" class="link link-hover text-base-content/70">{% t nav.logout %}</a>
+        </div>
+      </aside>
+
+      <div class="min-w-0 flex flex-col">
+        <!-- Top bar (phone) -->
+        <header class="lg:hidden flex items-center justify-between px-3 py-2 bg-base-100 border-b border-base-300">
+          <a href="/emails"><img src="/plauna-banner.png" alt="Plauna" style="height: 26px"/></a>
+        </header>
+        {% if disconnected %}
+        <div class="lg:hidden alert alert-error alert-soft rounded-none py-2" role="alert">
+          <span>{% t shell.not-connected disconnected-text %} <a class="link font-semibold" href="/admin/connections">{% t nav.accounts %}</a></span>
+        </div>
+        {% endif %}
+        <main class="px-3 sm:px-6 py-4 pb-24 lg:pb-8 min-w-0">
+        {% block content %}
+        {% endblock %}
+        </main>
       </div>
     </div>
-    <div class="navbar hidden lg:flex shadow-sm">
-	  <div class="navbar-start flex-nowrap">
-		<a href="/"><img src="/plauna-banner.png" style="height: 30px"/></a>
-	  </div>
-	  <div class="navbar-end">
-        <ul class="menu menu-horizontal px-1">
-          <li><a class="{% if active-nav = :admin %}menu-active{% endif %}" href="/admin">Administration</a></li>
-          <li><a class="{% if active-nav = :statistics %}menu-active{% endif %}" href="/statistics">Statistics</a></li>
-          <li><a class="{% if active-nav = :emails %}menu-active{% endif %}" href="/emails">Emails</a></li>
-          <li><a href="/logout">Logout</a></li>
-        </ul>
-	  </div>
+
+    <!-- Bottom bar (phone) -->
+    <nav class="lg:hidden fixed bottom-0 inset-x-0 z-40 grid grid-cols-4 bg-base-100 border-t border-base-300 pt-1 text-[11px]" style="padding-bottom: max(0.4rem, env(safe-area-inset-bottom));" aria-label="{% t nav.main %}">
+      <a href="/emails" class="flex flex-col items-center gap-0.5 py-1 {% if active-nav = :emails %}text-primary font-semibold{% else %}text-base-content/70{% endif %}"><svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16v12H4z"/><path d="m4 7 8 6 8-6"/></svg><span>{% t nav.emails %}</span></a>
+      <a href="/categories" class="flex flex-col items-center gap-0.5 py-1 {% if active-nav = :categories %}text-primary font-semibold{% else %}text-base-content/70{% endif %}"><svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h7v7H4zM13 5h7v7h-7zM4 14h7v5H4zM13 14h7v5h-7z"/></svg><span>{% t nav.categories %}</span></a>
+      <a href="/model" class="flex flex-col items-center gap-0.5 py-1 {% if active-nav = :model %}text-primary font-semibold{% else %}text-base-content/70{% endif %}"><svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="5"/></svg><span>{% t nav.model %}</span></a>
+      <details class="dropdown dropdown-top dropdown-end" id="more-menu">
+        <summary class="flex flex-col items-center gap-0.5 py-1 list-none cursor-pointer {% if more-active? %}text-primary font-semibold{% else %}text-base-content/70{% endif %}"><svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg><span>{% t nav.more %}</span></summary>
+        <div class="dropdown-content bg-base-100 rounded-box shadow-lg border border-base-300 w-56 p-2 mb-2 flex flex-col gap-2">
+          <ul class="menu menu-sm w-full p-0">
+          <li><a href="/admin/connections" class="{% if active-nav = :accounts %}menu-active{% endif %}"><svg class="size-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14c2 .7 3 2.8 3 6"/></svg>{% t nav.accounts %}</a></li>
+          <li><a href="/statistics" class="{% if active-nav = :statistics %}menu-active{% endif %}"><svg class="size-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>{% t nav.statistics %}</a></li>
+          <li><a href="/admin" class="{% if active-nav = :system %}menu-active{% endif %}"><svg class="size-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14 3h-4l-.5 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.6 2 3.4 2.4-1c.6.5 1.3.9 2 1.2L10 21h4l.5-2.6c.7-.3 1.4-.7 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z"/></svg>{% t nav.system %}</a></li>
+            <li><a href="/logout">{% t nav.logout %}</a></li>
+          </ul>
+          <div class="px-2 pb-1"><form action="/ui-language" method="post" class="flex items-center gap-2">
+            <label for="ui-language-more" class="text-xs text-base-content/60">{% t shell.language %}</label>
+            <select id="ui-language-more" name="ui-language" class="select select-xs w-auto" onchange="this.form.submit()">
+              <option value="auto" {% if ui-language = "auto" %}selected{% endif %}>{% t shell.language-auto %}</option>
+              <option value="de" {% if ui-language = "de" %}selected{% endif %}>Deutsch</option>
+              <option value="en" {% if ui-language = "en" %}selected{% endif %}>English</option>
+            </select>
+            <noscript><button class="btn btn-xs" type="submit">OK</button></noscript>
+          </form></div>
+        </div>
+      </details>
+    </nav>
+
+    <!-- Toasts: bottom right, above the phone bar. Errors stay until closed. -->
+    {% if messages %}
+    <div class="toast toast-end toast-bottom z-50 mb-16 lg:mb-0">
+      {% for message in messages %}
+      <div id="{{ message.id }}" role="{% if message.sticky? %}alert{% else %}status{% endif %}" data-sticky="{% if message.sticky? %}true{% else %}false{% endif %}"
+           class="alert alert-soft shadow-lg max-w-sm whitespace-normal items-start {% if message.tone = "error" %}alert-error{% endif %}{% if message.tone = "success" %}alert-success{% endif %}{% if message.tone = "info" %}alert-info{% endif %}">
+        <svg class="size-5 shrink-0" aria-hidden="true" viewBox="0 0 20 20" fill="currentColor"><path d="{{ message.path }}" /></svg>
+        <div class="text-sm">{{ message.content }}{% if message.link %} <a class="link font-semibold" href="{{ message.link }}">{{ message.link-text }}</a>{% endif %}</div>
+        <button type="button" class="btn btn-ghost btn-xs btn-square" onclick="this.closest('[role]').remove()" aria-label="{% t toast.close %}">✕</button>
+      </div>
+      {% endfor %}
     </div>
-    {% if disconnected %}
-    <div class="alert alert-error my-2" role="alert">
-      <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-      </svg>
-      <span>
-        IMAP connection not active:
-        {% for conn in disconnected %}{{conn.user}}@{{conn.host}}{% if not forloop.last %}, {% endif %}{% endfor %}.
-        Go to <a class="underline font-semibold" href="/admin/connections">Connections</a> to reconnect.
-      </span>
-    </div>
+    <script>
+      document.querySelectorAll('.toast [data-sticky="false"]').forEach(function (toast) {
+        setTimeout(function () { toast.remove(); }, 8000);
+      });
+    </script>
     {% endif %}
-    <main class="mx-2 my-4">
-    {% block content %}
-    {% endblock %}
-    </main>
+    <script>
+      // The phone's "More" menu closes when tapping elsewhere.
+      document.addEventListener('click', function (event) {
+        var more = document.getElementById('more-menu');
+        if (more && more.open && !more.contains(event.target)) { more.open = false; }
+      });
+    </script>
   </body>
 </html>

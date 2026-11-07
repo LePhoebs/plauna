@@ -163,7 +163,7 @@ Select this file with =--config-file /path/to/config.edn= or =CONFIG_FILE=/path/
 
 *** settings.json
 
-Application preferences are stored in =settings.json= in the data directory (default =/var/lib/plauna/settings.json=). The file is created automatically on first startup. Edit the user-facing values through "Admin" → "Preferences" so they are validated and scheduler changes take effect immediately.
+Application preferences are stored in =settings.json= in the data directory (default =/var/lib/plauna/settings.json=). The file is created automatically on first startup. Edit the user-facing values through "System" → "General" so they are validated and scheduler changes take effect immediately.
 
 Example file with the user-facing keys (the initial =time-zone= is the host system's zone):
 
@@ -191,7 +191,7 @@ Example file with the user-facing keys (the initial =time-zone= is the host syst
 
 Plauna also keeps a few internal values in this file (the session signing key, the time of the last successful training and a =session-generation= counter that ends all sessions when the credentials change). If the file is ever damaged so that it is no longer valid JSON, Plauna refuses to start and names the file instead of silently replacing it with defaults - that would discard the login name, the session key and the mTLS configuration.
 
-Plauna keeps Naive Bayes and MaxEnt model files side by side. When you select a different model under "Admin" → "Preferences", Plauna opens a confirmation dialog. For the first switch, keep the option to use the current category assignments enabled and enter =Start training= exactly. Plauna then treats the current assignments as correct training examples. The previous model remains active until training of the complete target model succeeds; a failed switch therefore does not leave categorization without a usable model.
+Plauna keeps Naive Bayes and MaxEnt model files side by side. When you select a different model under "System" → "General", Plauna opens a confirmation dialog. For the first switch, keep the option to use the current category assignments enabled and enter =Start training= exactly. Plauna then treats the current assignments as correct training examples. The previous model remains active until training of the complete target model succeeds; a failed switch therefore does not leave categorization without a usable model.
 
 Both newly trained algorithms use namespaced features for the sender's address and domain, the From address and domain, the subject and up to 500 normalized body tokens. The sender is the =Sender= header (a mailing service's address for many newsletters), else the From address; e-mails stored before Plauna kept both simply lack the From features. Words are split at every kind of space, no-break spaces included, the same way for training and prediction. The displayed category confidence is the selected model's combined probability across those features, not three separate confidence values. On the detail page of an e-mail, "Model Scores" shows what the current model computes for it when the page is opened: the five most likely categories and their probabilities, regardless of the threshold. For a categorized e-mail the assigned category is shown in bold; it can differ from the top score, for example after a manual change or a retraining. Nothing of this is stored. A category or language changed manually is stored with 100% confidence because it represents an explicit user decision rather than a model prediction.
 
@@ -210,7 +210,7 @@ When the same runtime value is provided more than once, Plauna uses the followin
 ** Web UI Password Protection
 
 The whole web UI is protected by one login name and password. The login name defaults to =root= for
-new and existing installations and can be changed under "Admin" -> "Login Settings". When you open
+new and existing installations and can be changed under "System" → "Login". When you open
 Plauna you are redirected to a login page. After logging in, a signed session cookie keeps you signed
 in until you log out (via the "Logout" link in the navigation bar), the browser discards the cookie,
 the password or login name is changed, or 30 days have passed since the login. The signing key is
@@ -231,7 +231,7 @@ No web UI password configured. A temporary password was generated:
 
     Xk7p... (a long random string)
 
-Log in as root and change it under Administration > Login Settings,
+Log in as root and change it under "System" → "Login",
 or set the PLAUNA_PASSWORD environment variable.
 #+end_src
 
@@ -239,7 +239,7 @@ The password is never stored in plain text; only a salted PBKDF2 hash is kept in
 
 *** Changing the login name or password
 
-Go to "Admin" -> "Login Settings". The login name and password have separate forms, and both changes
+Go to "System" → "Login". The login name and password have separate forms, and both changes
 require the current password again. Login names are case-sensitive. A new password must contain at
 least 8 characters and be entered twice. If =PLAUNA_PASSWORD= is set, the page warns you that a
 password change will be reset to the environment variable's value on the next restart. The login
@@ -265,14 +265,14 @@ Plauna can turn a client certificate already verified by an NGINX reverse proxy 
 signed Plauna session. Only certificates whose SHA-256 fingerprint is explicitly configured bypass
 the password. Requests without an allowed certificate continue to use the password login.
 
-The allowlist and proxy secret can be managed under "Admin" -> "mTLS Login". Changes made there are
+The allowlist and proxy secret can be managed under "System" → "Client certificate (mTLS)". Changes made there are
 validated, written atomically to =settings.json= and activated immediately without a restart. The
 proxy secret is write-only in the UI: an existing value is never sent back to the browser. Leave the
 field blank to retain it, enter a value of at least 32 characters to rotate it, or use the explicit
 delete checkbox. Clearing the fingerprint list disables new mTLS logins. Every change requires the
 current admin password again, including changes made from an already authenticated browser session.
 
-When an authenticated administrator opens "Admin" -> "mTLS Login" through NGINX with a verified
+When an authenticated administrator opens "System" → "Client certificate (mTLS)" through NGINX with a verified
 client certificate, Plauna shows its SHA-256 fingerprint there. If it is not trusted yet, the
 administrator can add it to the UI-managed allowlist while saving the mTLS settings. The current
 password is required again. The fingerprint is always derived from NGINX's protected certificate
@@ -369,13 +369,28 @@ After saving the auth provider, select it in the connection configuration and cl
 
 After you set up your configuration, go to the "Connections" page and click on "Connect". On your first login, you will be redirected to your oauth provider in order to authorize the application you created to access your data. If everything is set up correctly, you will then be redirected automatically back to Plauna.
 
+** The Interface
+
+A sidebar on the left leads to the six areas of Plauna; on a phone, a bar at the bottom shows "E-mails", "Categories" and "Model", the rest is under "More":
+
+- *E-mails*: the list of stored e-mails with its filters and bulk actions, and each e-mail's details.
+- *Categories*: the categories and their settings. The sidebar also lists every category with its number of e-mails; each opens the category's own page.
+- *Model*: training ("Train now", the last and the daily training), the scores of the e-mails, and the links to the languages and to the thresholds and model type.
+- *Accounts*: the IMAP accounts.
+- *Statistics*.
+- *System*: general settings, login, client certificates (mTLS), the database, the mbox import and diagnostics.
+
+The bottom of the sidebar shows whether every IMAP account is connected; a broken connection turns it red and links to "Accounts". Messages appear at the bottom right and close by themselves, except errors.
+
+The interface speaks English and German. By default it follows the browser's language; the "Language" switch at the bottom of the sidebar (on a phone: under "More") fixes it to German or English for every browser. The pages are translated step by step as the interface is reworked (see =docs/redesign.org=), so some pages are still English only. Light and dark mode follow the system setting.
+
 ** Getting Started
 
 When you start Plauna, it starts a web server on the port which you specified (defaults to 8080) and connects to the IMAP servers that you configured. You can use Plauna without configuring any IMAP servers but you would be missing out on the "move e-mail" functionality. On your very first start, the database is empty. You need to fill it with e-mails. There are three non-exclusive ways of doing this:
 
-1. Go to "Admin". Under "Parse E-mails from Mbox", select an mbox file and click "Upload". The file is read in the background - the page answers right away and a message on the next page load tells you when the file has been read completely - and your e-mails appear under the "E-mails" tab as they are processed. Messages are passed to the MIME parser byte for byte, so 8-bit bodies in Latin-1 or Windows-1252 keep their umlauts; fragments that are not e-mails are skipped. E-mails Plauna has stored already are skipped as well, so importing the same file twice never overwrites a category. Only one mbox import or language re-detection runs at a time.
+1. Go to "System". Under "Import", select an mbox file and click "Upload". The file is read in the background - the page answers right away and a message on the next page load tells you when the file has been read completely - and your e-mails appear under the "E-mails" tab as they are processed. Messages are passed to the MIME parser byte for byte, so 8-bit bodies in Latin-1 or Windows-1252 keep their umlauts; fragments that are not e-mails are skipped. E-mails Plauna has stored already are skipped as well, so importing the same file twice never overwrites a category. Only one mbox import or language re-detection runs at a time.
 
-2. Go to "Admin" → "IMAP Connections", open an account, select a folder under "Parse E-mails from Folders", decide whether the messages should be moved after categorization, and click "Parse E-mails". You may also assign one category to the whole folder instead of using automatic category detection.
+2. Go to "Accounts", open an account, select a folder under "Parse E-mails from Folders", decide whether the messages should be moved after categorization, and click "Parse E-mails". You may also assign one category to the whole folder instead of using automatic category detection.
 
    E-mails Plauna has stored already are normally skipped, also when a category is assigned. Tick "Also assign the category to e-mails Plauna has stored already" to give them the chosen category too - as if you had changed it by hand (it counts as a training example of that category from the next training on, and its retention starts now) - and to record the parsed folder as their place. This is how a new category learns from e-mails you sorted out by hand earlier, for example: parse the trash with the category "Temporary" and this option, leave "Move" unticked, then train. The e-mails stay where they are; Plauna's clean-up and flags only act in the category's own folder, so they leave e-mails in the trash alone. With "Move" ticked they are moved into the category's folder instead (for a category kept in the inbox: back into the inbox) and flagged there. E-mails that have the chosen category already are skipped as before. Re-categorized e-mails do not count towards the batch size, and the run's message says how many there were.
 
@@ -416,17 +431,27 @@ The days field is required here - a blank field is refused rather than reading t
    
 ** Language Detection
 
-Plauna automatically detects the language of an e-mail when parsing it. Under "Admin" → "Languages", select the languages that should be used for training and categorization. Only languages that have already occurred in parsed e-mails appear there. E-mails whose language could not be determined keep no language (shown as "n/a" or "Not detected"); a detector failure never prevents the e-mail itself from being saved. "Re-detect Missing Languages" on the same page runs the language detection again for every e-mail without a language: it queues each of those e-mails exactly once and works in the background. It writes only the language, so a category you change meanwhile is kept.
+Plauna automatically detects the language of an e-mail when parsing it. Under "Model" → "Languages", select the languages that should be used for training and categorization. Only languages that have already occurred in parsed e-mails appear there. E-mails whose language could not be determined keep no language (shown as "n/a" or "Not detected"); a detector failure never prevents the e-mail itself from being saved. "Re-detect Missing Languages" on the same page runs the language detection again for every e-mail without a language: it queues each of those e-mails exactly once and works in the background. It writes only the language, so a category you change meanwhile is kept.
 
 ** Categorization
 
 *** Create Categories
 
-Go to "Admin" -> "Categories" to create and delete categories. A category name becomes an IMAP folder name, so it must not be empty, longer than 100 characters, or contain the characters =/= =\= =*= =%= =.= or double quotes (they are hierarchy separators and wildcards in IMAP folder names; the dot is the separator of Maildir++ servers such as many Dovecot setups). When you create a category, Plauna tries to create its folder on every active IMAP connection. Deleting a category clears that category from affected Plauna metadata, but does not delete the corresponding folder or messages from the IMAP server. Plauna creates folders and moves messages as part of categorization; category administration itself does not remove server-side folders or messages.
+Go to "Categories" to create and delete categories. A category name becomes an IMAP folder name, so it must not be empty, longer than 100 characters, or contain the characters =/= =\= =*= =%= =.= or double quotes (they are hierarchy separators and wildcards in IMAP folder names; the dot is the separator of Maildir++ servers such as many Dovecot setups). When you create a category, Plauna tries to create its folder on every active IMAP connection. Deleting a category clears that category from affected Plauna metadata, but does not delete the corresponding folder or messages from the IMAP server. Plauna creates folders and moves messages as part of categorization; category administration itself does not remove server-side folders or messages.
+
+*** Finding Older E-mails for a Category
+
+A new category starts with only the e-mails assigned since it exists. Its page (click it in the sidebar or on "Categories") finds older e-mails outside the category that may belong into it. Three methods show how many e-mails each finds:
+
+- "Same sender" finds e-mails whose sender address (ignoring case and display name) already has e-mails in the category.
+- "Same sender domain" does the same for the part of the address after the @. This finds more, but a domain like a large mail provider's matches a lot.
+- "Model" finds the e-mails the trained model puts into the category with at least the given probability (default 50 %), most likely first. It uses scores stored for every e-mail with a detected language. "Score e-mails now" (on the category page with this method, and on the "Model" page) computes them in the background with the current models; the page shows the progress and reloads when it is done. Scores do not follow the model by themselves: after a training run the page says so, and scoring again uses the new model. A category the model has not been trained with yet gets no scores, so train first once the category has some e-mails.
+
+"Review" opens the e-mail list with these e-mails and the category preselected in the bulk bar (see "Filtering and Navigating the E-mail List"). The suggestion stays a filter of the list - shown as a chip with a link back to the category - and combines with every other filter, for example a date range. Assigned e-mails leave the suggestions with the next page load.
 
 *** Destination Folders
 
-By default, e-mails of a category are moved to a sub-folder of "Categories" named after the category (e.g. =Categories/Work=). You can override this per category: in "Admin" -> "Categories" each category has a "Destination Folder" field, and the "New Category" form lets you set one when creating a category.
+By default, e-mails of a category are moved to a sub-folder of "Categories" named after the category (e.g. =Categories/Work=). You can override this per category: in "Categories" each category has a "Destination Folder" field, and the "New Category" form lets you set one when creating a category.
 
 - Enter a full IMAP folder path using your mail server's hierarchy separator (e.g. =Archive/Newsletters= or =Archive.Newsletters=).
 - Leave it blank to keep the default =Categories/<Name>= behaviour.
@@ -451,11 +476,11 @@ Note that a mail-server filter (e.g. Sieve) delivering new mail directly into a 
 
 *** Category Colors
 
-Each category has a color, set with a color picker in "Admin" -> "Categories" (both on the "New Category" form and next to each existing category). The category dropdown on the e-mail list and on an e-mail's details page is color-coded with a left border matching the currently selected category, and on the e-mail list the category's color also tints the whole row at low opacity, so you can tell categories apart at a glance without it overpowering the row's text. A category created before this feature, or one for which an invalid color was submitted, falls back to a neutral gray.
+Each category has a color, set with a color picker in "Categories" (both on the "New Category" form and next to each existing category). The category dropdown on the e-mail list and on an e-mail's details page is color-coded with a left border matching the currently selected category, and on the e-mail list the category's color also tints the whole row at low opacity, so you can tell categories apart at a glance without it overpowering the row's text. A category created before this feature, or one for which an invalid color was submitted, falls back to a neutral gray.
 
 *** Flags and Automatic Clean-up
 
-Two more settings per category in "Admin" -> "Categories" cover e-mails that belong in the inbox but are no longer needed after a while, such as shipping notices or account confirmations.
+Two more settings per category in "Categories" cover e-mails that belong in the inbox but are no longer needed after a while, such as shipping notices or account confirmations.
 
 *Flag:* Plauna marks every e-mail it files in the category with an Apple Mail flag of the chosen color. Apple Mail on macOS and iOS shows the color, other mail programs show a plain flag. Plauna sets the IMAP flag =\Flagged= and stores the color in the keywords =$MailFlagBit0= to =$MailFlagBit2=, as Apple Mail itself does. A server that does not keep custom keywords only gets the plain flag. To leave the e-mails in the inbox and only flag them, use =INBOX= as the category's destination folder (see [[*Destination Folders][Destination Folders]]).
 
@@ -508,14 +533,6 @@ The "Subject", "From" and "To" checklists hold at most 500 values each, so that 
 
 Each checklist only offers values still reachable given your *other* active filters - for example, once you've picked a category, the "From" checklist only lists senders who actually have mail in that category, narrowing further as you add more filters. This matches how Excel's own column filters behave. The one exception is the category dropdown on each e-mail row (used to recategorize that e-mail): it always offers every category, regardless of the list's current filter.
 
-"Suggest for Category" in the filter bar finds older e-mails that may belong into a category, for example after a new category was created and only new e-mails got it so far. Pick the category and how to look for candidates, then choose "Apply":
-
-- "Same sender" lists the e-mails outside the category whose sender address (ignoring case and display name) already has e-mails in it.
-- "Same sender domain" does the same for the part of the address after the @. This finds more, but a domain like a large mail provider's matches a lot.
-- "Model" lists the e-mails outside the category that the trained model puts into it with at least the given probability (default 50 %), most likely first. It uses scores stored for every e-mail with a detected language: "Score e-mails now" computes them in the background with the current models, the filter shows its progress and reloads when it is done. Scores do not follow the model by themselves: after a training run, the filter says so, and scoring again uses the new model. A category the model has not been trained with yet gets no scores, so train first once the category has some e-mails.
-
-The suggestions combine with every other filter (a date range, for example). Review them and use the checkboxes to assign the category to the right ones; assigned e-mails leave the suggestion list with the next page load.
-
 To give several e-mails the same category at once, tick them in the first column of the list (the box in the header ticks every e-mail on the page; Shift-click ticks a whole range), pick the category in the bar above the list and choose "Assign". Each e-mail is changed exactly as with its own category dropdown, including the move on the mail server, one after the other while the bar counts along. E-mails that already have the category are skipped. E-mails the mail server does not have are asked about once at the end: "OK" changes only Plauna's category for them. Afterwards the bar says how many e-mails were assigned; e-mails that could not be changed stay ticked so they can be tried again.
 
 All filters combine with AND: for example, you can search body text, pick two senders, restrict the list to a category and add a date range at the same time. Active filters are shown as removable chips above the table. Pagination controls appear both above and below the list, with "First", "Back", "Next" and "Last" buttons; the complete filter state is preserved as you page through the results. The number of e-mails shown per page can be set below the list from 1 to 500 (default 20).
@@ -524,19 +541,19 @@ On MariaDB, body search requires every entered word, supports prefix matching an
 
 *** Data Training
 
-Under the "E-mails" tab, click "Train with Existing Data" to retrain the currently selected model with categorized e-mails. *Important:* A model needs more than one category represented in each language. A language whose categorized e-mails all belong to one category is skipped and named in the result message, while the other languages are still trained; the same applies to a language whose training fails for another reason. Such a partial run still counts as the day's training.
+On the "Model" page, click "Train now" to retrain the currently selected model with categorized e-mails. *Important:* A model needs more than one category represented in each language. A language whose categorized e-mails all belong to one category is skipped and named in the result message, while the other languages are still trained; the same applies to a language whose training fails for another reason. Such a partial run still counts as the day's training.
 
 Training runs in the background. The browser is taken to a progress page that shows a progress bar plus a checklist of every step of the run - preparing, collecting the categorized e-mails (with a running count), training the language models with one sub-item per language (pending, running with the MaxEnt iteration, done, failed or skipped with the reason), writing the model files, and the final result. Steps are ticked off as they complete, and a step that stops the run is marked as failed.
 
-Training is built for speed on a multi-core machine: the classification features of every e-mail (sender, domain, subject and body tokens) are derived once and cached in the database, so the collecting phase of every later run only reads the cache - the first run after upgrading still analyses every e-mail and reports how many it cached. The languages then train in parallel, and each MaxEnt trainer uses its share of the available processor cores. Training runs on the CPU only; a GPU or NPU is not used. When the run has finished, the result is shown on that page; if you navigate away, it appears as a message on the next page load instead. Only one training run can be active at a time, and the daily automatic run waits when a manual one is in progress. Because the request itself returns immediately, a reverse proxy in front of Plauna no longer reports a gateway time-out for long training runs. Switching the model under "Admin" → "Preferences" uses the same progress page.
+Training is built for speed on a multi-core machine: the classification features of every e-mail (sender, domain, subject and body tokens) are derived once and cached in the database, so the collecting phase of every later run only reads the cache - the first run after upgrading still analyses every e-mail and reports how many it cached. The languages then train in parallel, and each MaxEnt trainer uses its share of the available processor cores. Training runs on the CPU only; a GPU or NPU is not used. When the run has finished, the result is shown on that page; if you navigate away, it appears as a message on the next page load instead. Only one training run can be active at a time, and the daily automatic run waits when a manual one is in progress. Because the request itself returns immediately, a reverse proxy in front of Plauna no longer reports a gateway time-out for long training runs. Switching the model under "System" → "General" uses the same progress page.
 
-You must have selected at least one language in "Admin" -> "Languages" in order to start training on your e-mails.
+You must have selected at least one language in "Model" → "Languages" in order to start training on your e-mails.
 
-Plauna also trains the active model automatically once per day at the time configured under "Admin" → "Preferences". The configured IANA time zone controls that schedule. If Plauna was stopped at the scheduled time, it catches up the missed training after the next start; failures are logged and retried at the following scheduled run.
+Plauna also trains the active model automatically once per day at the time configured under "System" → "General". The configured IANA time zone controls that schedule. If Plauna was stopped at the scheduled time, it catches up the missed training after the next start; failures are logged and retried at the following scheduled run.
 
 *** Choosing Naive Bayes or MaxEnt
 
-The categorization model is selected under "Admin" → "Preferences":
+The categorization model is selected under "System" → "General":
 
 - *Naive Bayes* remains the default and preserves compatibility with existing installations.
 - *Maximum Entropy (MaxEnt, GIS)* considers the same combined sender, domain, subject and body features without Naive Bayes' feature-independence assumption.
@@ -621,7 +638,7 @@ The health check prevents Plauna from starting before MariaDB is ready. Without 
 
 If you are already running Plauna on SQLite and want to switch:
 
-1. Go to "Admin" → "Database".
+1. Go to "System" → "Database".
 2. Fill in the MariaDB connection details and click *Test Connection* to verify.
 3. Click *Save Configuration* — this writes =db-config.edn= to the data directory.
 4. Click *Start Migration* — Plauna will create the schema on MariaDB and copy all rows from SQLite. The SQLite file is not deleted.
@@ -645,7 +662,7 @@ On the first start after upgrading to a version with FULLTEXT support, Flyway cr
 
 ** Logging
 
-Plauna logs to standard output, so with Docker you can read the logs with =docker logs <container>= (add =-f= to follow). The log level can be changed under "Admin" -> "Preferences" (Error / Info / Debug). Increase it to "Debug" when you want more detail about what Plauna is doing.
+Plauna logs to standard output, so with Docker you can read the logs with =docker logs <container>= (add =-f= to follow). The log level can be changed under "System" → "General" (Error / Info / Debug). Increase it to "Debug" when you want more detail about what Plauna is doing.
 
 ** Diagnosing Freezes
 
@@ -653,7 +670,7 @@ If Plauna ever becomes unresponsive, the goal is to capture a *thread dump* - a 
 
 1. *Automatic deadlock watchdog.* A background task checks for thread deadlocks every 60 seconds. If it finds one, it logs the full stack traces of the involved threads at ERROR level (look for "Watchdog detected a deadlock"). This works even when the rest of the application is stuck, so the evidence ends up in your logs automatically.
 
-2. *On-demand thread dump.* Open "Admin" -> "Thread Dump (debug)" (or visit =/admin/threads=). It returns a full thread dump in the browser and also writes it to the log. Use this when the UI is still responsive.
+2. *On-demand thread dump.* Open "System" → "Thread dump" (or visit =/admin/threads=). It returns a full thread dump in the browser and also writes it to the log. Use this when the UI is still responsive.
 
 3. *Guaranteed dump via the JVM (recommended when fully frozen).* Send the JVM a quit signal; it prints a complete thread dump to standard output (your container logs) without affecting the running process:
 
@@ -668,7 +685,7 @@ Uncaught exceptions in any thread are also logged, so a thread that dies unexpec
 
 ** REPL
 
-Plauna comes with a built-in REPL that can be activated on the administration page. It is hard-coded to listen to port 7888. If you know your way around Clojure and the codebase, you can use it to inspect the current state of the application or even make changes while it's running. Be aware that all your changes will be lost when you restart the application. If you are not debugging or do not know how to use the Clojure REPL, there is absolutely no reason to start it. There are no further features hidden behind it.
+Plauna comes with a built-in REPL that can be activated on the "System" page under "Diagnostics". It is hard-coded to listen to port 7888. If you know your way around Clojure and the codebase, you can use it to inspect the current state of the application or even make changes while it's running. Be aware that all your changes will be lost when you restart the application. If you are not debugging or do not know how to use the Clojure REPL, there is absolutely no reason to start it. There are no further features hidden behind it.
 
 * License
 

@@ -21,6 +21,7 @@
             [plauna.files :as files]
             [plauna.markup :as markup]
             [plauna.messaging :as messaging]
+            [plauna.i18n :as i18n]
             [plauna.preferences :as p]
             [plauna.settings :as settings]
             [ring.adapter.jetty :as jetty]
@@ -599,10 +600,10 @@
       (do (async/thread
             (let [result (try
                            (let [scored (score-all-emails!)]
-                             {:type :success :content (str "Model scores are ready for " scored " e-mail(s). Pick \"Model\" in \"Suggest for Category\" to use them.")})
+                             {:type :success :key :scoring.done :args [scored]})
                            (catch Throwable e
                              (t/log! {:level :error :error e} "Scoring the e-mails with the model failed.")
-                             {:type :alert :content "Scoring the e-mails with the model failed. Please check the logs."}))]
+                             {:type :alert :key :scoring.failed}))]
               (swap! scoring-progress assoc :status :finished :finished-at (System/currentTimeMillis) :result result)
               ;; Also shown on the next page load: the list reloads itself when the run is over.
               (add-to-messages result)))
@@ -620,11 +621,42 @@
      :stale? (boolean (and at trained-at (.isAfter ^Instant trained-at ^Instant at)))
      :running? (scoring-running?)}))
 
+(defn- format-instant [^Instant instant]
+  (some-> instant (.atZone (p/zone-id)) (.format (java.time.format.DateTimeFormatter/ofPattern "dd.MM.yyyy HH:mm"))))
+
+(defn model-page-data
+  "What the Model page shows: the training state and schedule, the model type and the stored scores."
+  []
+  {:training-running? (training-running?)
+   :last-training (format-instant (p/last-successful-training-at))
+   :training-time (p/automatic-training-time)
+   :model-type (p/categorization-model)
+   :model-scores (model-scores-summary)})
+
+(defn category-page
+  "A category's page: what it does with its e-mails and how many older e-mails may belong into it.
+   params: :by (sender, domain or model; default sender) and :min (the model's minimum percentage)."
+  [context category params]
+  (let [id (:id category)
+        {:keys [method min-percent]} (app/suggestion-parameters {:suggest-category (str id) :suggest-by (:by params) :suggest-min (:min params)})
+        counts (app/suggestion-counts context id min-percent)
+        flag (first (filter #(= (:flag_color category) (:id %)) flags/colors))]
+    (markup/category-page
+     {:category (assoc category :flag_hex (:hex flag) :flag_label (:label flag))
+      :email-count (app/category-email-count context id)
+      :method method
+      :min-percent min-percent
+      :counts (update-keys counts keyword)
+      :selected-count (get counts method 0)
+      :review-url (str "/emails?size=50&suggest-category=" id "&suggest-by=" method "&suggest-min=" min-percent)
+      :model-scores (model-scores-summary)})))
+
 (defn scoring-status
   "The e-mail list's JSON view of the current (or last) scoring run."
   []
   (let [{:keys [status done total result]} @scoring-progress]
-    {:status status :done (or done 0) :total (or total 0) :result (:content result) :result-type (:type result)}))
+    {:status status :done (or done 0) :total (or total 0)
+     :result (some-> result :key (i18n/t (:args result))) :result-type (:type result)}))
 
 (def ^:private training-phase-order [:starting :collecting :training :writing])
 
@@ -1373,14 +1405,14 @@
 (defn- render-database-page [extra]
   (let [cfg (db-cfg/load-config)]
     (success-html-with-body
-     (selmer/render-file "admin-database.html"
+     (markup/page "admin-database.html"
                          (merge {:db-status (database-status)
                                  :saved-config (when (= :mariadb (:type cfg)) (dissoc cfg :password))
                                  :sqlite-exists (sqlite-file-exists?)
                                  :old-sqlite (old-sqlite-info)
                                  :sqlite-delete-confirmation sqlite-delete-confirmation
                                  :header "Database"
-                                 :active-nav :admin}
+                                 :active-nav :system}
                                 extra)))))
 
 (defn empty-global-messages [] (take-messages!))
@@ -1845,6 +1877,13 @@
                  (success-html-with-body
                   (markup/login-page {:error "Invalid login name or password."}))))))))
 
+   ;; The language switch of the sidebar and the phone's "More" menu.
+   (comp/POST "/ui-language" request
+     (let [value (get-in request [:params :ui-language])]
+       (when (contains? p/ui-languages value)
+         (p/update-preference :ui-language value))
+       (redirect-to-referer request)))
+
    (comp/GET "/logout" {}
      (-> (redirect "/login") (assoc :session nil)))
 
@@ -2012,9 +2051,20 @@
            (redirect-request request {:type :success :content (str "Importing the mbox file " (:filename upload) " in the background. Its e-mails appear in the list as they are processed; a message reports when the file has been read completely.")})
            (redirect-request request event-bus-busy-message)))))
 
-   (comp/GET "/admin/categories" {}
+   (comp/GET "/categories" {}
      (let [categories (db/get-categories)]
        (success-html-with-body (result-with-messages (markup/categories-page categories) global-messages))))
+
+   ;; The category overview moved out of the administration (docs/redesign.org).
+   (comp/GET "/admin/categories" {} (redirect "/categories" 301))
+
+   (comp/GET "/categories/:id" {route-params :route-params params :params}
+     (if-let [category (some-> (:id route-params) parse-long db/category-by-id)]
+       (success-html-with-body (result-with-messages (category-page context category params) global-messages))
+       {:status 404 :headers html-headers :body "<p>This category does not exist.</p><p><a href=\"/categories\">Categories</a></p>"}))
+
+   (comp/GET "/model" {}
+     (success-html-with-body (result-with-messages (markup/model-page (model-page-data)) global-messages)))
 
    (comp/GET "/admin/languages" {}
      (success-html-with-body
@@ -2088,17 +2138,17 @@
    (comp/POST "/admin/categories" {params :params}
      (if-let [problem (app/category-name-problem (:name params) (map :name (db/get-categories)))]
        (do (add-to-messages {:type :alert :content problem})
-           (redirect "/admin/categories" 303))
+           (redirect "/categories" 303))
        (do (app/create-new-category! context (st/trim (:name params)) (:destination-folder params) (:color params)
                                      {:flag-color (:flag-color params) :retention-days (:retention-days params)})
            (analysis/clear-reference-cache!)
-           (redirect "/admin/categories" 303))))
+           (redirect "/categories" 303))))
 
    (comp/POST "/admin/categories/clean-up" {}
      (add-to-messages (if (start-manual-retention!)
                         {:type :info :content "Moving expired e-mails to the trash in the background."}
                         {:type :info :content "A clean-up is already running."}))
-     (redirect "/admin/categories" 303))
+     (redirect "/categories" 303))
 
    (comp/POST "/admin/categories/:id/flag" {route-params :route-params}
      (let [category (some-> (parse-long (str (:id route-params))) db/category-by-id)]
@@ -2109,7 +2159,7 @@
              :else
              (do (flag-existing-emails! category)
                  (add-to-messages {:type :info :content (str "Flagging the e-mails of " (:name category) " in the background.")})))
-       (redirect "/admin/categories" 303)))
+       (redirect "/categories" 303)))
 
    (comp/POST "/admin/categories/:id" {route-params :route-params params :params}
      (let [id (parse-long (str (:id route-params)))
@@ -2130,7 +2180,7 @@
                (try (per-connection flagged client/apply-flags!)
                     (catch Throwable e (t/log! {:level :warn :error e} "Could not remove the flags of the category"))))))))
      (analysis/clear-reference-cache!)
-     (redirect "/admin/categories" 303))
+     (redirect "/categories" 303))
 
    (comp/DELETE "/admin/categories/:id" {route-params :route-params}
      (let [id (Integer/parseInt (:id route-params))
@@ -2143,7 +2193,7 @@
            (try (per-connection flagged client/apply-flags!)
                 (catch Throwable e (t/log! {:level :warn :error e} "Could not remove the flags of the deleted category"))))))
      (analysis/clear-reference-cache!)
-     (redirect "/admin/categories" 303))
+     (redirect "/categories" 303))
 
    (comp/POST "/admin/database" {}
      (files/check-and-create-database-file)
@@ -2230,17 +2280,16 @@
            options (cond-> (:optional result)
                      ;; Only for a batch that exists: the id comes from the URL, and a crafted one such as
                      ;; "../../admin/..." would turn the button into a POST to any route of Plauna.
-                     (and (some? batch-id) (some? (db/parse-batch batch-id))) (assoc :batch-move-url (batch-move-url batch-id))
-                     true (assoc :model-scores (model-scores-summary)))]
+                     (and (some? batch-id) (some? (db/parse-batch batch-id))) (assoc :batch-move-url (batch-move-url batch-id)))]
        (success-html-with-body (result-with-messages (markup/list-emails (:data result) (:parameters result) options) global-messages))))
 
-   ;; "Score e-mails now" of the suggestion filter: computes the model scores in the background.
-   (comp/POST "/emails/score" request
+   ;; "Score e-mails now" (Model page, category suggestions): computes the model scores in the background.
+   (comp/POST "/model/score" request
      (when-not (start-scoring-job!)
-       (add-to-messages {:type :info :content "The e-mails are already being scored. Please wait for that run to finish."}))
+       (add-to-messages {:type :info :key :scoring.busy}))
      (redirect-to-referer request))
 
-   (comp/GET "/emails/score/status" _
+   (comp/GET "/model/score/status" _
      {:status 200
       :headers {"Content-Type" "application/json; charset=UTF-8" "Cache-Control" "no-store"}
       :body (generate-string (scoring-status))})
@@ -2665,7 +2714,23 @@
                         (if (string? cookies) [cookies] cookies)))
         response))))
 
-(defn app [context] (-> (fn [req] ((make-routes context) req))
+(defn wrap-language
+  "Bind the interface language of the request (see plauna.i18n): the setting, or the browser's
+   Accept-Language for \"auto\". Pages are rendered inside the handler, so they all see it."
+  [handler]
+  (fn [request]
+    (binding [i18n/*lang* (i18n/request-language (p/ui-language) (get-in request [:headers "accept-language"]))]
+      (handler request))))
+
+(defn- shell-data
+  "What the sidebar shows on every page."
+  []
+  {:nav-categories (db/categories-with-counts)})
+
+(defn app [context]
+  (reset! markup/shell-provider shell-data)
+  (-> (fn [req] ((make-routes context) req))
+                        wrap-language
                         wrap-keyword-params
                         (wrap-multipart-params {:progress-fn upload-progress})
                         wrap-params

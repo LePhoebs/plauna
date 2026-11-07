@@ -1,5 +1,6 @@
 (ns plauna.application
   (:require [plauna.interfaces :as int]
+            [plauna.i18n :as i18n]
             [taoensso.telemere :as t]
             [clojure.core.async :as async]
             [clojure.string :as str]
@@ -377,11 +378,31 @@
 (defn- suggestion-filter-label
   "Chip text for an active suggestion filter."
   [categories {:keys [category-id method min-percent]}]
-  (str "Suggested for " (or (:name (first (filter #(= category-id (:id %)) categories))) (str "category " category-id))
-       (case method
-         "domain" " (same sender domain)"
-         "model" (str " (model ≥ " min-percent " %)")
-         " (same sender)")))
+  (let [category-name (or (:name (first (filter #(= category-id (:id %)) categories))) (str category-id))]
+    (case method
+      "domain" (i18n/t :list.suggested-domain [category-name])
+      "model" (i18n/t :list.suggested-model [category-name min-percent])
+      (i18n/t :list.suggested-sender [category-name]))))
+
+(defn- count-emails [db where]
+  (or (:total (int/fetch-emails db {:entity :enriched-email :strict false :page (page/page-request 1 1) :with-bodies false}
+                                (cond-> {:order-by [[:date :desc]]} where (assoc :where where))))
+      0))
+
+(defn suggestion-counts
+  "How many e-mails each suggestion method finds for the category (see suggestion->where), as
+   {\"sender\" n \"domain\" n \"model\" n}, with min-percent for the model method."
+  [context category-id min-percent]
+  (let [db (:db context)]
+    (into {} (for [method ["sender" "domain" "model"]]
+               [method (count-emails db (suggestion->where (suggestion-parameters {:suggest-category (str category-id)
+                                                                                   :suggest-by method
+                                                                                   :suggest-min (str min-percent)})))]))))
+
+(defn category-email-count
+  "How many e-mails have the category."
+  [context category-id]
+  (count-emails (:db context) [:= :metadata.category category-id]))
 
 (defn- batch-filter-label
   "Chip text for an active batch filter; falls back to the bare id when the run is unknown."

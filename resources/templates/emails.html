@@ -9,15 +9,16 @@
 
 {% block content %}
 
-<!-- Outside #page-form: forms cannot be nested. Its button sits in the suggestion filter. -->
-<form id="score-form" action="/emails/score" method="post"></form>
-
 <div class="flex flex-col lg:flex-row gap-4">
   <div class="card grow place-items-center">
     <h3>Filter</h3>
     <form action="/emails" method="get" id="page-form">
       <input type="hidden" name="page" value="1" /> <!-- whenever the filter is used, we want to go back to page 1 -->
       <input type="hidden" name="batch" value="{{page.batch}}" /> <!-- keeps a "review this parse batch" view while other filters change -->
+      <!-- An active suggestion filter (set on a category's page) survives changes of the other filters. -->
+      <input type="hidden" name="suggest-category" id="suggest-category-input" value="{{page.suggest-category}}" />
+      <input type="hidden" name="suggest-by" value="{{page.suggest-by}}" />
+      <input type="hidden" name="suggest-min" value="{{page.suggest-min}}" />
       <div class="flex" style="gap: 4px; flex-wrap: wrap;">
         <fieldset class="fieldset">
           <legend class="fieldset-legend">Metadata</legend>
@@ -47,43 +48,8 @@
           <input type="hidden" name="date-from" id="date-from-input" value="{{page.date-from}}" />
           <input type="hidden" name="date-to" id="date-to-input" value="{{page.date-to}}" />
         </fieldset>
-        <fieldset class="fieldset">
-          <legend class="fieldset-legend">Suggest for Category</legend>
-          <div class="flex flex-wrap items-center gap-1">
-            <select class="select w-40" name="suggest-category" id="suggest-category-input" aria-label="Category to suggest e-mails for">
-              <option value="">Off</option>
-              {% for category in categories %}{% if category.id %}
-              <option value="{{category.id}}" {% if page.suggest-category = category.id %}selected{% endif %}>{{category.name}}</option>
-              {% endif %}{% endfor %}
-            </select>
-            <select class="select w-44" name="suggest-by" id="suggest-by-input" aria-label="How to find suggestions">
-              <option value="sender" {% if page.suggest-by = "sender" %}selected{% endif %}>Same sender</option>
-              <option value="domain" {% if page.suggest-by = "domain" %}selected{% endif %}>Same sender domain</option>
-              <option value="model" {% if page.suggest-by = "model" %}selected{% endif %}>Model</option>
-            </select>
-            <label id="suggest-min-field" class="flex items-center gap-1 text-sm" {% ifunequal page.suggest-by "model" %}hidden{% endifunequal %}>
-              at least
-              <input type="number" name="suggest-min" min="1" max="99" class="input w-20" value="{{page.suggest-min}}" aria-label="Minimum model probability in percent">
-              %
-            </label>
-          </div>
-          <p class="label whitespace-normal" id="suggest-help-senders" {% if page.suggest-by = "model" %}hidden{% endif %}>E-mails outside the category from senders that already have e-mails in it.</p>
-          <div class="label whitespace-normal flex-wrap gap-x-2" id="suggest-help-model" {% ifunequal page.suggest-by "model" %}hidden{% endifunequal %}>
-            <span>E-mails outside the category that the model puts into it, most likely first.</span>
-            <span id="model-scores-state" data-running="{% if model-scores.running? %}true{% else %}false{% endif %}">
-              {% if model-scores.running? %}Scoring the e-mails…{% else %}{% if model-scores.at-text %}Scores from {{model-scores.at-text}} ({{model-scores.emails}} e-mails){% if model-scores.stale? %} – the model was trained since{% endif %}.{% else %}No e-mails have been scored yet.{% endif %}{% endif %}
-            </span>
-            <button type="submit" form="score-form" class="btn btn-xs" {% if model-scores.running? %}disabled{% endif %}>Score e-mails now</button>
-          </div>
-        </fieldset>
       </div>
       <button class="btn btn-primary" type="submit">Apply</button>
-    </form>
-  </div>
-  <div class="card grow place-items-center">
-    <h3>Data Training</h3>
-    <form class="my-4" action="/training" method="post">
-      <input class="btn" type="submit" value="Train with Existing Data">
     </form>
   </div>
 </div>
@@ -108,9 +74,10 @@
   {% endif %}
   {% endif %}
   {% if page.suggestion-active? %}
-  <button type="button" class="badge badge-primary gap-1" onclick="clearAppliedFilter('suggestion')" title="Remove suggestion filter">
+  <button type="button" class="badge badge-primary gap-1" onclick="clearAppliedFilter('suggestion')" title="{% t list.remove-suggestion %}">
     {{page.suggestion-filter-label}} <span aria-hidden="true">×</span>
   </button>
+  <a class="link link-hover text-xs" href="/categories/{{page.suggest-category}}?by={{page.suggest-by}}&amp;min={{page.suggest-min}}">{% t list.back-to-category %}</a>
   {% endif %}
   {% if page.search-active? %}
   <button type="button" class="badge badge-primary gap-1" onclick="clearAppliedFilter('search')" title="Remove body search">
@@ -156,7 +123,7 @@
   <select id="bulk-category-select" class="select select-sm w-40" aria-label="Category for the selected e-mails" disabled>
     <option value="__choose" selected disabled>Category…</option>
     {% for category in categories %}
-    <option value="{{category.id}}">{{category.name}}</option>
+    <option value="{{category.id}}" {% if page.suggestion-active? %}{% if page.suggest-category = category.id %}selected{% endif %}{% endif %}>{{category.name}}</option>
     {% endfor %}
   </select>
   <button type="button" id="bulk-category-apply" class="btn btn-primary btn-sm" disabled>Assign</button>
@@ -828,36 +795,6 @@
    ['to-filter-select-all', 'to-filter-checkbox', 'to-checklist'],
    ['category-filter-select-all', 'category-filter-checkbox', 'category-checklist']]
     .forEach(function (config) { updateSelectAllState(config[0], config[1], config[2]); });
-
-  // Suggestion filter: the minimum probability and the scoring controls belong to the model method only.
-  (function () {
-    var method = document.getElementById('suggest-by-input');
-    function sync() {
-      var model = method.value === 'model';
-      document.getElementById('suggest-min-field').hidden = !model;
-      document.getElementById('suggest-help-model').hidden = !model;
-      document.getElementById('suggest-help-senders').hidden = model;
-    }
-    method.addEventListener('change', sync);
-    sync();
-    // A running scoring run: show its progress and reload when it is over, so the filter uses the new scores.
-    var state = document.getElementById('model-scores-state');
-    if (state.dataset.running !== 'true') { return; }
-    function poll() {
-      fetch('/emails/score/status', {credentials: 'same-origin', headers: {'Accept': 'application/json'}})
-        .then(function (response) { return response.json(); })
-        .then(function (status) {
-          if (status.status === 'running') {
-            state.textContent = 'Scoring the e-mails… ' + status.done + ' of ' + status.total + '.';
-            setTimeout(poll, 2000);
-          } else {
-            window.location.reload();
-          }
-        })
-        .catch(function () { setTimeout(poll, 5000); });
-    }
-    poll();
-  })();
 
   // Date range filter: a single flatpickr calendar drives the two hidden date-from/date-to fields
   // that #page-form actually submits.

@@ -1,0 +1,33 @@
+<!-- The stored model scores and "Score e-mails now" (Model page, category suggestions). A running
+     scoring run shows its progress and reloads the page when it is over. -->
+<div class="flex flex-col items-start gap-2 text-xs" id="scoring-status"
+     data-running="{% if model-scores.running? %}true{% else %}false{% endif %}"
+     data-progress="{% t scoring.progress "{0}" "{1}" %}">
+  <span id="scoring-status-text" class="text-base-content/70">
+    {% if model-scores.running? %}{% t scoring.running %}{% else %}{% if model-scores.at-text %}{% t scoring.from model-scores.at-text model-scores.emails %}{% if model-scores.stale? %} {% t scoring.stale %}{% endif %}{% else %}{% t scoring.none %}{% endif %}{% endif %}
+  </span>
+  <form action="/model/score" method="post">
+    <button class="btn btn-sm" type="submit" {% if model-scores.running? %}disabled{% endif %}>{% t scoring.start %}</button>
+  </form>
+</div>
+<script>
+  (function () {
+    var box = document.getElementById('scoring-status');
+    if (!box || box.dataset.running !== 'true') { return; }
+    var text = document.getElementById('scoring-status-text');
+    function poll() {
+      fetch('/model/score/status', {credentials: 'same-origin', headers: {'Accept': 'application/json'}})
+        .then(function (response) { return response.json(); })
+        .then(function (status) {
+          if (status.status === 'running') {
+            text.textContent = box.dataset.progress.replace('{0}', status.done).replace('{1}', status.total);
+            setTimeout(poll, 2000);
+          } else {
+            window.location.reload();
+          }
+        })
+        .catch(function () { setTimeout(poll, 5000); });
+    }
+    poll();
+  })();
+</script>

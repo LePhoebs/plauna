@@ -7,12 +7,12 @@
     <tbody>
       <tr><th>Color</th><th>Category Name</th><th>Settings</th><th>Delete</th></tr>
       {% for category in categories %}
-      <tr>
+      <tr id="category-{{category.id}}">
         <td>
           <span class="inline-block w-4 h-4 rounded-full align-middle" style="background-color: {{category.color|category-color}};"></span>
         </td>
         <td>
-          {{category.name}}
+          <a class="link link-hover font-semibold" href="/categories/{{category.id}}">{{category.name}}</a>
           {% if category.flag_hex %}<span class="ml-1" style="color: {{category.flag_hex}};" title="Flagged {{category.flag_color}}">⚑</span>{% endif %}
           {% if category.retention_days %}<span class="badge badge-ghost badge-sm ml-1" title="Moved to the trash {{category.retention_days}} days after getting the category">{{category.retention_days}} d</span>{% endif %}
         </td>
@@ -51,7 +51,7 @@
               <script>
                 document.getElementById('delete-button-{{category.id}}').addEventListener('click', (e) => {
                     fetch('/admin/categories/{{category.id}}', {method: 'DELETE'})
-                        .then(plaunaThen(() => window.location.href = '/admin/categories'))});
+                        .then(plaunaThen(() => window.location.href = '/categories'))});
               </script>
 	        </div>
           </div>

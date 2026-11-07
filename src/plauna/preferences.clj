@@ -111,3 +111,14 @@
 
 (defn record-model-scores! [instant scored-emails]
   (settings/update-settings! {:model-scores-at (str instant) :model-scores-emails scored-emails}))
+
+(def ui-languages
+  "The interface language setting: follow the browser, or always German or English."
+  #{"auto" "de" "en"})
+
+(defn ui-language
+  "The interface language setting: \"auto\" (follow the browser), \"de\" or \"en\"."
+  []
+  (w/lookup-or-miss cache :ui-language
+                    (fn [key] (let [value (some-> (@fetch-fn key) str)]
+                                (if (contains? ui-languages value) value "auto")))))

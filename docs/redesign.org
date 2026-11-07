@@ -1,0 +1,64 @@
+#+title: Redesign of the Plauna web interface
+
+The web interface is reworked in four steps, each deployable on its own. This file records the
+target structure, the decisions taken and the ideas kept for later, so later steps start from the
+same plan.
+
+* Target structure
+
+A sidebar (desktop) and a bar at the bottom (phone) replace the old top navigation and the
+"Administration" link list. Six areas, ordered by what the user does:
+
+| Area       | Contains                                                                                   | Formerly                                         |
+|------------+--------------------------------------------------------------------------------------------+--------------------------------------------------|
+| E-mails    | List with search, filters, saved views, bulk actions; detail page                          | Emails, e-mail detail                            |
+| Categories | Overview; per category a page with e-mails, suggestions and settings                       | Administration → Categories, list's suggest filter |
+| Model      | Training status and "Train now", languages, thresholds, model type, scoring of the e-mails | List's training card, Languages, parts of Preferences |
+| Accounts   | IMAP accounts with status; per account connection, folder parsing, problems, runs          | Administration → IMAP Connections, providers     |
+| Statistics | As before                                                                                   | Statistics                                       |
+| System     | General settings, login (password, mTLS), database, mbox import, diagnostics               | Preferences, Login Settings, mTLS, Database, REPL, thread dump |
+
+Old addresses keep working through redirects (bookmarks, the installed web app).
+
+* Design language
+
+- Neutral surfaces with a slight red tint; the burgundy of the logo (=#8c0327=) is the only accent.
+  Category colors appear as a dot or pill, no longer as a tint of the whole row.
+- System font, 13.5 px base size, dense rows, tabular figures.
+- Own daisyUI themes =plauna= (light) and =plauna-dark= replace =autumn=; Plauna follows the system
+  setting.
+- Messages appear as small toasts at the bottom right; errors stay until closed. The connection
+  status sits at the bottom of the sidebar.
+- Technology stays: Selmer templates, Tailwind, daisyUI, a little plain JavaScript. No framework, no
+  CDN.
+
+* Decisions
+
+- *Language*: the interface is bilingual, German and English. The language follows the browser by
+  default and can be fixed in the sidebar. Texts live in =resources/i18n/en.edn= and =de.edn=;
+  templates use ={% t key %}=. Pages are translated when their step reworks them, so until step 4
+  some pages are still English only.
+- *E-mail detail*: stays a page of its own for now (see "Ideas for later").
+- *Column filters*: the Subject/From/To/Category filters stay in the table header, but they are only
+  active after the "Filter" button of the toolbar was pressed (step 2).
+
+* Steps
+
+1. *Shell* (done): layout, navigation, themes, toasts; the Categories and Model areas; the
+   suggestion filter moves from the e-mail list to the category page; the training card moves from
+   the list to Model; old addresses redirect; bilingual texts for the shell and the new pages
+   (category page, Model, System). The category page is a first version: it counts the suggestions
+   per method and opens them in the e-mail list; step 3 turns it into the page with tabs.
+2. *E-mails*: toolbar with search, saved views and filter chips; header filters behind the "Filter"
+   button; compact rows with the category as a pill; floating bulk bar; phone: two-line entries and a
+   bottom sheet for the category.
+3. *Categories and Model*: category overview and detail page with tabs; suggestions grouped by
+   sender with "Assign all"; the Model page bundles languages, thresholds, training and scoring.
+4. *Accounts and System*: accounts with status and sub-pages; System by topic instead of a link
+   list; statistics in the new style; polish the dark theme.
+
+* Ideas for later
+
+- *E-mail detail beside the list*: on the desktop the e-mail opens in a panel to the right of the
+  list, so one can click through e-mails without leaving the list (and its filters and selection).
+  Decided against for now in favour of the separate page; revisit after step 2.

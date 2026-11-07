@@ -1,52 +1,57 @@
 {% extends "base.html" %}
 
 {% block content %}
+<div class="max-w-4xl flex flex-col gap-5">
+  <header class="flex flex-col gap-1">
+    <h1 class="text-2xl font-bold">{% t nav.system %}</h1>
+    <p class="text-base-content/70 max-w-prose">{% t system.intro %}</p>
+  </header>
 
-<div class="flex flex-wrap gap-4">
-  <div class="card card-border grow lg:grow-0">
-    <div class="card-body">
-      <h2 class="card-title">Management</h2>
-	  <ul class="menu">
-        <li><a href="/admin/connections" role="button">IMAP Connections</a></li>
-        <li><a href="/admin/categories" role="button">Categories</a></li>
-        <li><a href="/admin/languages" role="button">Languages</a></li>
-        <li><a href="/admin/preferences" role="button">Preferences</a></li>
-        <li><a href="/admin/password" role="button">Login Settings</a></li>
-        <li><a href="/admin/mtls" role="button">mTLS Login</a></li>
-        <li><a href="/admin/threads" role="button" target="_blank">Thread Dump (debug)</a></li>
-        <li><a href="/admin/database" role="button">Database</a></li>
-	  </ul>
-    </div>
-  </div>
-  
-  <div class="card card-border">
-    <div class="card-body grow lg:grow-0">
-      <h2 class="card-title">Parse E-mails from Mbox</h2>
-      <form action="emails/parse" enctype="multipart/form-data" method="POST">
-        <input name="redirect-url" type="hidden" value="/admin" />
-        <input name="filename" type="file" class="file-input"/>
-        <button class="btn btn-outline-primary" type="submit">Upload</button>
-      </form>
-    </div>
-  </div>
+  <div class="grid gap-4 md:grid-cols-2">
+    <section class="card bg-base-100 border border-base-300 md:col-span-2" aria-labelledby="system-settings-title">
+      <div class="card-body gap-3">
+        <h2 class="card-title" id="system-settings-title">{% t system.settings %}</h2>
+        <ul class="grid gap-x-6 sm:grid-cols-2">
+          <li class="py-2 border-b border-base-300"><a class="link link-hover font-semibold" href="/admin/preferences">{% t system.preferences %}</a><br><span class="text-xs text-base-content/70">{% t system.preferences-help %}</span></li>
+          <li class="py-2 border-b border-base-300"><a class="link link-hover font-semibold" href="/admin/password">{% t system.login %}</a><br><span class="text-xs text-base-content/70">{% t system.login-help %}</span></li>
+          <li class="py-2 border-b border-base-300 sm:border-b-0"><a class="link link-hover font-semibold" href="/admin/mtls">{% t system.mtls %}</a><br><span class="text-xs text-base-content/70">{% t system.mtls-help %}</span></li>
+          <li class="py-2"><a class="link link-hover font-semibold" href="/admin/database">{% t system.database %}</a><br><span class="text-xs text-base-content/70">{% t system.database-help %}</span></li>
+        </ul>
+      </div>
+    </section>
 
-  <div class="card card-border">
-    <div class="card-body grow lg:grow-0">
-      <h2 class="card-title">REPL Status</h2>
-      <p>Running: {{data.repl.status}}</p>
-      {% if data.repl.status %}<p>Port: {{data.repl.port}} </p>{% endif %}
-      <form>
-        <input name="redirect-url" type="hidden" value="/admin">
-      {% if data.repl.status %}
-        <input name="operation" type="hidden" value="stop">
-        <button class="btn btn-outline-primary" type="submit" formmethod="post" formaction="repl">Stop REPL</button>
-      {% else %}
-        <input name="operation" type="hidden" value="start">
-        <button class="btn btn-outline-primary" type="submit" formmethod="post" formaction="repl">Start REPL</button>
-      {% endif %}
-      </form>
-    </div>
+    <section class="card bg-base-100 border border-base-300" aria-labelledby="system-import-title">
+      <div class="card-body gap-3">
+        <h2 class="card-title" id="system-import-title">{% t system.import %}</h2>
+        <p class="text-xs text-base-content/70">{% t system.import-help %}</p>
+        <form action="/emails/parse" enctype="multipart/form-data" method="POST" class="flex flex-col gap-2">
+          <input name="redirect-url" type="hidden" value="/admin" />
+          <input name="filename" id="mbox-file" type="file" class="file-input file-input-sm w-full" aria-label="{% t system.import-file %}"/>
+          <div><button class="btn btn-sm" type="submit">{% t system.upload %}</button></div>
+        </form>
+      </div>
+    </section>
+
+    <section class="card bg-base-100 border border-base-300" aria-labelledby="system-diagnostics-title">
+      <div class="card-body gap-3">
+        <h2 class="card-title" id="system-diagnostics-title">{% t system.diagnostics %}</h2>
+        <p class="text-xs text-base-content/70">{% t system.diagnostics-help %}</p>
+        <div><a class="link link-hover font-semibold" href="/admin/threads" target="_blank">{% t system.thread-dump %}</a></div>
+        <div class="flex flex-wrap items-center gap-3">
+          <span>{% if data.repl.status %}{% t system.repl-running data.repl.port %}{% else %}{% t system.repl-stopped %}{% endif %}</span>
+          <form method="post" action="/repl">
+            <input name="redirect-url" type="hidden" value="/admin">
+            {% if data.repl.status %}
+            <input name="operation" type="hidden" value="stop">
+            <button class="btn btn-sm" type="submit">{% t system.repl-stop %}</button>
+            {% else %}
+            <input name="operation" type="hidden" value="start">
+            <button class="btn btn-sm" type="submit">{% t system.repl-start %}</button>
+            {% endif %}
+          </form>
+        </div>
+      </div>
+    </section>
   </div>
 </div>
-
 {% endblock %}

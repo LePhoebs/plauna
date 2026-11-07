@@ -964,6 +964,18 @@
 (defn get-categories []
   (jdbc/execute! (ds) (honey/format {:select [:*] :from :categories}) builder-function))
 
+(defn categories-with-counts
+  "Every category with the number of e-mails it holds (:email_count), ordered by name - the
+   sidebar's category list."
+  []
+  (jdbc/execute! (ds) (honey/format {:select [:categories.id :categories.name :categories.color
+                                              [[:count :metadata.message-id] :email-count]]
+                                     :from [:categories]
+                                     :left-join [:metadata [:= :metadata.category :categories.id]]
+                                     :group-by [:categories.id :categories.name :categories.color]
+                                     :order-by [[[:lower :categories.name] :asc]]})
+                 builder-function))
+
 (defn create-category
   ([category] (create-category category nil nil))
   ([category destination-folder] (create-category category destination-folder nil))
